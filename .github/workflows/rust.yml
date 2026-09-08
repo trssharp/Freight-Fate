@@ -59,6 +59,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
+      - ".cargo/**"
       - ".github/workflows/rust.yml"
   # A manual run is the FULL suite: no `--cfg ci_quick`, sweeps included.
   workflow_dispatch:
