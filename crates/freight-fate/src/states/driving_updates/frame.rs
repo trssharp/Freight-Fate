@@ -517,7 +517,7 @@ impl DrivingState {
         self.check_gate_approach_warning(ctx, dt);
         self.update_turn_commitment(ctx, dt);
         let moved_mi = self.trip.last_moved_mi;
-        self.update_exit(ctx, moved_mi, dt);
+        self.update_exit_with_input(ctx, moved_mi, dt, hand_accelerating);
         self.update_departure_ramp(ctx, moved_mi);
         // Immediately after the exit watch, which is what turns a signaled
         // scale exit into a ramp. Only now can a scale crossing be told apart

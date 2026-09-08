@@ -1261,6 +1261,15 @@
 
 ### Fixed
 
+- **Exit assistance slows early enough and gives the pedals back.** The
+  full mile-and-a-half slowdown approach now runs in real time at faster
+  trip pacing. Ramp-end assistance releases a completed brake application
+  instead of making the truck crawl toward a distant stop, and holding the
+  accelerator overrides it until you let go. Thanks to Tower
+  (@TowerAlphaTheta15) for the report and original fix in
+  [PR #185](https://github.com/Orinks/Freight-Fate/pull/185), adapted here for
+  the Rust Career 1.9 game.
+
 - **Heavy traffic follows local road conditions.** Clear stretches between
   busy sections stay clear, and a narrow bottleneck no longer holds the
   surrounding wider road at the same slow speed. Rush-hour traffic still

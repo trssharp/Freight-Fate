@@ -151,3 +151,5 @@ mod transcript_tutorial_verbosity;
 mod transcript_wrong_way;
 mod updater;
 mod windows_subsystem;
+
+mod states_ramp_assist_control;

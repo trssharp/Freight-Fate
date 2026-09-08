@@ -147,7 +147,16 @@ pub fn scale_pull_over_stands_down_exit() -> Outcome {
     rig.drive.exit_stop = Some(truckstop);
     rig.drive.exit_signal_on = true;
     rig.drive.cruise_exit_mph = Some(40.0);
-    rig.step(60, DT, Some(&|rig: &Rig| rig.drive.pull_over.is_some()));
+    // The armed exit puts this approach on the real clock. A tenth of a
+    // mile at 54 mph takes nearly seven seconds, so sixty frames (two
+    // seconds) cannot establish that the truck actually crossed the scale.
+    rig.step(
+        600,
+        DT,
+        Some(&|rig: &Rig| {
+            rig.drive.pull_over.is_some() || rig.drive.trip.position_mi > SCALE_MI + 0.2
+        }),
+    );
     if rig.drive.pull_over.is_none() {
         findings.push("an unarmed 54 mph scale crossing was never charged".to_string());
     }

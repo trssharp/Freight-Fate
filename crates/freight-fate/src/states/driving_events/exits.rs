@@ -635,7 +635,7 @@ impl DrivingState {
             return;
         }
         let ahead = stop.at_mi - self.trip.position_mi;
-        if !(ahead > 0.0 && ahead <= 1.5) {
+        if !(ahead > 0.0 && ahead <= ff_core::sim::trip_models::EXIT_SPEED_ASSIST_START_MI) {
             return;
         }
         if self.trip.truck.speed_mph() <= self.gore_acceptance_mph(Some(stop)) {

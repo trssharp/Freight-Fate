@@ -189,6 +189,8 @@ pub const RAMP_TERMINAL_GRACE_MI: f64 = 0.02; // rolling this far past the bar c
                                               // to brake application against the nominal full-service figure, and holds the
                                               // stop once the truck is within the hold window short of the bar.
 pub const RAMP_ASSIST_DECEL_START_MPS2: f64 = 0.6;
+// End a completed snub below the engagement threshold to avoid brake chatter.
+pub const RAMP_ASSIST_DECEL_RELEASE_MPS2: f64 = 0.35;
 // The destination approach: how hard the assist is willing to shed to ARRIVE
 // stopped, and the brake it uses. Gentler than the ramp figure -- an approach
 // is a street chain with a gate at the end, and the point is that the stop is

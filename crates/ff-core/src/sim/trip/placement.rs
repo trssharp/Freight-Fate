@@ -687,7 +687,10 @@ impl Trip {
         if speed <= ramp_mph {
             return false; // already slow enough for the gore: nothing to shed
         }
-        let window = approach_shed_mi(speed, ramp_mph) * EXIT_APPROACH_DECOMPRESS_SLACK;
+        // Keep the whole assist window on the real clock, while retaining
+        // a longer physics-based shed for the exit's own advisory speed.
+        let window = EXIT_SPEED_ASSIST_START_MI
+            .max(approach_shed_mi(speed, ramp_mph) * EXIT_APPROACH_DECOMPRESS_SLACK);
         ahead <= window
     }
 

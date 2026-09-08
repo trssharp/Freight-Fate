@@ -7682,7 +7682,13 @@ for 1.8" framing predates the release split):
       putting the trip on the real clock for the shed window the way a
       controlled ramp and a severe curve already do, so signalling nine miles
       out no longer starts the shed the moment the signal goes on, at any
-      pacing. Battery scenario: `ramp_speed_control_handback`.
+      pacing. The Rust follow-up to TowerAlphaTheta15's #185 keeps the whole
+      1.5-mile exit-assistance window in real time, releases completed
+      terminal brake snubs with separate engage/release thresholds, and
+      honors the frame's accelerator override until release. Existing
+      automatic lane-keeping exit assistance and data-driven ramp speeds
+      remain in place. Rust regressions cover the clock, brake release,
+      and the live input path. Battery scenario: `ramp_speed_control_handback`.
 - [x] **Enforcement beyond the speeding stop.** Weigh-station blow-pasts
       and severe visible damage draw roadside stops; running from lights
       escalates through warnings to a felony stop with spike strips and

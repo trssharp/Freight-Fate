@@ -13,6 +13,17 @@ use crate::states::driving_stops::assist_servo_brake;
 impl DrivingState {
     /// Advance an armed exit or an active ramp; opens the stop menu.
     pub fn update_exit(&mut self, ctx: &mut GameContext, moved_mi: f64, dt: f64) {
+        self.update_exit_with_input(ctx, moved_mi, dt, false);
+    }
+
+    /// Advance exits with the frame's keyboard/controller accelerator intent.
+    pub fn update_exit_with_input(
+        &mut self,
+        ctx: &mut GameContext,
+        moved_mi: f64,
+        dt: f64,
+        accelerating: bool,
+    ) {
         // Real time from the gore to the terminal: while the ramp ends in
         // a live light or sign, the clock must not compress the seconds
         // the driver needs to brake for it.
@@ -79,20 +90,26 @@ impl DrivingState {
         };
         self.trip.exit_approach_mi = ahead_to_exit.filter(|ahead| *ahead > 0.0);
         if self.ramp_mi.is_some() {
-            self.update_active_ramp(ctx, moved_mi, dt);
+            self.update_active_ramp(ctx, moved_mi, dt, accelerating);
             return;
         }
         self.update_armed_exit(ctx);
     }
 
     /// The `_ramp_mi is not None` half of `_update_exit`.
-    fn update_active_ramp(&mut self, ctx: &mut GameContext, moved_mi: f64, dt: f64) {
+    fn update_active_ramp(
+        &mut self,
+        ctx: &mut GameContext,
+        moved_mi: f64,
+        dt: f64,
+        accelerating: bool,
+    ) {
         let ramp_mi = self.ramp_mi.expect("checked by the caller") - moved_mi;
         self.ramp_mi = Some(ramp_mi);
         if !self.ramp_light_announced && ramp_mi <= RAMP_CONTROL_ANNOUNCE_MI {
             self.announce_ramp_terminal(ctx);
         }
-        self.update_ramp_terminal_assist(ctx);
+        self.update_ramp_terminal_assist_with_input(ctx, accelerating);
         if self.update_selected_stop_assist(ctx) {
             return;
         }
