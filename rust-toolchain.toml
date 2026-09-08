@@ -1,3 +1,6 @@
 [toolchain]
-channel = "stable"
+# Keep CI, snapshots and local builds on the same compiler. A moving stable
+# channel invalidates compiler caches when the runner image updates.
+# Bump deliberately after validating the new compiler on Career 1.9.
+channel = "1.98.0"
 components = ["rustfmt", "clippy"]
