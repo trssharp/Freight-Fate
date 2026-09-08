@@ -266,6 +266,8 @@ pub const FACILITY_ACCESS_TAIL_MI: f64 = 2.0;
 /// The speed at or below which an off-ramp can actually be taken, and so the
 /// floor for anything the arrival zones cap.
 pub const RAMP_MAX_MPH: f64 = 45.0;
+/// The exit assist needs real braking time throughout this approach.
+pub const EXIT_SPEED_ASSIST_START_MI: f64 = 1.5;
 /// The destination approach never caps below the speed the ramp needs.
 pub const DESTINATION_APPROACH_LIMIT_MPH: f64 = RAMP_MAX_MPH;
 /// ASSUMED, and it cannot be otherwise: no vehicle code reaches inside a

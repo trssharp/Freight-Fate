@@ -690,3 +690,18 @@ fn test_set_at_current_speed_cruise_is_unchanged() {
     assert!((harness.read_drive(|d| d.truck().speed_mph()) - 60.0).abs() < 5.0);
     assert!(!harness.read_drive(|d| d.truck().over_revving()));
 }
+
+#[test]
+fn ramp_assist_full_approach_window_uses_real_time() {
+    for scale in [1.0, 4.0, 20.0, 40.0] {
+        let (mut harness, stop) = armed_exit_at(4.5, scale, "off");
+        harness.with_drive(move |d, ctx| {
+            d.trip.position_mi = stop.at_mi - 1.49;
+            d.update_exit(ctx, 0.0, 0.0);
+        });
+        assert!(
+            approx(harness.read_drive(|d| d.trip.effective_time_scale()), 1.0),
+            "pacing {scale}"
+        );
+    }
+}

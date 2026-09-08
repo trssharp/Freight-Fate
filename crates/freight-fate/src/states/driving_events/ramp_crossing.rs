@@ -23,6 +23,15 @@ impl DrivingState {
     /// driver's move unless facility stopping assistance is on, in which case
     /// that assist takes it (`terminal_release_text`).
     pub fn update_ramp_terminal_assist(&mut self, ctx: &mut GameContext) {
+        self.update_ramp_terminal_assist_with_input(ctx, false);
+    }
+
+    /// A live accelerator press overrides this assist, including its red-light hold.
+    pub fn update_ramp_terminal_assist_with_input(
+        &mut self,
+        ctx: &mut GameContext,
+        accelerating: bool,
+    ) {
         if !ctx.settings.route_transition_assist {
             return;
         }
@@ -37,6 +46,12 @@ impl DrivingState {
             "signal" | "stop" | "yield" | "roundabout"
         ) || !self.ramp_light_announced
         {
+            return;
+        }
+        if accelerating {
+            // Clear only this assist's held application. The input layer owns
+            // the pedals; never erase a driver's brake or another assist's.
+            self.ramp_assist_brake = 0.0;
             return;
         }
         if self.ramp_waiting_at_light {
@@ -164,6 +179,10 @@ impl DrivingState {
         let gap_m = 0.5f64.max(gap_mi * 1609.344);
         let v_mps = 0.0f64.max(self.trip.truck.velocity_mps);
         let needed = (v_mps * v_mps) / (2.0 * gap_m);
+        if needed < RAMP_ASSIST_DECEL_RELEASE_MPS2 && gap_m > 30.0 {
+            self.ramp_assist_brake = 0.0;
+            return;
+        }
         let idle = self.ramp_assist_brake <= 0.0;
         if idle && needed < RAMP_ASSIST_DECEL_START_MPS2 && gap_m > 30.0 {
             return;
