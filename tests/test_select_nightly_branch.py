@@ -1,8 +1,7 @@
 import subprocess
 
 import pytest
-
-from tools.select_nightly_branch import select_branch
+from select_nightly_branch import select_branch
 
 
 @pytest.fixture
