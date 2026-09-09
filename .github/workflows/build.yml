@@ -1,12 +1,6 @@
 name: Build
 
 on:
-  schedule:
-    # Nightly at 02:37 UTC. GitHub Actions schedules are UTC-only and can
-    # queue late, so use an off-hour minute instead of the crowded top of hour.
-    - cron: "37 2 * * *"
-  push:
-    tags: ['v*.*.*']
   workflow_dispatch:
     inputs:
       dry_run:

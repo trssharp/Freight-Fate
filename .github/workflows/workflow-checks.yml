@@ -1,18 +1,6 @@
 name: Workflow checks
 
 on:
-  push:
-    paths:
-      - '.github/workflows/**'
-      - 'tools/select_nightly_branch.py'
-      - 'tests/test_select_nightly_branch.py'
-      - 'tests/test_ci_workflow.py'
-  pull_request:
-    paths:
-      - '.github/workflows/**'
-      - 'tools/select_nightly_branch.py'
-      - 'tests/test_select_nightly_branch.py'
-      - 'tests/test_ci_workflow.py'
   workflow_dispatch:
 
 permissions:

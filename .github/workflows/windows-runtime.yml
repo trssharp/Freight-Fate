@@ -1,20 +1,6 @@
 name: Windows runtime packaging
 
 on:
-  pull_request:
-    branches: [feat/career-1.9]
-    paths:
-      - "tools/build_release.py"
-      - "tools/windows_runtime.py"
-      - "tests/test_windows_runtime.py"
-      - ".github/workflows/windows-runtime.yml"
-  push:
-    branches: [feat/career-1.9]
-    paths:
-      - "tools/build_release.py"
-      - "tools/windows_runtime.py"
-      - "tests/test_windows_runtime.py"
-      - ".github/workflows/windows-runtime.yml"
   workflow_dispatch:
 
 permissions:

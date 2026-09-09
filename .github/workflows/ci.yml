@@ -5,11 +5,6 @@ permissions:
   actions: write
 
 on:
-  push:
-    # The 1.9 release line has its own Rust CI in rust.yml.
-    branches: [main, dev]
-  pull_request:
-    branches: [main, dev]
   workflow_dispatch:
 
 jobs:
