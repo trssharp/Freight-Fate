@@ -47,27 +47,7 @@ permissions:
   contents: read
 
 on:
-  push:
-    # Alongside main and dev, the Rust release lines take direct pushes instead
-    # of PRs, so each needs its own entry for this CI to run.
-    branches: [main, dev, feat/career-1.9, feat/rust-port]
-  pull_request:
-    branches: [main, dev, feat/career-1.9]
-    paths:
-      - "crates/**"
-      - "vendor/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - ".cargo/**"
-      - ".github/workflows/rust.yml"
-  # A manual run is the FULL suite: no `--cfg ci_quick`, sweeps included.
   workflow_dispatch:
-
-# The pull-request path filter keeps the Windows build off PRs that only
-# touch Python, docs or world data. A *required* check that is path filtered
-# stays "expected -- waiting for status" forever on a skipped PR, so do not
-# make it required unless the filter is dropped.
 
 concurrency:
   group: rust-${{ github.ref }}

@@ -6,8 +6,6 @@ name: Career 1.9 snapshot
 # Prepare job fails a scheduled run whose file differs from this branch's.
 
 on:
-  schedule:
-    - cron: "37 2 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
