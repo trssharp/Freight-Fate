@@ -37,11 +37,17 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          # nightlies snapshot the dev branch; stable releases build the tag
-          ref: ${{ github.event_name == 'schedule' && 'dev' || github.ref }}
+          # Start from the triggering ref so a Career-only fork can determine
+          # whether it has a legacy dev release line before checking it out.
+          ref: ${{ github.ref }}
           fetch-depth: 0
 
+      - name: Select scheduled release branch
+        id: release_line
+        run: python3 tools/select_nightly_branch.py
+
       - name: Check build conditions
+        if: steps.release_line.outputs.available == 'true'
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
