@@ -296,7 +296,7 @@ impl DrivingState {
     ///
     /// The lane locator answers "where am I" on demand. This answers it for
     /// the length of a move being made right now, with no key to remember:
-    /// the same panned tock, keeping time from the moment the wheel goes
+    /// a panned relay-click recording, keeping time from the moment the wheel goes
     /// over until the move is done. Taking an exit with the lane work yours
     /// means holding a position at the right of the lane, and that position
     /// was the one thing on the road a blind driver could not hear (owner,
@@ -338,7 +338,7 @@ impl DrivingState {
         self.steer_cue_timer = STEER_CUE_TOCK_S - span * self.exit_alignment_progress();
         let volume = 1.0f64.min(0.5 * self.cue_loudness(ctx));
         let pan = self.lane.offset.clamp(-1.0, 1.0);
-        ctx.audio.play_with("vehicle/lane_locator", volume, pan);
+        ctx.audio.play_if_idle("vehicle/turn_signal", volume, pan);
     }
 
     /// Run the edge-boundary ladder: structural loops, not louder beeps.

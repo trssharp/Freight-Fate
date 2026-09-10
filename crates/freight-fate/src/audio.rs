@@ -475,6 +475,10 @@ pub trait Audio {
     fn voice_key(&self, key: &str) -> String;
     /// Play a one-shot. `pan` -1.0 = full left, 0 = center, 1.0 = right.
     fn play_with(&mut self, key: &str, volume: f64, pan: f64);
+    /// Repeat a cue only after its previous playback has finished.
+    fn play_if_idle(&mut self, key: &str, volume: f64, pan: f64) {
+        self.play_with(key, volume, pan);
+    }
     fn play(&mut self, key: &str) {
         self.play_with(key, 1.0, 0.0);
     }
@@ -542,6 +546,8 @@ pub trait Audio {
     }
     /// Advance time-based audio fades. Call once per frame from the main loop.
     fn update(&mut self, dt: f64);
+    /// Engine position: -1 left, 0 centered, +1 right, independent of RPM/load.
+    fn set_engine_pan(&mut self, _pan: f64) {}
     fn set_engine_rpm_with(&mut self, rpm: f64, throttle: f64);
     fn set_engine_rpm(&mut self, rpm: f64) {
         self.set_engine_rpm_with(rpm, 0.0);

@@ -248,6 +248,9 @@ pub trait AudioBackend {
     fn as_any_mut(&mut self) -> &mut dyn Any;
 
     // -- one-shots and loops ----------------------------------------------------
+    fn play_if_idle(&mut self, key: &str, volume: f64, pan: f64) {
+        self.play(key, volume, pan);
+    }
     fn play(&mut self, _key: &str, _volume: f64, _pan: f64) {}
     fn start_loop(&mut self, _channel: u32, _key: &str, _volume: f64, _fade_ms: u32) {}
     fn set_loop_volume(&mut self, _channel: u32, _volume: f64) {}
@@ -271,6 +274,7 @@ pub trait AudioBackend {
     // -- truck engine -------------------------------------------------------------
     fn engine_start(&mut self, _play_start_sound: bool) {}
     fn engine_stop(&mut self, _shutdown_sound: bool) {}
+    fn set_engine_pan(&mut self, _pan: f64) {}
     fn set_engine_rpm(&mut self, _rpm: f64, _throttle: f64) {}
     fn set_engine_duck(&mut self, _duck: f64) {}
     fn set_road_noise(&mut self, _speed_mps: f64) {}

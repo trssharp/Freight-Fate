@@ -408,6 +408,11 @@ impl Audio for AudioEngine {
         self.route_voice_key(key)
     }
 
+    fn play_if_idle(&mut self, key: &str, volume: f64, pan: f64) {
+        let key = self.route_voice_key(key);
+        self.backend.play_if_idle(&key, volume, pan);
+    }
+
     fn play_with(&mut self, key: &str, volume: f64, pan: f64) {
         let key = self.route_voice_key(key);
         self.backend.play(&key, volume, pan);
@@ -667,6 +672,10 @@ impl Audio for AudioEngine {
             }
             self.cue_holds.retain(|_name, left| *left > 0.0);
         }
+    }
+
+    fn set_engine_pan(&mut self, pan: f64) {
+        self.backend.set_engine_pan(pan);
     }
 
     fn set_engine_rpm_with(&mut self, rpm: f64, throttle: f64) {

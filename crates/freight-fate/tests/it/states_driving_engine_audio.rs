@@ -48,6 +48,7 @@ struct Calls {
     loops: Vec<LoopCall>,
     reverse: Vec<&'static str>,
     engine_rpm: Vec<(f64, f64)>,
+    engine_pan: Vec<f64>,
     /// `set_engine_duck(duck)`: the shift-gap disengage, in order.
     ducks: Vec<f64>,
     engine_running: bool,
@@ -110,6 +111,9 @@ impl Audio for TrackingAudio {
     }
     fn play_bank_with(&mut self, base: &str, _fallback: &str, volume: f64, _pan: f64) {
         self.log.borrow_mut().banks.push((base.to_string(), volume));
+    }
+    fn set_engine_pan(&mut self, pan: f64) {
+        self.log.borrow_mut().engine_pan.push(pan);
     }
     fn set_engine_duck(&mut self, duck: f64) {
         self.log.borrow_mut().ducks.push(duck);
@@ -669,4 +673,35 @@ fn joint_plays(log: &Log) -> Vec<f64> {
         .filter(|(key, _)| key == "vehicle/road_joint")
         .map(|(_, volume)| *volume)
         .collect()
+}
+
+#[test]
+fn test_engine_pan_tracks_lane_position_each_audio_frame_and_resets_for_full() {
+    let (mut harness, log) = a_drive("Engine lane pan");
+    for mode in ["partial", "off", "full"] {
+        harness.app.ctx.settings.lane_keeping = mode.into();
+        for (offset, expected) in [
+            (0.0, 0.0),
+            (0.65, 0.65),
+            (-0.4, -0.4),
+            (2.0, 1.0),
+            (-2.0, -1.0),
+        ] {
+            harness.with_drive(|drive, _| drive.lane.offset = offset);
+            update_audio(&mut harness, 1.0 / 60.0);
+            assert_eq!(
+                log.borrow().engine_pan.last().copied(),
+                Some(if mode == "full" { 0.0 } else { expected })
+            );
+        }
+    }
+    for mode in ["partial", "off"] {
+        harness.app.ctx.settings.lane_keeping = mode.into();
+        harness.with_drive(|drive, _| drive.lane.offset = 0.75);
+        update_audio(&mut harness, 0.0);
+        assert_eq!(log.borrow().engine_pan.last(), Some(&0.75));
+        harness.app.ctx.settings.lane_keeping = "full".into();
+        update_audio(&mut harness, 0.0);
+        assert_eq!(log.borrow().engine_pan.last(), Some(&0.0));
+    }
 }

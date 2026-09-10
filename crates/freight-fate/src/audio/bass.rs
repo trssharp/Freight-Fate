@@ -116,8 +116,10 @@ pub struct BassBackend {
     pub(super) releasing: HashMap<u32, (String, u32)>,
     // Streams kept alive until BASS finishes them.
     pub(super) retained: Vec<Stream>,
+    exclusive_cues: HashMap<String, Stream>,
     pub(super) music_track: Option<String>,
     pub(super) music_stream: Option<Stream>,
+    pub(super) engine_pan: f64,
     pub(super) engine_running: bool,
     pub(super) engine_stream: Option<Stream>,
     pub(super) engine_base_freq: f64,
@@ -243,8 +245,10 @@ impl BassBackend {
             sustains: HashMap::new(),
             releasing: HashMap::new(),
             retained: Vec::new(),
+            exclusive_cues: HashMap::new(),
             music_track: None,
             music_stream: None,
+            engine_pan: 0.0,
             engine_running: false,
             engine_stream: None,
             engine_base_freq: 0.0,
@@ -413,9 +417,24 @@ impl BassBackend {
     // -- one-shots ----------------------------------------------------------
 
     pub(super) fn play(&mut self, key: &str, volume: f64, pan: f64) {
-        let Some(stream) = self.sfx_stream(key, false) else {
+        if let Some(stream) = self.start_one_shot(key, volume, pan) {
+            self.retain(stream);
+        }
+    }
+
+    fn play_if_idle(&mut self, key: &str, volume: f64, pan: f64) {
+        self.exclusive_cues
+            .retain(|_, stream| is_playing(stream.handle()));
+        if self.exclusive_cues.contains_key(key) {
             return;
-        };
+        }
+        if let Some(stream) = self.start_one_shot(key, volume, pan) {
+            self.exclusive_cues.insert(key.to_string(), stream);
+        }
+    }
+
+    fn start_one_shot(&mut self, key: &str, volume: f64, pan: f64) -> Option<Stream> {
+        let stream = self.sfx_stream(key, false)?;
         let handle = stream.handle();
         let level =
             (volume * self.buses.category_volume(one_shot_category(key)) * self.buses.master)
@@ -435,9 +454,9 @@ impl BassBackend {
             .and_then(|()| safe::channel_play(handle, false));
         if let Err(err) = started {
             log::warn!("Could not play {key} ({err})");
-            return;
+            return None;
         }
-        self.retain(stream);
+        Some(stream)
     }
 
     // -- loops on reserved slots ------------------------------------------------
@@ -694,6 +713,7 @@ impl BassBackend {
         self.engine_stop(false);
         self.stop_music(0);
         self.retained.clear();
+        self.exclusive_cues.clear();
         self.releasing.clear();
         // A connect still in flight holds a worker inside BASS; freeing BASS
         // underneath it is a crash. Give it a bounded moment to come back.
@@ -760,6 +780,11 @@ impl BassBackend {
     /// Handles of the streams retained until BASS finishes them, oldest first.
     pub fn retained_handles(&self) -> Vec<u32> {
         self.retained.iter().map(Stream::handle).collect()
+    }
+
+    /// Inspect a non-overlapping cue without transferring stream ownership.
+    pub fn exclusive_cue_handle(&self, key: &str) -> Option<u32> {
+        self.exclusive_cues.get(key).map(Stream::handle)
     }
 
     pub fn is_retained(&self, handle: u32) -> bool {
@@ -868,6 +893,10 @@ impl AudioBackend for BassBackend {
         self
     }
 
+    fn play_if_idle(&mut self, key: &str, volume: f64, pan: f64) {
+        BassBackend::play_if_idle(self, key, volume, pan);
+    }
+
     fn play(&mut self, key: &str, volume: f64, pan: f64) {
         BassBackend::play(self, key, volume, pan);
     }
@@ -908,6 +937,10 @@ impl AudioBackend for BassBackend {
 
     fn engine_stop(&mut self, shutdown_sound: bool) {
         BassBackend::engine_stop(self, shutdown_sound);
+    }
+
+    fn set_engine_pan(&mut self, pan: f64) {
+        BassBackend::set_engine_pan(self, pan);
     }
 
     fn set_engine_rpm(&mut self, rpm: f64, throttle: f64) {

@@ -120,6 +120,13 @@ onto exit signalling.
 
 ## 1.9 in flight (`feat/career-1.9`)
 
+- [x] Mechanical blinker recording for automatic steering-position ticks and
+      full-assist lane-change signals, waiting for playback to finish before
+      repeating, retaining the I-key locator and center confirmation.
+
+- [x] Engine lane-position panning for partial/off lane keeping; full centers
+      the engine, with the existing lane locator unchanged.
+
 - [x] **Portable Windows runtime (2026-09-06).** Include the official x64
       Visual C++ redistributable DLLs beside the game, and refuse to package
       missing runtime dependencies in the game or its bundled libraries.
