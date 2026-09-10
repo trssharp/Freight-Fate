@@ -534,7 +534,7 @@ fn signal_for_the_exit(d: &mut DrivingState) {
 }
 
 #[test]
-fn test_holding_the_arrow_plays_the_position_tock_panned_to_the_lane() {
+fn test_holding_the_arrow_plays_the_blinker_panned_to_the_lane() {
     let mut app = TestApp::new();
     let mut d = a_steering_drive(&mut app);
     let tape = CueAudio::install(&mut app);
@@ -546,14 +546,14 @@ fn test_holding_the_arrow_plays_the_position_tock_panned_to_the_lane() {
 
     d.update_steering_lane_cue(&mut app.ctx, 0.2);
     let (key, _, pan) = tape.last();
-    assert_eq!(key, LOCATOR);
+    assert_eq!(key, "vehicle/turn_signal");
     assert!((pan - 0.6).abs() < 1e-9);
 
     // It keeps time for as long as the wheel is held, and follows the truck.
     d.lane.offset = 0.95;
     d.update_steering_lane_cue(&mut app.ctx, STEER_CUE_TOCK_S);
     let (key, _, pan) = tape.last();
-    assert_eq!(key, LOCATOR);
+    assert_eq!(key, "vehicle/turn_signal");
     assert!((pan - 0.95).abs() < 1e-9);
 }
 
@@ -565,7 +565,7 @@ fn test_the_tock_scales_with_the_lane_cue_loudness_setting() {
     app.ctx.settings.lane_cue_loudness = "subtle".to_string();
     arm(&mut d, &mut app, 1.0);
     let (key, volume, _) = tape.last();
-    assert_eq!(key, LOCATOR);
+    assert_eq!(key, "vehicle/turn_signal");
     assert!((volume - 0.5 * 0.6).abs() < 1e-9);
 
     d.lane.steering = 0.0;
@@ -582,7 +582,10 @@ fn test_letting_go_of_the_wheel_cancels_the_signal() {
     let mut d = a_steering_drive(&mut app);
     let tape = CueAudio::install(&mut app);
     arm(&mut d, &mut app, 1.0);
-    assert_eq!(tape.keys().first().map(String::as_str), Some(LOCATOR));
+    assert_eq!(
+        tape.keys().first().map(String::as_str),
+        Some("vehicle/turn_signal")
+    );
 
     tape.clear();
     d.lane.steering = 0.0; // straightened out: the move is over
@@ -629,7 +632,7 @@ fn test_the_lane_change_ends_with_the_click_after_the_line_is_crossed() {
     d.lane.offset = -0.9 + LANE_WIDTH;
     d.update_steering_lane_cue(&mut app.ctx, STEER_CUE_TOCK_S);
     let (key, volume, pan) = tape.last();
-    assert_eq!(key, LOCATOR);
+    assert_eq!(key, "vehicle/turn_signal");
     assert!((volume - 0.5).abs() < 1e-9);
     assert!((pan - 1.0).abs() < 1e-9);
 
@@ -665,7 +668,7 @@ fn test_reaching_the_exit_position_clicks_off_with_the_wheel_still_held() {
     signal_for_the_exit(&mut d);
     d.exit_lane_alignment = 0.5;
     arm(&mut d, &mut app, 1.0);
-    assert_eq!(tape.last().0, LOCATOR);
+    assert_eq!(tape.last().0, "vehicle/turn_signal");
 
     tape.clear();
     d.exit_lane_alignment = EXIT_LANE_READY; // the exit has the lane it needs
@@ -691,7 +694,7 @@ fn test_abandoning_the_exit_line_up_clicks_off_too() {
     signal_for_the_exit(&mut d);
     d.exit_lane_alignment = 0.4;
     arm(&mut d, &mut app, 1.0);
-    assert_eq!(tape.last().0, LOCATOR);
+    assert_eq!(tape.last().0, "vehicle/turn_signal");
 
     tape.clear();
     d.lane.steering = 0.0;
@@ -737,6 +740,8 @@ fn test_it_does_not_double_the_locator_the_driver_already_turned_on() {
         d.update_steering_lane_cue(&mut app.ctx, 1.0 / 60.0);
     }
     assert!(tape.calls().is_empty());
+    d.update_lane_locator_audio(&mut app.ctx, 0.9);
+    assert_eq!(tape.last().0, LOCATOR);
 }
 
 #[test]
@@ -1645,4 +1650,36 @@ fn test_a_silent_ramp_engagement_never_leaves_a_lone_release() {
             .any(|text| text.contains("Curve speed assistance")),
         "a run that never spoke must not announce its own release"
     );
+}
+
+#[test]
+fn test_full_lane_changes_use_blinker_and_keep_crossing_confirmation() {
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    let tape = CueAudio::install(&mut app);
+    app.ctx.settings.lane_keeping = "full".into();
+    d.trip.truck.engine_on = true;
+    d.trip.truck.velocity_mps = 25.0;
+    d.trip.zones.clear();
+    d.lane.lane_count = 2;
+    d.lane.lane = 0;
+    for (direction, target, pan) in [(1, 1, -0.6), (-1, 0, 0.6)] {
+        tape.clear();
+        app.clear_speech();
+        d.tap_lane_change(&mut app.ctx, direction);
+        assert_eq!(tape.last(), ("vehicle/turn_signal".into(), 0.8, pan));
+        d.update_tap_lane_change(&mut app.ctx, 0.6);
+        assert_eq!(tape.last(), ("vehicle/turn_signal".into(), 0.8, pan));
+        for _ in 0..40 {
+            d.update_tap_lane_change(&mut app.ctx, 0.1);
+        }
+        assert_eq!(d.lane.lane, target);
+        assert_eq!(d.lane_change_target, None);
+        assert!(tape.keys().contains(&"vehicle/lane_line_cross".into()));
+        assert!(!tape.keys().contains(&SIGNAL.into()));
+        assert!(app.event_lines().iter().any(|line| line.contains("In the")));
+        let count = tape.calls().len();
+        d.update_tap_lane_change(&mut app.ctx, 2.0);
+        assert_eq!(tape.calls().len(), count);
+    }
 }

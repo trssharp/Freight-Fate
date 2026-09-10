@@ -27,7 +27,9 @@ use crate::audio_support::{
 fn exercise(a: &mut AudioEngine) {
     a.play("ui/menu_select");
     a.play("nonexistent/sound");
+    a.set_engine_pan(0.5);
     a.engine_start();
+    a.set_engine_pan(0.0);
     a.set_engine_rpm_with(1500.0, 0.5);
     a.set_engine_rpm_with(2200.0, 1.0);
     a.set_road_noise(20.0);
@@ -1087,4 +1089,111 @@ fn test_held_alert_lapses_on_its_own_and_cues_latch() {
 /// `sound_lib.Channel.is_playing` for a handle, for the tests above.
 fn audio_support_is_playing(handle: u32) -> bool {
     bass_sys::safe::channel_is_active(handle) == bass_sys::BASS_ACTIVE_PLAYING
+}
+
+#[test]
+fn test_engine_pan_bands_and_legacy_inherit_and_preserve_engine_state() {
+    let Some(mut r) = bass_rig_with_recordings() else {
+        return;
+    };
+    for classic in [false, true] {
+        r.engine.engine_stop_with(false);
+        r.engine.set_engine_voice(classic);
+        r.engine.set_engine_pan(-0.6);
+        r.engine.engine_start_with(false);
+        r.engine.update(1.0);
+        r.engine.set_engine_rpm_with(1150.0, 0.7);
+        let handles = |engine: &AudioEngine| {
+            let bass = engine.bass().unwrap();
+            if classic {
+                assert!(bass.engine_bands().is_empty());
+                vec![bass.engine_stream_handle().expect("legacy engine stream")]
+            } else {
+                let bands = bass.engine_bands();
+                assert_eq!(bands.len(), ENGINE_BANDS.len());
+                bands.iter().map(|band| band.handle).collect::<Vec<_>>()
+            }
+        };
+        let original = handles(&r.engine);
+        let volumes: Vec<_> = original
+            .iter()
+            .map(|h| safe::channel_get_attribute(*h, bass_sys::BASS_ATTRIB_VOL).unwrap())
+            .collect();
+        let bands = r.engine.bass().unwrap().engine_bands();
+        let wobble = r.engine.bass().unwrap().engine_wobble();
+        for (pan, expected) in [
+            (-0.6, -0.6),
+            (0.0, 0.0),
+            (0.7, 0.7),
+            (-2.0, -1.0),
+            (2.0, 1.0),
+        ] {
+            // The first assertion also checks pan inherited at stream creation.
+            if pan != -0.6 {
+                r.engine.set_engine_pan(pan);
+            }
+            assert_eq!(handles(&r.engine), original, "pan must not restart streams");
+            for (i, handle) in original.iter().enumerate() {
+                assert!(
+                    (safe::channel_get_attribute(*handle, bass_sys::BASS_ATTRIB_PAN).unwrap()
+                        as f64
+                        - expected)
+                        .abs()
+                        < 1e-6
+                );
+                assert_eq!(
+                    safe::channel_get_attribute(*handle, bass_sys::BASS_ATTRIB_VOL).unwrap(),
+                    volumes[i]
+                );
+            }
+            let bass = r.engine.bass().unwrap();
+            assert_eq!(bass.engine_wobble(), wobble);
+            for (before, after) in bands.iter().zip(bass.engine_bands()) {
+                assert_eq!(before.last_rate_target, after.last_rate_target);
+                assert_eq!(before.last_volume, after.last_volume);
+            }
+        }
+        r.engine.engine_stop_with(false);
+        r.engine.engine_start_with(false);
+        for handle in handles(&r.engine) {
+            assert_eq!(
+                safe::channel_get_attribute(handle, bass_sys::BASS_ATTRIB_PAN).unwrap(),
+                1.0
+            );
+        }
+    }
+}
+
+#[test]
+fn test_blinker_repeat_waits_for_actual_playback_completion() {
+    let Some(mut r) = bass_rig_with_recordings() else {
+        return;
+    };
+    let key = "vehicle/turn_signal";
+    r.engine.play_if_idle(key, 0.5, -0.6);
+    let handle = r.engine.bass().unwrap().exclusive_cue_handle(key).unwrap();
+    for _ in 0..20 {
+        r.engine.play_if_idle(key, 0.5, 0.6);
+        assert_eq!(
+            r.engine.bass().unwrap().exclusive_cue_handle(key),
+            Some(handle)
+        );
+        assert!(
+            (safe::channel_get_attribute(handle, bass_sys::BASS_ATTRIB_PAN).unwrap() + 0.6).abs()
+                < 1e-6
+        );
+    }
+    // Real completion on BASS's silent device, not a guessed clip duration.
+    assert!(wait_for(
+        Duration::from_secs(5),
+        || safe::channel_is_active(handle) == bass_sys::BASS_ACTIVE_STOPPED
+    ));
+    r.engine.play_if_idle(key, 0.5, 0.6);
+    let next = r.engine.bass().unwrap().exclusive_cue_handle(key).unwrap();
+    assert_eq!(safe::channel_is_active(next), bass_sys::BASS_ACTIVE_PLAYING);
+    assert!(
+        (safe::channel_get_attribute(next, bass_sys::BASS_ATTRIB_PAN).unwrap() - 0.6).abs() < 1e-6
+    );
+    r.engine.shutdown();
+    assert_eq!(r.engine.bass().unwrap().exclusive_cue_handle(key), None);
 }

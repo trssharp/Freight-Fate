@@ -159,6 +159,14 @@ impl DrivingState {
     /// A zero-length update is an immediate sync (menus, tests).
     pub fn update_audio(&mut self, ctx: &mut GameContext, dt: f64) {
         self.sync_radio_power(ctx);
+        // The locator's actual lane position, refreshed every frame and before
+        // any catch-up start. Automation explicitly clears a previous pan.
+        let engine_pan = if ctx.settings.lane_is_automated() {
+            0.0
+        } else {
+            self.lane.offset.clamp(-1.0, 1.0)
+        };
+        ctx.audio.set_engine_pan(engine_pan);
         if self.trip.truck.engine_on && !ctx.audio.engine_running() {
             // Catch-up sync (resuming a running-engine trip, returning from a
             // menu): bring the loop up without replaying the ignition crank.

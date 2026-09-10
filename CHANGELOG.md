@@ -4,6 +4,15 @@
 
 ### Added
 
+- **Steering and assisted lane changes use the mechanical blinker sound.** The
+  automatic position cue and full-assist lane-change signals wait for each
+  recording to finish before repeating. Their panning, the I-key lane locator,
+  and center chime are unchanged.
+
+- **The engine follows your position within the lane.** With partial or off
+  lane keeping, its sound moves continuously left and right with your truck.
+  Full lane keeping centers it. The lane locator remains unchanged.
+
 - **You can read another driver's profile without leaving the game.** On
   the Drivers on duty list, press Enter on a driver to open their public
   profile: their name and whether they are on duty, then their current

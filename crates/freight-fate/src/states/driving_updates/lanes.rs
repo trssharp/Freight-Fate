@@ -385,7 +385,7 @@ impl DrivingState {
         self.lane_signal_timer += dt;
         if self.lane_signal_timer >= LANE_SIGNAL_CLICK_S {
             self.lane_signal_timer = 0.0;
-            ctx.audio.play_with("vehicle/signal_tone", 0.8, pan);
+            ctx.audio.play_if_idle("vehicle/turn_signal", 0.8, pan);
         }
         self.lane_change_timer -= dt;
         if self.lane_change_timer <= 0.0 {

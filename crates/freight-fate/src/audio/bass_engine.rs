@@ -5,7 +5,7 @@
 use std::rc::Rc;
 
 use bass_sys::safe;
-use bass_sys::BASS_ATTRIB_FREQ;
+use bass_sys::{BASS_ATTRIB_FREQ, BASS_ATTRIB_PAN};
 use ff_core::audio_fades::{curve, Fade};
 
 use super::bass::{get_frequency, set_volume, slide, BassBackend, EngineBand};
@@ -80,6 +80,7 @@ impl BassBackend {
                 };
                 let handle = stream.handle();
                 let started = get_frequency(handle).and_then(|base_freq| {
+                    safe::channel_set_attribute(handle, BASS_ATTRIB_PAN, self.engine_pan as f32)?;
                     set_volume(handle, 0.0)?;
                     safe::channel_play(handle, false)?;
                     Ok(base_freq)
@@ -119,6 +120,7 @@ impl BassBackend {
             if let Some(loop_stream) = &stream {
                 let handle = loop_stream.handle();
                 match get_frequency(handle).and_then(|base_freq| {
+                    safe::channel_set_attribute(handle, BASS_ATTRIB_PAN, self.engine_pan as f32)?;
                     set_volume(handle, 0.0)?;
                     safe::channel_play(handle, false)?;
                     Ok(base_freq)
@@ -244,6 +246,20 @@ impl BassBackend {
         }
         if shutdown_sound {
             self.play("engine/shutdown", 1.0, 0.0);
+        }
+    }
+
+    /// Update only pan; retain it across stops and voice changes.
+    pub(super) fn set_engine_pan(&mut self, pan: f64) {
+        self.engine_pan = pan.clamp(-1.0, 1.0);
+        for handle in self
+            .engine_bands
+            .iter()
+            .map(|band| band.stream.handle())
+            .chain(self.engine_stream.as_ref().map(|stream| stream.handle()))
+        {
+            // Match loop panning: a dying stream must not interrupt the drive.
+            let _ = safe::channel_set_attribute(handle, BASS_ATTRIB_PAN, self.engine_pan as f32);
         }
     }
 
