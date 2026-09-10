@@ -73,6 +73,9 @@ jobs:
         os: [windows-latest, ubuntu-latest, macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
+    env:
+      # build_release imports sibling packaging helpers from tools/.
+      PYTHONPATH: tools
     steps:
       - uses: actions/checkout@v6
 

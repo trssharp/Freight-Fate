@@ -533,7 +533,9 @@ def test_career_19_snapshot_workflow_contract():
     assert 'CAREER_BRANCH: "feat/career-1.9"' in workflow
     assert "group: career-19-snapshot\n" in workflow
     assert "career-19-snapshot-${{ github.ref }}" not in workflow
-    assert 'cron: "37 2 * * *"' in workflow
+    # This fork runs snapshots only when explicitly dispatched.
+    triggers = yaml.load(workflow, Loader=yaml.BaseLoader)["on"]
+    assert set(triggers) == {"workflow_dispatch"}
     assert "tag=1.9-tester-$(date -u +%Y%m%d)" in workflow
     assert "commit_sha: ${{ steps.check.outputs.commit_sha }}" in workflow
     assert 'echo "commit_sha=$(git rev-parse HEAD)"' in workflow

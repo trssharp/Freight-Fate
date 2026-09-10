@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -88,3 +91,20 @@ def test_build_keeps_dev_push_nightly_recovery() -> None:
     assert "--workflow Build --event schedule" in script
     assert '"$CONCLUSION" != "failure"' in script
     assert 'gh workflow run Build --repo "$GITHUB_REPOSITORY" --ref dev -f dry_run=false' in script
+
+
+def test_secret_store_probe_can_import_release_flags_with_its_job_environment() -> None:
+    job = _load_ci_workflow()["jobs"]["secret-store-packaging"]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from tools.build_release import KEYRING_NUITKA_ARGS; assert KEYRING_NUITKA_ARGS",
+        ],
+        cwd=ROOT,
+        env={**os.environ, **job.get("env", {})},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
