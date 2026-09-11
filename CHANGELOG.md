@@ -1280,6 +1280,15 @@
 
 ### Fixed
 
+- **A long sleeper-berth rest no longer runs your duty window down while you
+  sleep.** Seven or more hours in the berth, the long half of an 8 and 2 or
+  7 and 3 split, now stops the 14-hour window for as long as you sleep, the
+  way an ELD does. You wake with the same window you went to bed with, and
+  the wake-up line says the window paused and when it closes. Before, seven
+  hours of duty followed by an 8-hour sleep left you out of hours on waking,
+  with the split still owed. The shorter half of a split still counts until
+  the pair is complete.
+
 - **A voice that cannot start no longer prevents speech fallback.** The game
   skips failed voices and tries the next available one instead of selecting
   a voice that cannot speak.

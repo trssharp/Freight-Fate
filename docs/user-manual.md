@@ -1329,7 +1329,10 @@ tools.
 
 A nap in the sleeper berth that does not reset your 14-hour window says so
 when you wake, and names the time the window still closes, so a short rest
-never reads as a fresh day.
+never reads as a fresh day. The long half of a split, 7 or 8 hours in the
+berth, stops the duty window while you sleep, so you wake with the hours you
+went to bed with. The short half, 2 or 3 hours, keeps counting until the
+pair is complete, and then only the duty between the two rests remains.
 
 The game gives warnings at 2 hours, 1 hour, and 30 minutes before a limit.
 Driving past a limit risks inspections, fines, reputation loss, and
