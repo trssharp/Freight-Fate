@@ -252,6 +252,8 @@ pub trait AudioBackend {
         self.play(key, volume, pan);
     }
     fn play(&mut self, _key: &str, _volume: f64, _pan: f64) {}
+    fn update_cue(&mut self, _key: &str, _volume: f64, _pan: f64) {}
+    fn stop_cue(&mut self, _key: &str) {}
     fn start_loop(&mut self, _channel: u32, _key: &str, _volume: f64, _fade_ms: u32) {}
     fn set_loop_volume(&mut self, _channel: u32, _volume: f64) {}
     fn set_loop_pan(&mut self, _channel: u32, _pan: f64) {}

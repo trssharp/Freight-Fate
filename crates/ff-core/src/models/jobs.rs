@@ -18,6 +18,7 @@ use crate::speech_text::typed_name;
 
 mod board;
 mod deadline;
+pub mod hos_stops;
 #[cfg(test)]
 mod tests;
 
@@ -574,9 +575,9 @@ pub const ASSIGNED_REPOSITION_PAY_FRACTION: f64 = 0.6;
 ///
 /// Reuses the normal delivery drive for fuel, weather, and save/resume, but
 /// carries no cargo. A self-serve bobtail (`assigned=false`, the default) is
-/// player-chosen personal conveyance and pays nothing; the ELD records it as
-/// off duty instead of freight-duty driving. A carrier-ASSIGNED reposition
-/// (`assigned=true`) is dispatch's call, not the driver's, so it pays a
+/// player-chosen commercial repositioning and pays nothing. The ELD records
+/// driving time while moving and on-duty time while stopped. A carrier-assigned
+/// reposition (`assigned=true`) pays a
 /// reduced per-mile rate -- see ASSIGNED_REPOSITION_PAY_FRACTION. Either
 /// way, on arrival the player simply parks at the destination city's hub and
 /// can shop its dispatch board.

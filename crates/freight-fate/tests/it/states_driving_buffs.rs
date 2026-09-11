@@ -250,9 +250,11 @@ fn test_rest_stop_fuel_row_reads_the_same_tank_as_the_lot_screen() {
     // both must name the gallons rather than claim a full tank.
     assert_eq!(rest_fuel, lot_fuel);
     // The dollar figure rides this session's fuel market, so pin the part
-    // the bug erased: the gallons, and that it is an offer to refuel at all.
+    // the bug erased: the gallons, the offer, and the weight after filling.
     assert!(
-        rest_fuel.starts_with("Refuel 110 gallons for ") && rest_fuel.ends_with(" dollars"),
+        rest_fuel.starts_with("Refuel 110 gallons for ")
+            && rest_fuel.contains(" dollars. Full tank:")
+            && rest_fuel.ends_with("the gross-weight limit"),
         "{rest_fuel:?}"
     );
 }

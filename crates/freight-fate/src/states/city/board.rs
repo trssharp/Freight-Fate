@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use serde_json::Value;
 
 use ff_core::models::business::{
-    build_business_settlement, has_weigh_station_transponder, is_owner_operator, pay_label,
+    build_business_settlement, has_weigh_station_transponder, is_owner_operator,
     BusinessSettlement, SettlementTerms, INDEPENDENT_AUTHORITY,
 };
 use ff_core::models::career_objectives::career_objective;
@@ -20,9 +20,7 @@ use ff_core::models::dispatch_policy::{
     declines_remaining, dispatch_policy, DECLINE_REPUTATION_PENALTY, SENIOR_LOAD_CHOICE_LEVEL,
 };
 use ff_core::models::enforcement;
-use ff_core::models::jobs::{
-    credentials_clause, facility_text, lane_key, route_drive_hours, DescribeOptions, Job,
-};
+use ff_core::models::jobs::{lane_key, route_drive_hours, Job};
 use ff_core::models::profile::Profile;
 use ff_core::models::trailers::{
     compatible_with_programs, owned_trailer_for_cargo, required_program_text,
@@ -30,21 +28,23 @@ use ff_core::models::trailers::{
 use ff_core::playtest_levers::forced_dispatch_destination;
 use ff_core::pyfmt::{fmt_f, fmt_grouped};
 use ff_core::sim::hos::limits;
-use ff_core::sim::timezones::{appointment_text, city_zone};
 
 use crate::app::{GameContext, Say, SharedState};
 use crate::impl_state_for_menu;
 use crate::meaningful_play::MeaningfulPlayReason;
 use crate::states::base::{InputEvent, Key, Menu, MenuCore, MenuItem};
 use crate::states::city::{
-    base_menu_current_help, base_menu_handle_event, first_day_guidance_active, first_dispatch_done,
-    home_terminal, launch_driving, profile, profile_mut, sleeps_needed, DrivingLaunch,
-    LaunchAnnouncement, DRIVE_PHASE_DELIVERY, DRIVE_PHASE_PICKUP, PICKUP_CHECK_IN_MIN,
-    PICKUP_LOADING_MIN,
+    base_menu_handle_event, first_day_guidance_active, first_dispatch_done, home_terminal,
+    launch_driving, profile, profile_mut, sleeps_needed, DrivingLaunch, LaunchAnnouncement,
+    DRIVE_PHASE_DELIVERY, DRIVE_PHASE_PICKUP, PICKUP_CHECK_IN_MIN, PICKUP_LOADING_MIN,
 };
 use crate::states::city_pickup::{
     pickup_snapshot, PickupFacilityState, PickupOptions, PickupSnapshotOptions,
 };
+
+mod details;
+mod weight;
+pub use details::{describe_job, JobDetailState};
 
 /// The board's class-level `intro_help` (the browsable board; an assigned
 /// board swaps in its own on construction).
@@ -159,50 +159,6 @@ fn market_preview(business: &BusinessSettlement) -> String {
         "Estimated driver pay before advances: {} dollars.",
         fmt_grouped(business.net_before_advance, 0)
     )
-}
-
-/// Board line for a carrier-ASSIGNED reposition.
-///
-/// Skips Job.describe() and build_business_settlement() on purpose:
-/// those price and phrase a real load's cargo, and running a
-/// zero-weight reposition through the same math would show the
-/// loaded per-mile wage floor instead of job.pay's already-reduced
-/// empty-mile rate -- a preview the settlement then would not honor.
-fn describe_reposition(ctx: &GameContext, total: usize, job: &Job, index: Option<usize>) -> String {
-    let prefix = match index {
-        Some(i) => format!("Job {i} of {total}: "),
-        None => String::new(),
-    };
-    format!(
-        "{prefix}Carrier-assigned reposition: drive empty to {}, {}. No cargo. Pays {} \
-         dollars, the empty-mile rate. The {} dispatch board opens on arrival.",
-        job.spoken_destination(),
-        ctx.settings.distance_text(job.distance_mi, false),
-        fmt_grouped(job.pay, 0),
-        job.spoken_destination()
-    )
-}
-
-/// `JobBoardState._describe_job(job, index)`: `index` is the 1-based
-/// board position, `total` the board size.
-pub fn describe_job(ctx: &GameContext, total: usize, job: &Job, index: Option<usize>) -> String {
-    if job.bobtail {
-        return describe_reposition(ctx, total, job, index);
-    }
-    let p = profile(ctx);
-    let business = settlement_for(p, job, true);
-    let note = trailer_note(p, job);
-    let preview = market_preview(&business);
-    let distance = ctx.settings.distance_text(job.distance_mi, false);
-    job.describe(&DescribeOptions {
-        index,
-        total: index.map(|_| total),
-        pay_label: pay_label(&p.business_status),
-        trailer_note: &note,
-        display_pay: Some(business.gross_pay),
-        market_preview: &preview,
-        distance_text: &distance,
-    })
 }
 
 // -- JobBoardState ------------------------------------------------------------------------
@@ -1030,188 +986,3 @@ impl Menu for JobBoardState {
 }
 
 impl_state_for_menu!(JobBoardState);
-
-// -- JobDetailState -----------------------------------------------------------------------
-
-const JOB_DETAIL_INTRO_HELP: &str =
-    "Up and down review the lines, Home and End jump to the ends. Enter repeats a line, or \
-     accepts on Accept this dispatch. Escape returns to the dispatch board.";
-
-pub struct JobDetailState {
-    menu: MenuCore<Self>,
-    /// The board this job came from, for `Accept this dispatch`.
-    board: SharedState,
-    pub job: Job,
-    job_index: usize,
-}
-
-impl JobDetailState {
-    /// `JobDetailState(ctx, board, job)`; `job_index` is the job's position
-    /// on that board.
-    pub fn new(board: SharedState, job: Job, job_index: usize) -> Self {
-        JobDetailState {
-            menu: MenuCore::new("Job details").with_intro_help(JOB_DETAIL_INTRO_HELP),
-            board,
-            job,
-            job_index,
-        }
-    }
-
-    fn accept(&mut self, ctx: &mut GameContext) {
-        ctx.pop_state();
-        let board = self.board.clone();
-        let index = self.job_index;
-        // The semicolon matters: the RefMut is a temporary of this
-        // statement, and without it the borrow outlives the handle above.
-        if let Ok(mut state) = board.try_borrow_mut() {
-            if let Some(board) = state.as_any_mut().downcast_mut::<JobBoardState>() {
-                board.accept(ctx, index);
-            }
-        };
-    }
-
-    fn detail_lines(&self, ctx: &GameContext) -> Vec<String> {
-        let job = &self.job;
-        if job.bobtail {
-            return self.reposition_detail_lines(ctx);
-        }
-        let p = profile(ctx);
-        let business = settlement_for(p, job, true);
-        let dollars_per_mile = business.gross_pay / job.distance_mi.max(1.0);
-        let s = &ctx.settings;
-        let world = ctx.world;
-        // The detail view is the "tell me more" surface, so it always names the
-        // state -- board offers stay short, but a player who does not know
-        // where Baton Rouge is can open the job and hear "..., Louisiana".
-        let destination_text = facility_text(
-            &job.destination_type,
-            &job.destination_location,
-            &world.spoken_city(&job.destination, Some(true)),
-            &job.destination_locality,
-        );
-        let zone = world
-            .city(&job.destination)
-            .map(|c| city_zone(c))
-            .unwrap_or(ff_core::sim::timezones::EASTERN);
-        let mut lines = vec![
-            format!("Cargo: {}.", job.cargo.label),
-            format!("Origin: {}.", job.origin_facility_text()),
-            format!("Destination: {destination_text}."),
-            format!("Distance: {}.", s.distance_text(job.distance_mi, false)),
-            format!(
-                "{}: {} dollars.",
-                pay_label(&p.business_status),
-                fmt_grouped(business.gross_pay, 0)
-            ),
-            format!(
-                "Dollars per {}: \
-                 {}.",
-                s.distance_unit_text(false),
-                fmt_f(s.per_distance(dollars_per_mile), 2)
-            ),
-            // The appointment reads in the receiver's local time, the way real
-            // dispatch quotes it. "About" because the clock starts at pickup
-            // departure, after check-in and loading.
-            format!(
-                "Deadline: {} hours, deliver by about {}.",
-                fmt_f(job.deadline_game_h, 0),
-                appointment_text(p.game_hours, job.deadline_game_h, zone)
-            ),
-            format!("Equipment: {}.", job.equipment_text()),
-            format!("Trailer: {}", trailer_note(p, job)),
-        ];
-        let locked = locked_reason(p, job);
-        if !locked.is_empty() {
-            lines.push(format!("Locked: {locked}"));
-        } else if !job.cargo.credentials.is_empty() {
-            lines.push(format!(
-                "Cleared for it: you hold {}.",
-                credentials_clause(job.cargo.credentials)
-            ));
-        }
-        lines.push(
-            "Route details happen after pickup: rest, fuel, tolls, weather, and stops.".to_string(),
-        );
-        lines
-    }
-
-    fn reposition_detail_lines(&self, ctx: &GameContext) -> Vec<String> {
-        let job = &self.job;
-        vec![
-            "Carrier-assigned reposition: empty to a nearby city where freight is thicker."
-                .to_string(),
-            format!(
-                "Destination: {}.",
-                ctx.world.spoken_city(&job.destination, Some(true))
-            ),
-            format!(
-                "Distance: {}.",
-                ctx.settings.distance_text(job.distance_mi, false)
-            ),
-            format!(
-                "Pay: {} dollars, the empty-mile rate.",
-                fmt_grouped(job.pay, 0)
-            ),
-            "No cargo, no trailer program, no endorsement needed.".to_string(),
-            "Route details happen after accepting: rest, fuel, tolls, weather, and stops."
-                .to_string(),
-        ]
-    }
-}
-
-impl Menu for JobDetailState {
-    fn menu(&self) -> &MenuCore<Self> {
-        &self.menu
-    }
-
-    fn menu_mut(&mut self) -> &mut MenuCore<Self> {
-        &mut self.menu
-    }
-
-    fn announce_entry(&mut self, ctx: &mut GameContext) {
-        let current = self.current_text(ctx);
-        ctx.say(&format!("Job details. {JOB_DETAIL_INTRO_HELP} {current}"));
-    }
-
-    fn current_help(&self, ctx: &GameContext) -> String {
-        format!(
-            "{JOB_DETAIL_INTRO_HELP} {}",
-            base_menu_current_help(self, ctx)
-        )
-    }
-
-    fn build_items(&mut self, ctx: &mut GameContext) -> Vec<MenuItem<Self>> {
-        let mut items: Vec<MenuItem<Self>> = self
-            .detail_lines(ctx)
-            .into_iter()
-            .map(|line| {
-                let spoken = line.clone();
-                MenuItem::new(line, move |_s: &mut Self, ctx| ctx.say(&spoken))
-                    .help("Enter repeats this line.")
-            })
-            .collect();
-        let locked = locked_reason(profile(ctx), &self.job);
-        if !locked.is_empty() {
-            let spoken = locked.clone();
-            items.push(
-                MenuItem::new(
-                    format!("Cannot accept this dispatch: {locked}"),
-                    move |_s: &mut Self, ctx| ctx.say(&spoken),
-                )
-                .help(format!("This dispatch is locked. {locked}")),
-            );
-        } else {
-            items.push(
-                MenuItem::new("Accept this dispatch", |s: &mut Self, ctx| s.accept(ctx))
-                    .help("Accepts and begins the pickup drive."),
-            );
-        }
-        items.push(
-            MenuItem::new("Back to dispatch board", |s: &mut Self, ctx| s.go_back(ctx))
-                .help("Back without accepting."),
-        );
-        items
-    }
-}
-
-impl_state_for_menu!(JobDetailState);

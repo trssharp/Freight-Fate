@@ -15,15 +15,23 @@ alone take `[skip changelog]`.
 
 Freight Fate's entities divide into a portable model layer and a game layer.
 
-**The portable layer** -- `models/` and most of `sim/` -- describes the world,
-the freight, the driver and the equipment. None of it should know that
-Freight Fate is a Pygame program: no pygame import, no audio backend, no
-speech. That rule is not stylistic. It is what keeps the model layer testable
-headless and reusable, and it is enforced by convention today, so watch for it
-in review.
+**The portable layer** is the `ff-core` crate: world data, career models,
+simulation, and spoken-text rules. It has no window, audio-device,
+screen-reader, or network dependencies. Cargo enforces that boundary, so
+these systems can run in headless tests.
 
-**The game layer** -- `states/`, the audio and speech stack, saves, online
-services -- is Freight Fate specific and always will be.
+**The game layer** is the `freight-fate` crate: the application and screen
+states, audio and speech backends, saves, and online services. Career 1.9
+uses this native Rust runtime. See [the contributor architecture guide](../CLAUDE.md#how-the-code-fits-together)
+for the crate layout and service boundaries.
+
+The Python module and class references below are **legacy port references**
+under `src/freight_fate/`, including `models/`, `sim/`, and `states/`.
+They are not the current gameplay implementation. Rust
+modules generally retain the names of their Python counterparts under
+`crates/ff-core/src/` or `crates/freight-fate/src/`; consult those modules
+for current behavior. The tables retain the reference names to help locate
+port history. Their canonical spoken vocabulary still applies to the game.
 
 The portable layer's vocabulary is documented alongside the code that owns it.
 This file catalogues the game layer, and then the spoken vocabulary for both.
@@ -312,7 +320,9 @@ from the words, and synonyms cost them a re-read.
 | Career experience arriving slower in low dispatch trust | reduced rate | XP penalty, multiplier, malus, nerf | `career.standing_xp_rate` |
 | The first damage band: the engine holds power back | reduced power | derate, band two, power loss | `DAMAGE_BAND_REDUCED` |
 | The deep damage band: reduced power plus a road-speed cap | limp mode | limp-home, speed governor, safe mode | `DAMAGE_BAND_LIMP` |
-| Damage past the point where the truck may be driven | out of service | broken down, totaled, disabled, dead truck | `TruckState.out_of_service` |
+| Damage or component wear past the point where the truck may be driven | out of service | broken down, totaled, disabled, dead truck | `TruckState.out_of_service` |
+| Component wear approaching the game's required repair threshold | service soon | legal defect, failed DOT inspection | `COMPONENT_SERVICE_WARNING_PCT` |
+| Component wear at the game's required repair threshold | service required | regulatory defect limit, random breakdown | `COMPONENT_SERVICE_LIMIT_PCT` |
 | The carrier taking a company tractor off the road | dispatch grounds it, grounded | benched, red-tagged, impounded | `_carrier_grounds_the_tractor` |
 | The tractor a grounded company driver is moved into | yard spare | loaner, replacement truck, backup rig | `_draw_yard_spare` |
 | The emergency call-out that gets an out-of-service truck moving | roadside repair | roadside rescue (that is the fuel one), tow | `_roadside_repair_out_of_pocket` |
@@ -333,12 +343,13 @@ from the words, and synonyms cost them a re-read.
 | Gravel under a tire that has left the road surface | Off the pavement | shoulder gravel, run-off, top rung of the edge ladder | `vehicle/edge_shoulder`, `sim/lane_guidance.EDGE_SHOULDER_KEY` |
 | The soft chime confirming the truck is centered again after a drift | Back in the lane | lane-centered chime, drift recovered, all-clear | `vehicle/lane_centered` |
 | Tires rolling over a painted line's raised markers, meaning a lane change happened whether meant or not | Lane line crossed | line cross, lane-change bump | `vehicle/lane_line_cross` |
-| The tock that pans to where the truck sits inside its lane -- toggled on by the player, or started by the lane move being made | Lane locator | position tick, lane ping, centering assist (that names a setting that does not exist yet) | `vehicle/lane_locator`, `states/driving_controls.py._toggle_lane_locator`, `states/driving_updates.py._update_steering_lane_cue` |
+| The tock that pans to where the truck sits inside its lane, toggled with I | Lane locator | position tick, lane ping, centering assist | `vehicle/lane_locator` |
+| Mechanical relay clicks following lane position during steering or exit line-up, or the direction of a full-assist lane change; stops when the move ends | Mechanical blinker | indicator tick, automatic locator | `vehicle/turn_signal` |
 | One rumble hit with nothing held after it, unattached to a steering correction -- fatigue or a momentary catch | Rumble strip, single hit | single tap, fatigue rumble | `vehicle/rumble_strip` |
 | Grouped bars cut across a whole lane, placed only ahead of a curve that has killed people | Transverse strips | rumble bars, wake-up strips, dead-man's-curve strips | `vehicle/transverse_strips`, `sim/lane_guidance.TRANSVERSE_KEY` |
 | A chime from the side a demanding bend turns toward, ahead of curve callouts | Curve chime | curve bink, bend warning | `vehicle/curve_bink` |
-| The player's own turn signal sounding, from the side signalled -- a lane change, a shoulder pull-over, a ramp merge, or the route's exit | Signal tone | exit signal tone (most of its soundings are not exits), blinker sound, indicator click | `vehicle/signal_tone` |
-| The same signal cancelling itself when the move is finished: quieter, from straight ahead, and after an exit line-up it is the word that the truck is far enough over | Signal tone (it is one sound, and the treatment is the difference) | cancel chime, all-clear, "exit lane set" tone | `vehicle/signal_tone`, `states/driving_updates.py._update_steering_lane_cue` |
+| A short confirmation from the side of a deliberate lane crossing, shoulder pull-over, ramp merge, or route exit | Signal tone | confirmation tone, manoeuvre tone | `vehicle/signal_tone` |
+| A quieter centered confirmation when the steering cue ends or the exit position is set; assisted lane changes instead finish with Lane line crossed | Signal tone (the treatment marks cancellation) | cancel chime, all-clear, "exit lane set" tone | `vehicle/signal_tone` |
 | The compressor filling the air tanks before the truck can move | Air building | air pressurize, tank fill | `vehicle/air_pressurize` |
 | The short sharp pop when the tanks reach full and the compressor cuts out | Air dryer purge | dryer pop, compressor cutout | `vehicle/air_dryer_purge` |
 | Air pressure fallen too low to brake safely | Low air buzzer | low-pressure alarm, air warning | `vehicle/low_air_buzzer` |

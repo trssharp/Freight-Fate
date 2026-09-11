@@ -90,6 +90,8 @@ pub struct SayEvent {
     pub key: Option<String>,
     pub force: bool,
     pub category: Option<SpeechCategory>,
+    /// Return a projected completion receipt for a keyed warning.
+    pub receipt: bool,
     /// A zero-argument "is this line still true?" consulted if the line is
     /// cut mid-sentence and offered a rescue.
     pub valid: Option<Valid>,
@@ -137,6 +139,11 @@ impl SayEvent {
 
     pub fn category(mut self, category: SpeechCategory) -> Self {
         self.category = Some(category);
+        self
+    }
+
+    pub fn receipt(mut self) -> Self {
+        self.receipt = true;
         self
     }
 
@@ -422,6 +429,7 @@ impl GameContext {
         // grep the requeues, read each one, ask whether it was still true.
         transcript!("[pacer] cut line requeued: {}", text);
         self.event_pacer.note_queued(&text, priority, None, None);
+        self.event_pacer.resume_delivery(&text);
         if self.settings.sapi_events {
             self.speech.say_event(&text, false);
         } else {
@@ -562,6 +570,7 @@ impl GameContext {
             key,
             force,
             category,
+            receipt,
             valid,
         } = opts;
         let key = key.as_deref();
@@ -600,6 +609,11 @@ impl GameContext {
                 self.engage_earcon_duck();
             }
             self.event_pacer.note_silenced(&text, key);
+            if receipt {
+                if let Some(key) = key {
+                    self.event_pacer.complete_delivery(key, &text);
+                }
+            }
             transcript!(
                 "[ladder] {} silenced: {}",
                 self.settings.driving_speech,
@@ -686,6 +700,11 @@ impl GameContext {
                     .note_queued(&text, priority, category, valid);
             }
             self.speech.say(&text, false);
+        }
+        if receipt {
+            if let Some(key) = key {
+                self.event_pacer.track_delivery(key, &text);
+            }
         }
         self.engage_speech_duck();
         self.log_mostly_heard_cut();
@@ -855,6 +874,17 @@ impl GameContext {
     /// the mix already trusts rather than inventing a second one.
     pub fn event_voice_busy(&mut self) -> bool {
         self.event_pacer.busy()
+    }
+
+    pub fn event_delivery_status(
+        &mut self,
+        key: &str,
+    ) -> Option<ff_core::speech_pacing::DeliveryStatus> {
+        self.event_pacer.delivery_status(key)
+    }
+
+    pub fn event_delivery_pending(&mut self) -> bool {
+        self.event_pacer.delivery_pending()
     }
 
     pub fn stop_event_speech(&mut self) {

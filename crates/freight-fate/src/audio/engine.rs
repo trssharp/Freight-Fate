@@ -410,7 +410,14 @@ impl Audio for AudioEngine {
 
     fn play_if_idle(&mut self, key: &str, volume: f64, pan: f64) {
         let key = self.route_voice_key(key);
+        self.hold_cue(&key);
         self.backend.play_if_idle(&key, volume, pan);
+    }
+
+    fn update_cue(&mut self, key: &str, volume: f64, pan: f64) {
+        let key = self.route_voice_key(key);
+        self.hold_cue(&key);
+        self.backend.update_cue(&key, volume, pan);
     }
 
     fn play_with(&mut self, key: &str, volume: f64, pan: f64) {
@@ -621,6 +628,7 @@ impl Audio for AudioEngine {
     /// Drop the latch on `name` now, having ended the cue deliberately.
     fn release_cue(&mut self, name: &str) {
         self.cue_holds.remove(name);
+        self.backend.stop_cue(name);
     }
 
     /// `play_start_sound` true (a deliberate ignition) plays the ignition
@@ -670,7 +678,14 @@ impl Audio for AudioEngine {
             for left in self.cue_holds.values_mut() {
                 *left -= dt;
             }
-            self.cue_holds.retain(|_name, left| *left > 0.0);
+            self.cue_holds.retain(|name, left| {
+                if *left <= 0.0 {
+                    self.backend.stop_cue(name);
+                    false
+                } else {
+                    true
+                }
+            });
         }
     }
 
@@ -729,6 +744,9 @@ impl Audio for AudioEngine {
 
     fn stop_world(&mut self) {
         self.engine_stop_with(false);
+        for (key, _) in self.cue_holds.drain() {
+            self.backend.stop_cue(&key);
+        }
         // A pause or an arrival cuts the alert now, without the watchdog's
         // fraction of a second of tone over the top of the menu.
         self.release_alert_with(200);

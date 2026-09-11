@@ -2,10 +2,10 @@
 //! liquid surge terms, and the stopping-distance estimate built on them.
 
 use super::{
-    TruckState, AIR_DENSITY, DRIVE_AXLE_LOAD_FRACTION, EMERGENCY_BRAKE_MULT, G, JAKE_LOCK_MARGIN,
-    JAKE_RPM_FLOOR, JAKE_STAGES, LAUNCH_TRACTION_FULL_GRADE, LAUNCH_TRACTION_LOW_SPEED_MPH,
-    LAUNCH_TRACTION_ROLLING_G, LAUNCH_TRACTION_START_G, MIN_STOPPING_DECEL_MPS2,
-    REFERENCE_CARGO_KG, SURGE_EXCUSE_BRAKE, SURGE_EXCUSE_FORCE_N,
+    BrakeApplication, TruckState, AIR_DENSITY, DRIVE_AXLE_LOAD_FRACTION, EMERGENCY_BRAKE_MULT, G,
+    JAKE_LOCK_MARGIN, JAKE_RPM_FLOOR, JAKE_STAGES, LAUNCH_TRACTION_FULL_GRADE,
+    LAUNCH_TRACTION_LOW_SPEED_MPH, LAUNCH_TRACTION_ROLLING_G, LAUNCH_TRACTION_START_G,
+    MIN_STOPPING_DECEL_MPS2, REFERENCE_CARGO_KG, SURGE_EXCUSE_BRAKE, SURGE_EXCUSE_FORCE_N,
 };
 use crate::sim::surge::lateral_accel_mps2;
 
@@ -122,6 +122,29 @@ impl TruckState {
         (1.0 - (self.brake_temp_c - fade_temp) / 300.0).max(0.20)
     }
 
+    /// Magnitude of the foundation-brake force for a chosen application.
+    pub fn foundation_brake_force(&self, application: BrakeApplication) -> f64 {
+        let (application, boost) = match application {
+            BrakeApplication::Service(pedal) => (pedal.clamp(0.0, 1.0), 1.0),
+            BrakeApplication::Emergency => (1.0, EMERGENCY_BRAKE_MULT),
+        };
+        let s = &self.specs;
+        let effort = G
+            * s.max_brake_decel_g
+            * application
+            * boost
+            * self.brake_fade_factor()
+            * self.brake_wear_factor();
+        // Tire friction scales with the weight on the tires and weather grip.
+        // The foundation brakes have a fixed force ceiling sized for the rated
+        // gross. Above that rating, the same hardware stops the extra mass more
+        // slowly. This is also the live force path, so an estimate cannot assume
+        // a stronger or weaker application than the truck receives.
+        let friction = self.gross_mass_kg() * effort * self.effective_grip();
+        let capacity = s.mass_kg * effort;
+        friction.min(capacity)
+    }
+
     /// Magnitude of the foundation-brake force biting the drums right now.
     ///
     /// This is the force that heats and wears the shoes; the jake is kept
@@ -130,46 +153,27 @@ impl TruckState {
         if self.velocity_mps.abs() <= 0.01 {
             return 0.0;
         }
-        let s = &self.specs;
         let holding = self.air_brakes_holding();
         let application = if self.emergency_brake || holding {
-            1.0
+            BrakeApplication::Emergency
         } else {
-            self.brake
+            BrakeApplication::Service(self.brake)
         };
-        let boost = if self.emergency_brake || holding {
-            EMERGENCY_BRAKE_MULT
-        } else {
-            1.0
-        };
-        let effort = G
-            * s.max_brake_decel_g
-            * application
-            * boost
-            * self.brake_fade_factor()
-            * self.brake_wear_factor();
-        // Tire friction scales with the weight on the tires (and weather grip);
-        // the foundation brakes have a fixed force ceiling sized for the rated
-        // gross (``specs.mass_kg``). A load at or below the rated weight reaches
-        // the friction-limited deceleration (unchanged behavior), but a heavier
-        // load is brake-capacity limited -- the brakes cannot generate enough
-        // force for its mass, so it decelerates more gently and stops longer.
-        let friction = self.gross_mass_kg() * effort * self.effective_grip();
-        let capacity = s.mass_kg * effort;
-        friction.min(capacity)
+        self.foundation_brake_force(application)
+    }
+
+    /// Foundation-brake deceleration for a chosen application.
+    pub fn braking_decel_mps2(&self, application: BrakeApplication) -> f64 {
+        self.foundation_brake_force(application) / self.gross_mass_kg().max(1.0)
     }
 
     /// Deceleration a full service-brake application delivers right now.
     ///
-    /// Fade, wear, load, and grip included -- what an emergency-braking
+    /// Fade, wear, load, and grip included -- what a service-braking
     /// budget must use. The spec-sheet number overpromises exactly when it
     /// matters most: hot or worn brakes on a loaded rig.
     pub fn full_service_decel_mps2(&self) -> f64 {
-        let s = &self.specs;
-        let effort = G * s.max_brake_decel_g * self.brake_fade_factor() * self.brake_wear_factor();
-        let friction = self.gross_mass_kg() * effort * self.effective_grip();
-        let capacity = s.mass_kg * effort;
-        friction.min(capacity) / self.gross_mass_kg().max(1.0)
+        self.braking_decel_mps2(BrakeApplication::Service(1.0))
     }
 
     // -- liquid surge -------------------------------------------------------------
@@ -238,11 +242,12 @@ impl TruckState {
     /// `reaction_s` adds the ground covered before the pedal moves, for
     /// callers budgeting a driver's response as well as the truck's.
     /// `speed_mps` None means the truck's current speed.
-    pub fn stopping_distance_m(
+    pub fn stopping_distance_for_m(
         &self,
         speed_mps: Option<f64>,
         reaction_s: f64,
         include_surge: bool,
+        application: BrakeApplication,
     ) -> f64 {
         let v = match speed_mps {
             None => self.velocity_mps,
@@ -253,7 +258,7 @@ impl TruckState {
             return 0.0;
         }
         // Uphill helps and downhill hurts, at g times the grade.
-        let mut decel = self.full_service_decel_mps2() + G * self.grade;
+        let mut decel = self.braking_decel_mps2(application) + G * self.grade;
         if include_surge {
             decel -= self.surge_decel_penalty_mps2();
         }
@@ -263,6 +268,40 @@ impl TruckState {
         // by zero. The descent and runaway systems own that case.
         decel = decel.max(MIN_STOPPING_DECEL_MPS2);
         v * reaction_s.max(0.0) + (v * v) / (2.0 * decel)
+    }
+
+    /// Full-service stopping distance retained for existing planning callers.
+    pub fn stopping_distance_m(
+        &self,
+        speed_mps: Option<f64>,
+        reaction_s: f64,
+        include_surge: bool,
+    ) -> f64 {
+        self.stopping_distance_for_m(
+            speed_mps,
+            reaction_s,
+            include_surge,
+            BrakeApplication::Service(1.0),
+        )
+    }
+
+    /// Braking time from one speed to another for a chosen application.
+    pub fn braking_time_for_s(
+        &self,
+        speed_mps: f64,
+        target_mps: f64,
+        include_surge: bool,
+        application: BrakeApplication,
+    ) -> f64 {
+        let speed_delta = (speed_mps.abs() - target_mps.abs()).max(0.0);
+        if speed_delta <= 0.0 {
+            return 0.0;
+        }
+        let mut decel = self.braking_decel_mps2(application) + G * self.grade;
+        if include_surge {
+            decel -= self.surge_decel_penalty_mps2();
+        }
+        speed_delta / decel.max(MIN_STOPPING_DECEL_MPS2)
     }
 
     pub fn stopping_distance_mi(

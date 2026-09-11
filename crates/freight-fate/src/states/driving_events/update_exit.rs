@@ -534,6 +534,7 @@ impl DrivingState {
     ) {
         self.ramp_terminal_miss_count += 1;
         self.trip.game_minutes += RAMP_TERMINAL_MISS_LOOP_MIN;
+        self.charge_scripted_loop(ctx, RAMP_TERMINAL_MISS_LOOP_MIN);
         self.ramp_mi = Some(self.destination_terminal_retry_mi());
         // The say-once latch must never swallow the reposition: when the
         // missed-exit loop let it, a second miss stranded the trip with

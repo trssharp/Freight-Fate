@@ -9,6 +9,7 @@ use crate::app::GameContext;
 use crate::impl_state_for_menu;
 use crate::states::base::{Menu, MenuCore, MenuItem};
 use crate::states::city::profile;
+use crate::states::driving_damage::{maintenance_status_line, MaintenanceComponent};
 
 /// Reviewable terminal status for the active tractor.
 pub struct TruckStatusState {
@@ -86,6 +87,30 @@ impl TruckStatusState {
             lines
         };
 
+        let tire_wear = p.tire_wear_pct();
+        let tire_line = if tire_wear >= ff_core::sim::vehicle::COMPONENT_SERVICE_WARNING_PCT {
+            format!(
+                "{} Compound: {compound}.",
+                maintenance_status_line(MaintenanceComponent::Tires, tire_wear)
+            )
+        } else {
+            format!(
+                "Tire wear: {} percent, {compound} compound.",
+                fmt_f(tire_wear, 0)
+            )
+        };
+        let brake_wear = p.brake_wear_pct();
+        let brake_line = if brake_wear >= ff_core::sim::vehicle::COMPONENT_SERVICE_WARNING_PCT {
+            maintenance_status_line(MaintenanceComponent::Brakes, brake_wear)
+        } else {
+            format!("Brake wear: {} percent.", fmt_f(brake_wear, 0))
+        };
+        let engine_wear = p.engine_wear_pct();
+        let engine_line = if engine_wear >= ff_core::sim::vehicle::COMPONENT_SERVICE_WARNING_PCT {
+            maintenance_status_line(MaintenanceComponent::Engine, engine_wear)
+        } else {
+            format!("Engine wear: {} percent.", fmt_f(engine_wear, 0))
+        };
         lines.extend([
             format!(
                 "Fuel: {} percent, {} gallons of {}.",
@@ -97,12 +122,9 @@ impl TruckStatusState {
                 "Tractor condition: {condition}, {} percent damage.",
                 fmt_f(damage, 0)
             ),
-            format!(
-                "Tire wear: {} percent, {compound} compound.",
-                fmt_f(p.tire_wear_pct(), 0)
-            ),
-            format!("Brake wear: {} percent.", fmt_f(p.brake_wear_pct(), 0)),
-            format!("Engine wear: {} percent.", fmt_f(p.engine_wear_pct(), 0)),
+            tire_line,
+            brake_line,
+            engine_line,
             format!("Road grime: {} percent.", fmt_f(p.road_grime_pct(), 0)),
             chains,
         ]);

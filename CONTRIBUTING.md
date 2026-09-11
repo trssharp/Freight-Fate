@@ -4,26 +4,24 @@ Thanks for helping make Freight Fate better. This project is audio-first and
 accessibility-first, so contributions should keep blind and low-vision players
 at the center of every change.
 
-## What Is Being Accepted Right Now
+## Contributions by release line
 
-Freight Fate 1.9 is in development on its own branch, and preview snapshots of
-it will start appearing before long. Until they do, the 1.8 line is in
-maintenance: pull requests are being accepted only for major and minor bug
-fixes, not new features.
+Freight Fate 1.9 is in development on `feat/career-1.9`, with preview
+snapshots available for testing. The 1.8 line is in maintenance and accepts
+bug fixes only.
 
-Feature work is still welcome in principle -- open an issue describing it, and
-it can be picked up for 1.9 or later. This is about where the code lands, not
-about the idea. Feature pull requests are welcome again once 1.9 preview
-snapshots begin.
+For a new feature, open an issue first so maintainers can agree on its scope
+and release line. Check [the roadmap](ROADMAP.md) for the work planned for
+each release.
 
-## Branch Targets
+## Branch targets
 
 - Open feature, fix, data, and documentation pull requests against `dev`.
 - Use `main` only for stable release, hotfix, or release-sync work.
 - If your PR targets the wrong branch, a maintainer may retarget it before
   review.
 
-## Before Opening a Pull Request
+## Before opening a pull request
 
 - Keep practical code files at or below 1000 lines. Split large code or test
   files into cohesive modules instead of adding more to an oversized file.
@@ -41,10 +39,14 @@ snapshots begin.
   `uv run python -m compileall src tests tools`.
 - For user-facing changes, include how you checked the spoken text, keyboard
   flow, or other accessibility impact.
+- Include a sandboxed agent-server session when live gameplay testing is
+  authorized. See [agent-server testing](CLAUDE.md#rust----gameplay-and-what-ci-gates)
+  for the controls and evidence to record. Keep automated tests, agent play,
+  and the owner's listening pass distinct in the results.
 - For player-facing changes, add a `CHANGELOG.md` entry (see Changelog
-  Entries below); CI enforces this.
+  entries below); CI enforces this.
 
-## Accessibility Expectations
+## Accessibility expectations
 
 - Every gameplay path must remain usable by keyboard and screen reader.
 - Speech text should be clear, player-facing, and free of maintainer or CI
@@ -53,7 +55,7 @@ snapshots begin.
 - If you add or change menu items, driving prompts, warnings, settings, or
   status text, test the spoken result.
 
-## World And Route Data
+## World and route data
 
 World data changes are welcome. Please keep them deterministic and offline:
 
@@ -75,7 +77,7 @@ World data changes are welcome. Please keep them deterministic and offline:
   uv run pytest tests/test_index_world.py tests/test_baked_data.py
   ```
 
-## Changelog Entries
+## Changelog entries
 
 Nightly and stable release notes are built only from the curated entries in
 `CHANGELOG.md` -- never from commit subjects -- so a player-facing change
@@ -93,7 +95,7 @@ release tooling) without adding one.
   tooling) can skip the entry by putting `[skip changelog]` or
   `changelog: none` in every commit message of the pull request.
 
-## Pull Request Notes
+## Pull request notes
 
 In your PR body, briefly say:
 

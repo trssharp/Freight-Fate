@@ -226,44 +226,10 @@ impl DrivingState {
 
     /// `_hos_route_context()`.
     pub fn hos_route_context(&self, ctx: &GameContext) -> String {
-        let mode = &ctx.settings.hos_mode;
-        let Some(limit) = hos_of(ctx).next_limit(mode) else {
+        let Some(advice) = self.hos_stop_advice(ctx) else {
             return String::new();
         };
-        if limit.remaining_min <= 0.0 {
-            return "Next legal action is a compliant break or 10-hour reset.".to_string();
-        }
-        let legal_miles = self.legal_miles_for_hos(limit.remaining_min);
-        let next_stop = self.trip.upcoming_stop((legal_miles + 5.0).max(5.0));
-        let action = if limit.kind == "break" {
-            "break"
-        } else {
-            "sleep"
-        };
-        let Some(next_stop) = next_stop else {
-            return format!(
-                "No route stop before the next {action} limit, due in {:.1} hours. Stopped, you \
-                 can sleep on the shoulder, with poor rest and a possible parking ticket.",
-                limit.remaining_min / 60.0
-            );
-        };
-        let ahead = 0.0f64.max(next_stop.at_mi - self.trip.position_mi);
-        let verdict = if ahead <= legal_miles {
-            "before"
-        } else {
-            "after"
-        };
-        let mut stop_text = format!(
-            "Next legal stop: {}{} in {}",
-            self.trip.planned_prefix(next_stop),
-            next_stop.spoken_name(),
-            ctx.settings.distance_text(ahead, false)
-        );
-        let parking_text = next_stop.parking_text();
-        if !parking_text.is_empty() {
-            stop_text.push_str(&format!(", {parking_text}"));
-        }
-        format!("{stop_text}, {verdict} the next {action} limit.")
+        advice.summary(&ctx.settings.distance_text(advice.ahead_mi, false))
     }
 
     /// `_legal_miles_for_hos(remaining_min)`.

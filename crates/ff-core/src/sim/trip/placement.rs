@@ -67,14 +67,15 @@ fn surface_tail_text(miles: f64, imperial: bool) -> String {
 
 impl Trip {
     pub fn place_stops(&self) -> Vec<RoadStop> {
+        Self::route_stops(&self.route, self.bobtail)
+    }
+
+    /// The same direction and access filtering for dispatch and active trips.
+    pub fn route_stops(route: &crate::data::world_models::Route, bobtail: bool) -> Vec<RoadStop> {
         let mut out = Vec::new();
-        for (i, (start, leg)) in self
-            .leg_starts
-            .iter()
-            .zip(self.route.legs.iter())
-            .enumerate()
-        {
-            let forward = self.route.cities[i] == leg.a;
+        let mut start = 0.0;
+        for (i, leg) in route.legs.iter().enumerate() {
+            let forward = route.cities[i] == leg.a;
             let mut leg_stops: Vec<_> = leg.stops.iter().collect();
             leg_stops.sort_by(|a, b| {
                 stop_offset_for_direction(a.at_mi, leg.miles, forward)
@@ -82,7 +83,10 @@ impl Trip {
                     .expect("finite mileposts")
             });
             for stop in leg_stops {
-                if !self.stop_is_real(stop, forward) {
+                if !(stop.curated()
+                    && stop.applies_to_direction(forward)
+                    && stop.accessible_to(bobtail))
+                {
                     continue;
                 }
                 let offset = stop_offset_for_direction(stop.at_mi, leg.miles, forward);
@@ -100,6 +104,7 @@ impl Trip {
                     vehicle_access: stop.vehicle_access.clone(),
                 });
             }
+            start += leg.miles;
         }
         Self::merge_shared_city_stops(out)
     }

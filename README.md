@@ -25,7 +25,7 @@ visual display mirrors all speech for sighted players and helpers.
   lumber/paper facilities, cross-docks, and company yards.
 - **Real driving** — a tuned Class 8 truck simulation: 450 horsepower,
   ten gears (manual with clutch, or automatic), air-brake pressure,
-  parking brakes, engine braking, grades, stalls, brake fade, and honest
+  parking brakes, engine braking, grades, stalls, brake fade, and
   fuel economy.
 - **Business progression** — choose a grounded company-driver carrier with
   assigned equipment plus modest wage and dispatch tradeoffs, or start as a
@@ -73,7 +73,7 @@ visual display mirrors all speech for sighted players and helpers.
   route, resting, or delivering, with the broad route and cargo. Only general
   game activity is shared — never your save files or personal details — and it
   is on by default but easily switched off under Discord presence on the
-  Online menu, on the main menu. The game starts and runs perfectly whether or
+  Online menu, on the main menu. The game starts and runs whether or
   not Discord is open.
 
 ## Download and play
@@ -406,13 +406,11 @@ uv run python tools/index_world.py --check  # verify in sync (CI + pre-commit do
 A pre-commit hook and a test both fail if `world_data/` drifts from the source,
 so commit the regenerated `world_data/` files alongside your source edits.
 
-Both trees are sharded by the state a leg starts in — `legs/TX.json`,
-`legs/CA.json` — because a single file had reached 60 MB, past GitHub's warning
-line and heading for its 100 MB limit. Tools never touch the shards directly:
+Both trees group legs by their starting state in files such as `legs/TX.json`
+and `legs/CA.json`. Tools do not edit these files directly:
 `tools/world_source.py` gives them `load_world()`, which returns the whole world
 as one dict, and `save_world(data)`, which writes only the shards that actually
-changed. So a one-leg edit is a small reviewable diff, and the code that edits
-world data is unchanged from when it was one file.
+changed. A one-leg edit therefore changes only its state's file.
 
 ### Playtesting
 

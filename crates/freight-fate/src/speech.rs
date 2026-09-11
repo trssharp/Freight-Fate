@@ -30,14 +30,14 @@
 //!   (used by the headless test suite and CI), and forced to a specific backend
 //!   with `FREIGHT_FATE_SPEECH_BACKEND=<name>` (for example `SAPI`).
 //!
-//! # Threading: everything Prism runs on ONE thread -- the speech worker
+//! # Threading: each Prism context stays on its speech worker
 //!
-//! Two Prism [`prism::Context`]s probing backends from different threads crash
-//! inside Prism (found while porting: the registry's runtime checks are not
-//! re-entrant across threads). So there is exactly one context per process,
-//! and every call on it -- construction, the 3 s health poll, speaking,
-//! configuring, shutdown -- happens on one thread. [`Speech`] is deliberately
-//! not `Send` or `Sync`.
+//! Every call on a Prism [`prism::Context`] -- construction, health checks,
+//! speaking, configuring and shutdown -- happens on the worker that created
+//! it. [`Speech`] is deliberately not `Send` or `Sync`. Recovery may leave an
+//! old generation inside an in-flight native call while a replacement uses
+//! private backend instances. After that call returns, the old worker stops
+//! dispatching operations and retains its native objects until process exit.
 //!
 //! That one thread used to be the game loop's, which made every spoken line
 //! a synchronous screen-reader/SAPI call the game waited on -- and the one

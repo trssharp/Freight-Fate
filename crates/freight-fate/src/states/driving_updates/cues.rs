@@ -302,12 +302,13 @@ impl DrivingState {
     /// was the one thing on the road a blind driver could not hear (owner,
     /// 2026-08-15).
     ///
-    /// The beat closes up as the exit-lane position fills, then stops dead
-    /// and the signal cancels the instant the position is good -- a turn
-    /// signal clicking off as the wheel comes back. The quickening says
-    /// "nearly", the click says "set", and neither is a sentence.
+    /// The recording stops and the signal cancels the instant the exit-lane
+    /// position is good, like a turn signal as the wheel comes back.
     pub fn update_steering_lane_cue(&mut self, ctx: &mut GameContext, dt: f64) {
         if !self.steering_lane_cue_armed(ctx, dt) {
+            if self.lane_change_target.is_none() {
+                ctx.audio.release_cue("vehicle/turn_signal");
+            }
             if !self.steer_cue_active {
                 return;
             }
@@ -326,6 +327,9 @@ impl DrivingState {
             return;
         }
         ctx.audio.hold_cue(STEER_CUE_HOLD);
+        let volume = 1.0f64.min(0.5 * self.cue_loudness(ctx));
+        let pan = self.lane.offset.clamp(-1.0, 1.0);
+        ctx.audio.update_cue("vehicle/turn_signal", volume, pan);
         if !self.steer_cue_active {
             self.steer_cue_active = true;
             self.steer_cue_timer = 0.0; // first tock lands on the frame the move starts
@@ -336,8 +340,6 @@ impl DrivingState {
         }
         let span = STEER_CUE_TOCK_S - STEER_CUE_TOCK_FAST_S;
         self.steer_cue_timer = STEER_CUE_TOCK_S - span * self.exit_alignment_progress();
-        let volume = 1.0f64.min(0.5 * self.cue_loudness(ctx));
-        let pan = self.lane.offset.clamp(-1.0, 1.0);
         ctx.audio.play_if_idle("vehicle/turn_signal", volume, pan);
     }
 

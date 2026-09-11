@@ -1,11 +1,10 @@
 //! The registry surface the game's backend picker is built on, against the
 //! real library.
 //!
-//! Everything here skips -- passes without asserting -- when Prism is not
-//! loadable, so CI without the library stays green. Nothing speaks except
-//! `a_usable_backend_takes_output_and_stop`, which additionally skips when
-//! `FREIGHT_FATE_NO_SPEECH` is set (the headless convention shared with the
-//! Python suite) or when no backend on the machine is usable.
+//! Default checks skip when Prism is not loadable. The default output check
+//! also skips when `FREIGHT_FATE_NO_SPEECH` is set or no backend is usable.
+//! The ignored Windows voice check is explicit: it speaks through SAPI and
+//! OneCore and fails if either cannot initialize or deliver output.
 
 use std::ops::Deref;
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -236,5 +235,38 @@ fn a_usable_backend_takes_output_and_stop() {
         backend
             .stop()
             .unwrap_or_else(|err| panic!("{} refused to stop: {err}", backend.name()));
+    }
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "requires normal Windows speech access and speaks through both software voices"]
+fn sapi_and_onecore_each_configure_output_and_stop() {
+    let context = context().expect("Prism must load for the explicit Windows voice check");
+    for (id, name) in [
+        (backend_id::SAPI, "SAPI"),
+        (backend_id::ONE_CORE, "OneCore"),
+    ] {
+        assert_eq!(context.id_by_name(name), Some(id), "{name} is registered");
+        let mut backend = context
+            .acquire(id)
+            .unwrap_or_else(|err| panic!("{name} failed to initialize: {err}"));
+        let count = backend
+            .voices_count()
+            .unwrap_or_else(|err| panic!("{name} did not list voices: {err}"));
+        assert!(count > 0, "{name} listed no voices");
+        let voice = backend
+            .voice_name(0)
+            .unwrap_or_else(|err| panic!("{name} voice zero had no name: {err}"));
+        assert!(!voice.is_empty(), "{name} voice zero had an empty name");
+        backend
+            .set_voice(0)
+            .unwrap_or_else(|err| panic!("{name} did not accept voice zero: {err}"));
+        backend
+            .output(&format!("Freight Fate {name} speech check."), true)
+            .unwrap_or_else(|err| panic!("{name} refused output: {err}"));
+        backend
+            .stop()
+            .unwrap_or_else(|err| panic!("{name} refused stop: {err}"));
     }
 }

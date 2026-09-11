@@ -12,6 +12,7 @@
 use ff_core::models::loyalty::loyalty_earnings_text;
 use ff_core::pyfmt::{fmt_f, fmt_grouped};
 use ff_core::sim::trip_models::RoadStop;
+use ff_core::sim::vehicle::KG_PER_LB;
 
 use crate::app::GameContext;
 use crate::states::base::Menu;
@@ -29,6 +30,12 @@ pub trait FuelPump: Menu {
     fn fueled_here(&self) -> bool;
     fn set_fueled_here(&mut self, fueled: bool);
 
+    fn weight_margin_text(label: &str, margin_kg: f64) -> String {
+        let pounds = fmt_grouped((margin_kg.abs() / KG_PER_LB).round(), 0);
+        let side = if margin_kg >= 0.0 { "under" } else { "over" };
+        format!("{label}: {pounds} pounds {side} the gross-weight limit")
+    }
+
     /// The fuel row, given the drive the caller already holds.
     ///
     /// Takes the drive rather than reaching for it, exactly as
@@ -41,12 +48,21 @@ pub trait FuelPump: Menu {
         if need < 1.0 {
             return "Fuel: tank is full".to_string();
         }
+        let margin = Self::weight_margin_text(
+            "Full tank",
+            d.trip
+                .truck
+                .gross_weight_margin_after_fuel_kg(d.trip.truck.specs.fuel_tank_gal),
+        );
         if !player_pays_operating_costs(&profile_of(ctx).business_status) {
-            return format!("Refuel {} gallons on the carrier fuel card", fmt_f(need, 0));
+            return format!(
+                "Refuel {} gallons on the carrier fuel card. {margin}",
+                fmt_f(need, 0)
+            );
         }
         let cost = ctx.economy.fuel_cost(d.trip.current_region(), need) + 35.0;
         format!(
-            "Refuel {} gallons for {} dollars",
+            "Refuel {} gallons for {} dollars. {margin}",
             fmt_f(need, 0),
             fmt_grouped(cost, 0)
         )
@@ -83,11 +99,13 @@ pub trait FuelPump: Menu {
             }
             profile_mut_of(ctx).money -= cost;
         }
-        self.drive().clone().with(ctx, |d, ctx| {
+        let margin_kg = self.drive().clone().with(ctx, |d, ctx| {
             d.trip.truck.refuel(Some(need));
             advance_rest_clock(d, ctx, FUEL_STOP_MIN, None, "");
             hos_mut_of(ctx).on_duty(FUEL_STOP_MIN);
+            d.trip.truck.gross_weight_margin_kg()
         });
+        let margin = Self::weight_margin_text("Gross weight", margin_kg.unwrap_or(0.0));
         self.set_fueled_here(true);
         self.save_here(ctx, true);
         ctx.audio.play("vehicle/fuel_pump");
@@ -104,7 +122,7 @@ pub trait FuelPump: Menu {
             // the carrier fuel card covers road fuel for company drivers
             ctx.say(&format!(
                 "Refueled {} gallons on the carrier fuel card. Fueling took {} minutes. \
-                 {loyalty_text}",
+                 {margin}. {loyalty_text}",
                 fmt_f(need, 0),
                 fmt_f(FUEL_STOP_MIN, 0)
             ));
@@ -112,7 +130,7 @@ pub trait FuelPump: Menu {
             let money = profile_of(ctx).money;
             ctx.say(&format!(
                 "Refueled {} gallons for {} dollars. You have {} dollars. Fueling took {} \
-                 minutes. {loyalty_text}",
+                 minutes. {margin}. {loyalty_text}",
                 fmt_f(need, 0),
                 fmt_grouped(cost, 0),
                 fmt_grouped(money, 0),
