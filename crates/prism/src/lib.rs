@@ -23,6 +23,9 @@ use std::sync::{Mutex, OnceLock};
 
 use prism_sys::Api;
 
+mod initialization;
+use initialization::finish_backend_initialization;
+
 pub use prism_sys::{backend_id, PrismBackendId};
 
 /// Errors surfaced by the safe wrapper.
@@ -66,6 +69,10 @@ fn check(api: &Api, code: i32) -> Result<(), Error> {
     if code == prism_sys::PRISM_OK {
         return Ok(());
     }
+    Err(native_error(api, code))
+}
+
+fn native_error(api: &Api, code: i32) -> Error {
     // SAFETY: `error_string` returns a static NUL-terminated string owned by
     // the library, valid for any code value.
     let message = unsafe {
@@ -76,7 +83,7 @@ fn check(api: &Api, code: i32) -> Result<(), Error> {
             CStr::from_ptr(text).to_string_lossy().into_owned()
         }
     };
-    Err(Error::Native { code, message })
+    Error::Native { code, message }
 }
 
 /// Read a `const char *` returned by Prism into an owned `String`.
@@ -358,13 +365,14 @@ impl Context {
             return Err(Error::NoBackend);
         }
         let backend = Backend { api: self.api, raw };
-        // Some backends (SAPI) need an explicit initialise before the first
-        // speak; those that do not report an "already initialised" error,
-        // which is not fatal.
-        if let Err(err) = check(self.api, unsafe { (self.api.backend_initialize)(raw) }) {
-            log::debug!("prism backend initialize returned {err}");
-        }
-        Ok(backend)
+        let name = backend.name();
+        // SAFETY: the registry returned this non-null handle, `backend` owns
+        // it, and the context that created it remains alive for the call.
+        let code = unsafe { (self.api.backend_initialize)(raw) };
+        finish_backend_initialization(backend, code, |code| native_error(self.api, code))
+            .inspect_err(|err| {
+                log::debug!("prism backend {name} initialization failed: {err}");
+            })
     }
 }
 

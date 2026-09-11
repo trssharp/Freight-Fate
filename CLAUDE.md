@@ -200,6 +200,10 @@ cleanup](https://doc.rust-lang.org/book/ch21-03-graceful-shutdown-and-cleanup.ht
   but could not hear. Keep this check separate from unit tests and the
   adversarial battery. Recorded speech does not establish how speech sounds
   to the owner; that still needs the owner's listening pass.
+  On Windows, native speech checks need access to the desktop's speech
+  services. Codex's restricted shell can block initialization even when the
+  same check passes with normal Windows access. Use the authorized elevated
+  tool path for that verification; keep the game's save sandbox enabled.
 - Rust CI (`.github/workflows/rust.yml`) is **Windows only**, deliberately:
   SDL2 is vendored for `windows-x86_64` alone. macOS and Linux build from
   source (BASS is fetched for both, Prism is vendored, and SDL2 is compiled

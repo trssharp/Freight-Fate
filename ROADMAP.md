@@ -131,10 +131,19 @@ its status or release decision.
 - [x] HOS advice selects a compatible reachable rest stop and warns before
       the last usable exit. Interrupted warnings retry after pause or resume;
       completed warnings stay suppressed until the relevant reset.
-- [ ] Complete audible gameplay verification. The September 11 agent-server
-      session reached the real menus and pickup approach, but Prism reported
-      "Not initialized" and speech delivery failed. Menu and automated checks
-      passed; driving by ear and the owner's listening pass remain unverified.
+- [x] Skip speech voices that fail to initialize and retain spoken agent
+      readouts when sound output is busy. Native SAPI and OneCore checks pass.
+      A live session with normal Windows access used NVDA and SAPI, completed
+      a short drive and stop, and returned status and HOS readouts without
+      speech errors. The earlier initialization failure reproduced in the
+      restricted shell without the agent server.
+- [ ] Complete the owner's listening pass and longer gameplay verification
+      of wear thresholds and interrupted warnings. Captured live readouts and
+      successful native calls do not establish what the owner heard.
+- [ ] Stabilize the curve-assistance test's empty-road fixture. It clears
+      current vehicles but leaves random traffic replenishment enabled. One
+      full run reported cargo damage; focused and full reruns passed. Disable
+      replenishment in that fixture before treating the road as empty.
 
 ## 1.10 planned -- the working week and home
 

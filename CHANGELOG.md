@@ -1280,6 +1280,13 @@
 
 ### Fixed
 
+- **A voice that cannot start no longer prevents speech fallback.** The game
+  skips failed voices and tries the next available one instead of selecting
+  a voice that cannot speak.
+
+- **Agent playtests retain spoken readouts during busy sound output.** Repeated
+  sound cues no longer crowd later speech out of the agent's response.
+
 - **Bobtail trips to find work use your driving hours.** Choosing the trip
   yourself no longer records commercial repositioning as off duty. Stops
   during that travel count as on-duty time.
