@@ -1267,6 +1267,10 @@
 
 ### Fixed
 
+- **Windows source builds no longer request unavailable Rust tools.** The
+  build uses the required compiler components even when your Rust installation
+  is set to download every optional tool.
+
 - **The manual gives consistent speed-warning, police, and backup instructions.**
   It clarifies the U key, speeding charges, and where Linux saves are stored.
   Driving assistance now has shorter sections for finding each control.
