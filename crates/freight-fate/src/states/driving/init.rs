@@ -525,6 +525,8 @@ impl DrivingState {
             keeper_zone_limit: None,
             keeper_ease_said: None,
             keeper_ease_target: None,
+            keeper_held_mph: None,
+            keeper_held_reason: String::new(),
             keeper_snub: 0.0,
             keeper_droop_s: 0.0,
             keeper_droop_said: false,

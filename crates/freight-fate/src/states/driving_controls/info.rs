@@ -38,6 +38,20 @@ impl DrivingState {
                 );
             }
         }
+        // A lead vehicle setting the number: the loop publishes what it held
+        // and why, as cruise does, so the readout names the car instead of
+        // answering with a set speed the road is not allowing (a slow car
+        // held 51 through twenty miles of "holding 58", 2026-09-11).
+        if !self.keeper_held_reason.is_empty() {
+            if let Some(live) = self.keeper_held_mph.filter(|live| *live < held - 0.5) {
+                return format!(
+                    "speed keeper holding {} {}, set {}",
+                    ctx.settings.speed_text(live),
+                    self.keeper_held_reason,
+                    ctx.settings.speed_text(held)
+                );
+            }
+        }
         format!("speed keeper holding {}", ctx.settings.speed_text(held))
     }
 

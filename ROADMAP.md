@@ -153,6 +153,17 @@ its status or release decision.
       current vehicles but leaves random traffic replenishment enabled. One
       full run reported cargo damage; focused and full reruns passed. Disable
       replenishment in that fixture before treating the road as empty.
+- [x] The clock key's arrival estimate on the departure streets adds the
+      parked highway run at its route pace, and the speed readout names a
+      lead vehicle that is setting the speed keeper's number (agent drive,
+      Dallas to Sherman with every assist on, 2026-09-11).
+- [ ] The S key names a connector arc's advisory ("The bend here advises
+      40") at a highway-to-highway interchange, but connector arcs are
+      excluded from the curve call, the curve servo and the cargo model by
+      design, so the truck stayed at 70 through it with no cargo at risk.
+      Either drop the connector from that readout or say it is the
+      interchange's number, so the driver is not told about a bend no
+      assist acts on (same drive, I-30 to I-35 at Fort Worth).
 
 ## 1.10 planned -- the working week and home
 

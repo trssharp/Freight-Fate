@@ -1280,6 +1280,18 @@
 
 ### Fixed
 
+- **The clock key counts the whole run while you are still on the streets
+  out of the pickup.** Before the on-ramp it estimated arrival from the two
+  miles of city streets alone, so a 123-mile run read as "arrival in 0.1
+  hours". It now adds the highway at its route pace and judges the
+  on-schedule verdict against the whole run.
+
+- **The speed readout says when a slow car is setting the speed keeper's
+  number.** A car doing 51 ahead of you in a 58 zone kept the truck at 51,
+  and Space answered "speed keeper holding 58" every time. It now says
+  "holding 51 for the traffic ahead, set 58", the same shape adaptive
+  cruise already uses.
+
 - **A long sleeper-berth rest no longer runs your duty window down while you
   sleep.** Seven or more hours in the berth, the long half of an 8 and 2 or
   7 and 3 split, now stops the 14-hour window for as long as you sleep, the

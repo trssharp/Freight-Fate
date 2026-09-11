@@ -102,6 +102,8 @@ impl DrivingState {
         self.keeper_zone_limit = None;
         self.keeper_ease_said = None;
         self.keeper_ease_target = None;
+        self.keeper_held_mph = None;
+        self.keeper_held_reason = String::new();
         self.keeper_snub = 0.0;
         self.keeper_droop_s = 0.0;
         self.keeper_droop_said = false;
