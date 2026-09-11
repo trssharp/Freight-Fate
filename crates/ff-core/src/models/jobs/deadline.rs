@@ -383,9 +383,21 @@ pub fn route_drive_hours_over(
     let Some(route) = route else {
         return 0.0;
     };
+    route_drive_hours_between(route, start_mi, route.miles(), world, ceilings)
+}
+
+/// Estimate one interval without adding travel beyond the chosen stop.
+pub(super) fn route_drive_hours_between(
+    route: &Route,
+    start_mi: f64,
+    end_mi: f64,
+    world: Option<&World>,
+    ceilings: &[CurveBand],
+) -> f64 {
     let route_miles = route.miles();
     let start_mi = start_mi.clamp(0.0, route_miles.max(0.0));
-    if route_miles <= start_mi {
+    let end_mi = end_mi.clamp(start_mi, route_miles.max(start_mi));
+    if end_mi <= start_mi {
         return 0.0;
     }
     let mut hours = 0.0;
@@ -401,14 +413,14 @@ pub fn route_drive_hours_over(
         route.cities.len() >= 2 && route.cities.first() == route.cities.last();
     for (index, (leg_start, leg)) in leg_starts.iter().zip(route.legs.iter()).enumerate() {
         let leg_start = *leg_start;
-        let leg_end = leg_start + leg.miles;
+        let leg_end = (leg_start + leg.miles).min(end_mi);
         let segment_start = start_mi.max(leg_start);
         if segment_start >= leg_end {
             continue;
         }
         let mut offset = segment_start - leg_start;
-        while offset < leg.miles - 1e-6 {
-            let step = DEADLINE_SAMPLE_MI.min(leg.miles - offset);
+        while offset < leg_end - leg_start - 1e-6 {
+            let step = DEADLINE_SAMPLE_MI.min(leg_end - leg_start - offset);
             let global_start = leg_start + offset;
             if global_start + step <= start_mi {
                 offset += step;
