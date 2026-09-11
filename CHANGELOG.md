@@ -7,7 +7,9 @@
 - **Steering and assisted lane changes use the mechanical blinker sound.** The
   automatic position cue and full-assist lane-change signals wait for each
   recording to finish before repeating. Their panning, the I-key lane locator,
-  and center chime are unchanged.
+  and center chime are unchanged. The clicks follow your position while sounding
+  and stop when the move ends or you open a menu. Thanks to Tim (@trssharp)
+  for [the original audio contribution](https://github.com/trssharp/Freight-Fate/commit/d3140964ec376a8ba0d9e5cf14d3f23052b73e60).
 
 - **The engine follows your position within the lane.** With partial or off
   lane keeping, its sound moves continuously left and right with your truck.

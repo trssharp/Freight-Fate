@@ -479,6 +479,11 @@ pub trait Audio {
     fn play_if_idle(&mut self, key: &str, volume: f64, pan: f64) {
         self.play_with(key, volume, pan);
     }
+    /// Refresh a playing cue's position without restarting its recording.
+    /// Call each frame; release_cue(key) stops it, and an absent owner lapses.
+    fn update_cue(&mut self, key: &str, _volume: f64, _pan: f64) {
+        self.hold_cue(key);
+    }
     fn play(&mut self, key: &str) {
         self.play_with(key, 1.0, 0.0);
     }
@@ -568,7 +573,7 @@ pub trait Audio {
     fn horn_stop(&mut self);
     fn reverse_start(&mut self);
     fn reverse_stop(&mut self);
-    /// Stop engine, road, weather, ambience, and any held alert tone
+    /// Stop engine, road, weather, ambience, held cues, and any held alert tone
     /// (leaving UI sfx alone).
     fn stop_world(&mut self);
 
