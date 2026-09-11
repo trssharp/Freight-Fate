@@ -187,7 +187,11 @@ fn run(args: &[String]) -> i32 {
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(7),
             });
-        return freight_fate::agent_server::run(has(args, "--reset"), launch);
+        return freight_fate::agent_server::run(
+            has(args, "--reset"),
+            launch,
+            has(args, "--operator-keys"),
+        );
     }
     app::main_with(CliOptions::parse(args.iter().cloned()))
 }
@@ -197,6 +201,7 @@ fn run(args: &[String]) -> i32 {
 /// silent fall-through is what made `--help` launch the game.
 const KNOWN_SWITCHES: &[&str] = &[
     "--agent-server",
+    "--operator-keys",
     "--ai",
     "--assists",
     "--at",
@@ -287,7 +292,10 @@ Drive tools:
                                     so an AI agent can play it (sandboxed;
                                     --reset for a fresh sandbox; add
                                     --find FEATURE [--from CITY] [--to CITY]
-                                    to boot straight into a staged drive)
+                                    to boot straight into a staged drive;
+                                    --operator-keys keeps the window up and
+                                    lets the operator's keyboard in, to play
+                                    alongside the agent)
   --log PATH                        session log for the watcher
 ";
 

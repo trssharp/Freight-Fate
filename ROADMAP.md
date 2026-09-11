@@ -137,6 +137,15 @@ its status or release decision.
       a short drive and stop, and returned status and HOS readouts without
       speech errors. The earlier initialization failure reproduced in the
       restricted shell without the agent server.
+- [x] The long half of a sleeper split (7 or more berth hours) pauses the
+      14-hour window while it runs, as 49 CFR 395.1(g)(1)(iii)(B) excludes
+      qualifying rest from the window; the short half counts until the pair
+      is credited. Tester report 2026-09-11: 7 duty hours plus an 8-hour
+      berth rest woke to a closed window.
+- [x] `--agent-server --operator-keys` keeps the window up and lets the
+      owner's keyboard reach the game, to drive alongside the agent; the
+      repo's `.mcp.json` passes it. Without the switch the keys are still
+      dropped at the door.
 - [ ] Complete the owner's listening pass and longer gameplay verification
       of wear thresholds and interrupted warnings. Captured live readouts and
       successful native calls do not establish what the owner heard.

@@ -386,6 +386,22 @@ fn cruise_targets_parse_as_a_number_the_limit_or_off() {
 }
 
 #[test]
+fn operator_keys_parse_as_a_boolean_and_refuse_anything_else() {
+    let live = |args: &str| {
+        let args = serde_json::from_str(args).unwrap();
+        match build_command("operator_keys", &args) {
+            Ok(Command::OperatorKeys { live }) => Ok(live),
+            Ok(_) => panic!("not an operator_keys command"),
+            Err(text) => Err(text),
+        }
+    };
+    assert_eq!(live(r#"{"live":true}"#), Ok(true));
+    assert_eq!(live(r#"{"live":false}"#), Ok(false));
+    assert!(live(r#"{"live":"yes"}"#).is_err());
+    assert!(live(r#"{}"#).is_err());
+}
+
+#[test]
 fn pedal_and_wait_for_refuse_a_missing_duration() {
     let args = serde_json::from_str(r#"{"key":"up"}"#).unwrap();
     assert!(build_command("pedal", &args).is_err());
@@ -408,7 +424,14 @@ fn the_tool_list_carries_the_driving_tools() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap_or_default().to_string())
         .collect();
-    for name in ["pedal", "wait_for", "select", "cruise", "status"] {
+    for name in [
+        "pedal",
+        "wait_for",
+        "select",
+        "cruise",
+        "status",
+        "operator_keys",
+    ] {
         assert!(names.iter().any(|n| n == name), "{name} in {names:?}");
     }
 }

@@ -191,6 +191,26 @@ impl PlayerInputFrame<'_> {
         self.app.ctx.event_voice_busy()
     }
 
+    /// Hand the keyboard to the operator (`live`) or take it back: the
+    /// window is restored and raised so their keys land, or minimized and
+    /// the keys dropped at the door again. Used by the agent server's
+    /// `operator_keys` tool, at the owner's request only.
+    pub fn set_operator_keys(&mut self, live: bool) -> String {
+        if live {
+            self.app.allow_operator_keys();
+            self.app.restore_window();
+            "Operator keys are live: the game window is up and the keyboard reaches the \
+             game. Anything typed elsewhere while it has focus is truck input."
+                .to_string()
+        } else {
+            self.app.ignore_operator_keys();
+            self.app.minimize_window();
+            "Operator keys are off: the window is minimized and the keyboard is dropped \
+             at the door."
+                .to_string()
+        }
+    }
+
     /// The rows of the menu on screen and which has focus, read the same
     /// way the playtest harness reads them (off the rendered lines), or
     /// `None` when the current screen is not a menu. A value snapshot, in
@@ -444,6 +464,14 @@ impl App {
         }
     }
 
+    /// Undo [`App::minimize_window`]: the window comes back and asks for
+    /// focus; a no-op when headless.
+    pub fn restore_window(&mut self) {
+        if let Some(shell) = self.shell.as_mut() {
+            shell.restore();
+        }
+    }
+
     pub fn running(&self) -> bool {
         self.ctx.running
     }
@@ -461,6 +489,12 @@ impl App {
     /// quit events still pass.
     pub fn ignore_operator_keys(&mut self) {
         self.operator_keys_ignored = true;
+    }
+
+    /// Undo [`App::ignore_operator_keys`]: the operating system's keys count
+    /// again, so a human can take the wheel alongside an agent.
+    pub fn allow_operator_keys(&mut self) {
+        self.operator_keys_ignored = false;
     }
 
     fn driving_observation(&self) -> Option<DrivingObservation> {

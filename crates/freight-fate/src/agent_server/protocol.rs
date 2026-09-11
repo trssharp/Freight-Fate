@@ -206,6 +206,19 @@ fn tools_list() -> Value {
             &["feature"],
         ),
         tool(
+            "operator_keys",
+            "Hand the keyboard to the human at the computer, or take it back. With live \
+             true the game window comes up and their keys reach the game, so they can \
+             drive alongside the agent or take the wheel; with live false the window is \
+             minimized and their keys are dropped again. Only at the owner's request: \
+             while it is live, anything they type anywhere with the game focused is \
+             truck input.",
+            json!({
+                "live": {"type": "boolean", "description": "true to let the operator's keyboard in, false to shut it out again"},
+            }),
+            &["live"],
+        ),
+        tool(
             "quit_game",
             "Quit the game and end the session (the sandboxed career saves on the way \
              out, as a real quit does).",
@@ -457,6 +470,10 @@ pub fn build_command(name: &str, args: &Map<String, Value>) -> Result<Command, S
                 opts: Box::new(opts),
             })
         }
+        "operator_keys" => match args.get("live").and_then(Value::as_bool) {
+            Some(live) => Ok(Command::OperatorKeys { live }),
+            None => Err("operator_keys needs live: true or false".to_string()),
+        },
         "quit_game" => Ok(Command::Quit),
         other => Err(format!("unknown tool {other}")),
     }

@@ -197,7 +197,11 @@ cleanup](https://doc.rust-lang.org/book/ch21-03-graceful-shutdown-and-cleanup.ht
   game through the normal controls. Check spoken readouts and event output
   for the changed behavior, then end the session with `quit_game`. Treat
   `observe` as diagnostic state, and record any information the driver needed
-  but could not hear. Keep this check separate from unit tests and the
+  but could not hear. By default the window is minimized and the operator's
+  keyboard is dropped so typing elsewhere never becomes truck input; add
+  `--operator-keys` (this repo's `.mcp.json` does) when the owner wants to
+  play alongside the agent and take the wheel with the real keyboard.
+  Keep this check separate from unit tests and the
   adversarial battery. Recorded speech does not establish how speech sounds
   to the owner; that still needs the owner's listening pass.
   On Windows, native speech checks need access to the desktop's speech
