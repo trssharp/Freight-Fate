@@ -14,12 +14,11 @@
 //!
 //! # The threading invariant, kept
 //!
-//! The rule in [`crate::speech`] is real: exactly one Prism context per
-//! process, and every call on it from one thread (its registry probes are
-//! not re-entrant across threads). That invariant never said the thread
-//! has to be the game loop's. Here the one context is built INSIDE the
-//! worker thread and never leaves it; [`super::live::Speech`] stays
-//! `!Send`, and the main thread holds only channels.
+//! Every Prism context is created and used on its own worker thread;
+//! [`super::live::Speech`] stays `!Send`, and the game holds only channels.
+//! Recovery abandons a generation that may still be inside a native call.
+//! Once that call returns, it cannot dispatch further operations. Its native
+//! objects are retained until process exit, since even release may wedge.
 //!
 //! # Semantics preserved
 //!
@@ -47,7 +46,7 @@
 //! instances ([`super::live::Speech::new_after_wedge`]): Prism caches one
 //! instance per backend across contexts, so a replacement that re-acquired
 //! SAPI would block on the same stuck voice. The player's speech settings
-//! are replayed to the new worker, and the log reads "stopped responding",
+//! are replayed to the new worker before readiness is acknowledged, and the log reads "stopped responding",
 //! "abandoned ... replacement", "recovered". Bounded to [`MAX_RESPAWNS`]
 //! per session so a backend that wedges on every line cannot spawn threads
 //! forever. Verified against Prism 0.18.2 before building (a second
@@ -55,6 +54,7 @@
 //! while the cached one is mid-utterance, and the replacement outlives the
 //! abandoned context's eventual shutdown).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -78,6 +78,7 @@ const HEALTH_POLL: Duration = Duration::from_secs(3);
 const REPLY_WAIT: Duration = Duration::from_secs(2);
 
 enum Command {
+    ReplayComplete,
     Say {
         text: String,
         interrupt: bool,
@@ -167,37 +168,61 @@ fn coalesce(batch: &mut Vec<Command>) {
     });
 }
 
-fn publish(snapshot: &Arc<Mutex<Snapshot>>, inner: &dyn SpeechSink) {
+// Query methods may enter native code too. Stop the snapshot sequence as
+// soon as an abandoned in-flight query returns.
+macro_rules! query {
+    ($abandoned:expr, $operation:expr) => {{
+        if $abandoned.load(Ordering::Acquire) {
+            return false;
+        }
+        let value = $operation;
+        if $abandoned.load(Ordering::Acquire) {
+            return false;
+        }
+        value
+    }};
+}
+
+fn publish(
+    snapshot: &Arc<Mutex<Snapshot>>,
+    inner: &dyn SpeechSink,
+    abandoned: &AtomicBool,
+) -> bool {
     let fresh = Snapshot {
-        available: inner.available(),
-        backend_name: inner.backend_name(),
-        event_backend_name: inner.event_backend_name(),
-        has_separate_event_voice: inner.has_separate_event_voice(),
-        supports_rate: inner.supports_rate(),
-        supports_pitch: inner.supports_pitch(),
-        supports_volume: inner.supports_volume(),
-        event_supports_rate: inner.event_supports_rate(),
-        supports_braille: inner.supports_braille(),
-        event_backend_options: inner.event_backend_options(),
-        voice_names: inner.voice_names(),
+        available: query!(abandoned, inner.available()),
+        backend_name: query!(abandoned, inner.backend_name()),
+        event_backend_name: query!(abandoned, inner.event_backend_name()),
+        has_separate_event_voice: query!(abandoned, inner.has_separate_event_voice()),
+        supports_rate: query!(abandoned, inner.supports_rate()),
+        supports_pitch: query!(abandoned, inner.supports_pitch()),
+        supports_volume: query!(abandoned, inner.supports_volume()),
+        event_supports_rate: query!(abandoned, inner.event_supports_rate()),
+        supports_braille: query!(abandoned, inner.supports_braille()),
+        event_backend_options: query!(abandoned, inner.event_backend_options()),
+        voice_names: query!(abandoned, inner.voice_names()),
     };
     *snapshot.lock().expect("speech snapshot lock") = fresh;
+    true
 }
 
 /// Refresh the answers that can change when a live utterance discovers a
 /// vanished backend, without enumerating backend options or installed voices.
-fn publish_status(snapshot: &Arc<Mutex<Snapshot>>, inner: &dyn SpeechSink) {
+fn publish_status(
+    snapshot: &Arc<Mutex<Snapshot>>,
+    inner: &dyn SpeechSink,
+    abandoned: &AtomicBool,
+) -> bool {
     // Native backend queries stay outside the shared lock. Even if Prism is
     // slow, the game thread can continue answering from the prior snapshot.
-    let available = inner.available();
-    let backend_name = inner.backend_name();
-    let event_backend_name = inner.event_backend_name();
-    let has_separate_event_voice = inner.has_separate_event_voice();
-    let supports_rate = inner.supports_rate();
-    let supports_pitch = inner.supports_pitch();
-    let supports_volume = inner.supports_volume();
-    let event_supports_rate = inner.event_supports_rate();
-    let supports_braille = inner.supports_braille();
+    let available = query!(abandoned, inner.available());
+    let backend_name = query!(abandoned, inner.backend_name());
+    let event_backend_name = query!(abandoned, inner.event_backend_name());
+    let has_separate_event_voice = query!(abandoned, inner.has_separate_event_voice());
+    let supports_rate = query!(abandoned, inner.supports_rate());
+    let supports_pitch = query!(abandoned, inner.supports_pitch());
+    let supports_volume = query!(abandoned, inner.supports_volume());
+    let event_supports_rate = query!(abandoned, inner.event_supports_rate());
+    let supports_braille = query!(abandoned, inner.supports_braille());
     let mut current = snapshot.lock().expect("speech snapshot lock");
     current.available = available;
     current.backend_name = backend_name;
@@ -208,6 +233,7 @@ fn publish_status(snapshot: &Arc<Mutex<Snapshot>>, inner: &dyn SpeechSink) {
     current.supports_volume = supports_volume;
     current.event_supports_rate = event_supports_rate;
     current.supports_braille = supports_braille;
+    true
 }
 
 /// Builds the sink a worker drives. The argument is true for a replacement
@@ -221,6 +247,8 @@ struct Worker {
     snapshot: Arc<Mutex<Snapshot>>,
     heartbeat: Arc<Mutex<Instant>>,
     shutting_down: Arc<std::sync::atomic::AtomicBool>,
+    abandoned: Arc<AtomicBool>,
+    ready: Arc<AtomicBool>,
 }
 
 /// `configure`'s arguments: rate, pitch, volume, voice.
@@ -240,6 +268,8 @@ pub struct ThreadedSpeech {
     commands: mpsc::SyncSender<Command>,
     snapshot: Arc<Mutex<Snapshot>>,
     heartbeat: Arc<Mutex<Instant>>,
+    abandoned: Arc<AtomicBool>,
+    ready: Arc<AtomicBool>,
     factory: Arc<SinkFactory>,
     replay: Replay,
     /// [`RESPAWN_AFTER_S`], test-adjustable like the wedge threshold.
@@ -290,11 +320,15 @@ impl ThreadedSpeech {
             snapshot,
             heartbeat,
             shutting_down,
+            abandoned,
+            ready,
         } = Self::start_worker(&factory, false);
         ThreadedSpeech {
             commands,
             snapshot,
             heartbeat,
+            abandoned,
+            ready,
             factory,
             replay: Replay::default(),
             respawn_after_s: RESPAWN_AFTER_S,
@@ -313,6 +347,10 @@ impl ThreadedSpeech {
         let snapshot: Arc<Mutex<Snapshot>> = Arc::default();
         let heartbeat = Arc::new(Mutex::new(Instant::now()));
         let shutting_down = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let abandoned = Arc::new(AtomicBool::new(false));
+        let ready = Arc::new(AtomicBool::new(false));
+        let worker_abandoned = Arc::clone(&abandoned);
+        let worker_ready = Arc::clone(&ready);
         let worker_snapshot = Arc::clone(&snapshot);
         let worker_heartbeat = Arc::clone(&heartbeat);
         let worker_shutting_down = Arc::clone(&shutting_down);
@@ -321,18 +359,41 @@ impl ThreadedSpeech {
             .name("speech".to_string())
             .spawn(move || {
                 let mut inner = factory(after_wedge);
-                publish(&worker_snapshot, inner.as_ref());
+                // Abandoned native objects cannot be safely stopped or
+                // destroyed: either operation may re-enter a poisoned backend.
+                // Retention is bounded by MAX_RESPAWNS, and ends with the process.
+                macro_rules! active {
+                    () => {
+                        if worker_abandoned.load(Ordering::Acquire) {
+                            std::mem::forget(inner);
+                            return;
+                        }
+                    };
+                }
+                macro_rules! call {
+                    ($operation:expr) => {{
+                        active!();
+                        let result = $operation;
+                        active!();
+                        result
+                    }};
+                }
+                active!();
+                call!(publish(&worker_snapshot, inner.as_ref(), &worker_abandoned));
+                if !after_wedge {
+                    worker_ready.store(true, Ordering::Release);
+                }
                 let beat = || {
                     *worker_heartbeat.lock().expect("speech heartbeat lock") = Instant::now();
                 };
                 let mut last_health_poll = Instant::now();
                 loop {
+                    active!();
                     beat();
                     // Quitting: everything still queued is a sentence the
                     // player chose not to wait for. Skip the says, keep
                     // answering everything that carries a reply, and let
                     // the Shutdown command through to the release.
-                    let draining = worker_shutting_down.load(std::sync::atomic::Ordering::Relaxed);
                     let until_health_poll = HEALTH_POLL.saturating_sub(last_health_poll.elapsed());
                     let first = match rx.recv_timeout(until_health_poll) {
                         Ok(command) => command,
@@ -343,13 +404,13 @@ impl ThreadedSpeech {
                             // cadence that competes with NVDA on slower PCs.
                             let elapsed = last_health_poll.elapsed();
                             beat();
-                            inner.poll(elapsed.as_secs_f64());
-                            publish(&worker_snapshot, inner.as_ref());
+                            call!(inner.poll(elapsed.as_secs_f64()));
+                            call!(publish(&worker_snapshot, inner.as_ref(), &worker_abandoned));
                             last_health_poll = Instant::now();
                             continue;
                         }
                         Err(RecvTimeoutError::Disconnected) => {
-                            inner.shutdown();
+                            call!(inner.shutdown());
                             return;
                         }
                     };
@@ -369,35 +430,46 @@ impl ThreadedSpeech {
                     }
                     coalesce(&mut batch);
                     for command in batch {
+                        active!();
+                        let draining = worker_shutting_down.load(Ordering::Acquire);
                         beat();
                         match command {
+                            Command::ReplayComplete => worker_ready.store(true, Ordering::Release),
                             Command::Say { text, interrupt } => {
                                 if !draining {
-                                    inner.say(&text, interrupt);
-                                    publish_status(&worker_snapshot, inner.as_ref());
+                                    call!(inner.say(&text, interrupt));
+                                    call!(publish_status(
+                                        &worker_snapshot,
+                                        inner.as_ref(),
+                                        &worker_abandoned
+                                    ));
                                 }
                             }
                             Command::SayEvent { text, interrupt } => {
                                 if !draining {
-                                    inner.say_event(&text, interrupt);
-                                    publish_status(&worker_snapshot, inner.as_ref());
+                                    call!(inner.say_event(&text, interrupt));
+                                    call!(publish_status(
+                                        &worker_snapshot,
+                                        inner.as_ref(),
+                                        &worker_abandoned
+                                    ));
                                 }
                             }
-                            Command::StopMain => inner.stop_main(),
-                            Command::StopEvent => inner.stop_event(),
-                            Command::Stop => inner.stop(),
+                            Command::StopMain => call!(inner.stop_main()),
+                            Command::StopEvent => call!(inner.stop_event()),
+                            Command::Stop => call!(inner.stop()),
                             Command::RequestRefresh => {
                                 // Focus returning is the one deliberate early
                                 // probe: the player may have changed screen
                                 // readers in the other window.
-                                inner.request_refresh();
-                                inner.poll(0.0);
-                                publish(&worker_snapshot, inner.as_ref());
+                                call!(inner.request_refresh());
+                                call!(inner.poll(0.0));
+                                call!(publish(&worker_snapshot, inner.as_ref(), &worker_abandoned));
                                 last_health_poll = Instant::now();
                             }
                             Command::Refresh { announce, reply } => {
-                                let changed = inner.refresh(announce);
-                                publish(&worker_snapshot, inner.as_ref());
+                                let changed = call!(inner.refresh(announce));
+                                call!(publish(&worker_snapshot, inner.as_ref(), &worker_abandoned));
                                 let _ = reply.send(changed);
                             }
                             Command::Configure {
@@ -406,14 +478,14 @@ impl ThreadedSpeech {
                                 volume,
                                 voice,
                             } => {
-                                inner.configure(rate, pitch, volume, voice.as_deref());
-                                publish(&worker_snapshot, inner.as_ref());
+                                call!(inner.configure(rate, pitch, volume, voice.as_deref()));
+                                call!(publish(&worker_snapshot, inner.as_ref(), &worker_abandoned));
                             }
                             Command::SelectEventBackend(name) => {
-                                inner.select_event_backend(name.as_deref());
-                                publish(&worker_snapshot, inner.as_ref());
+                                call!(inner.select_event_backend(name.as_deref()));
+                                call!(publish(&worker_snapshot, inner.as_ref(), &worker_abandoned));
                             }
-                            Command::SetBrailleOnly(on) => inner.set_braille_only(on),
+                            Command::SetBrailleOnly(on) => call!(inner.set_braille_only(on)),
                             Command::Preview {
                                 setting,
                                 text,
@@ -421,11 +493,11 @@ impl ThreadedSpeech {
                                 reply,
                             } => {
                                 let spoke =
-                                    inner.say_adjustment_preview(&setting, &text, interrupt);
+                                    call!(inner.say_adjustment_preview(&setting, &text, interrupt));
                                 let _ = reply.send(spoke);
                             }
                             Command::Shutdown { done } => {
-                                inner.shutdown();
+                                call!(inner.shutdown());
                                 let _ = done.send(());
                                 return;
                             }
@@ -436,8 +508,8 @@ impl ThreadedSpeech {
                     if last_health_poll.elapsed() >= HEALTH_POLL {
                         let elapsed = last_health_poll.elapsed();
                         beat();
-                        inner.poll(elapsed.as_secs_f64());
-                        publish(&worker_snapshot, inner.as_ref());
+                        call!(inner.poll(elapsed.as_secs_f64()));
+                        call!(publish(&worker_snapshot, inner.as_ref(), &worker_abandoned));
                         last_health_poll = Instant::now();
                     }
                 }
@@ -448,15 +520,16 @@ impl ThreadedSpeech {
             snapshot,
             heartbeat,
             shutting_down,
+            abandoned,
+            ready,
         }
     }
 
     /// Abandon the wedged worker and start a replacement on fresh voices.
     ///
     /// The stuck thread is left where it is: it holds the old context, and
-    /// if its call ever returns it finds its queue closed and shuts down on
-    /// its own. Its shutdown flag is set so anything still queued there is
-    /// skipped rather than spoken over the replacement.
+    /// if its call ever returns it stops dispatching native work. Its native
+    /// objects are retained, because even their destruction may block again.
     fn respawn(&mut self, stale_s: f64) {
         self.respawns += 1;
         log::error!(
@@ -467,16 +540,21 @@ impl ThreadedSpeech {
         );
         self.shutting_down
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.abandoned.store(true, Ordering::Release);
         let Worker {
             commands,
             snapshot,
             heartbeat,
             shutting_down,
+            abandoned,
+            ready,
         } = Self::start_worker(&self.factory, true);
         self.commands = commands;
         self.snapshot = snapshot;
         self.heartbeat = heartbeat;
         self.shutting_down = shutting_down;
+        self.abandoned = abandoned;
+        self.ready = ready;
         self.dropped_lines = 0;
         // The player's settings, in the order the game applied them.
         if let Some(pref) = self.replay.event_pref.clone() {
@@ -493,6 +571,7 @@ impl ThreadedSpeech {
         if let Some(on) = self.replay.braille_only {
             self.send_lossy(Command::SetBrailleOnly(on));
         }
+        self.send_lossy(Command::ReplayComplete);
     }
 
     /// Shorten the watchdog's patience. Test-only: the production value is
@@ -587,12 +666,16 @@ impl SpeechSink for ThreadedSpeech {
                 "speech backend stopped responding {stale:.0}s ago (a wedged screen reader \
                  or SAPI call); the game continues without speech until it returns"
             );
-        } else if stale <= self.wedge_after_s && self.wedged {
+        } else if stale <= self.wedge_after_s
+            && self.wedged
+            && self.ready.load(Ordering::Acquire)
+            && self.snapshot().available
+        {
             self.wedged = false;
             log::warn!("speech backend recovered");
         }
-        // `wedged` stays set through the respawn: the replacement's first
-        // heartbeat is what logs "recovered".
+        // Recovery requires completion of constructor and settings replay,
+        // plus a usable voice. A newly allocated heartbeat proves neither.
         if stale > self.respawn_after_s && self.respawns < self.max_respawns {
             self.respawn(stale);
         }
@@ -610,7 +693,9 @@ impl SpeechSink for ThreadedSpeech {
             .expect("speech heartbeat lock")
             .elapsed()
             .as_secs_f64();
-        self.snapshot().available && stale <= self.wedge_after_s
+        self.ready.load(Ordering::Acquire)
+            && self.snapshot().available
+            && stale <= self.wedge_after_s
     }
 
     fn backend_name(&self) -> String {
@@ -726,533 +811,9 @@ impl SpeechSink for ThreadedSpeech {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[path = "threaded/recovery_tests.rs"]
+mod recovery_tests;
 
-    /// A sink that records calls and can be told to wedge forever.
-    struct StubSink {
-        calls: Arc<Mutex<Vec<String>>>,
-        wedge: Arc<AtomicBool>,
-        entered_say: Arc<AtomicBool>,
-        slow: Arc<AtomicBool>,
-        polls: Arc<AtomicUsize>,
-        available: Arc<AtomicBool>,
-    }
-
-    impl SpeechSink for StubSink {
-        fn say(&mut self, text: &str, _interrupt: bool) {
-            self.entered_say.store(true, Ordering::SeqCst);
-            if self.wedge.load(Ordering::SeqCst) {
-                // A wedged SAPI call: never returns (bounded here so the
-                // test process itself can exit).
-                std::thread::sleep(Duration::from_secs(600));
-            }
-            if self.slow.load(Ordering::SeqCst) {
-                // A realistic utterance: long enough that everything a
-                // test sends meanwhile is queued behind it, so the batch
-                // tests are deterministic instead of racing the worker.
-                std::thread::sleep(Duration::from_millis(200));
-            }
-            self.calls.lock().unwrap().push(format!("say {text}"));
-        }
-        fn say_event(&mut self, text: &str, _interrupt: bool) {
-            self.calls.lock().unwrap().push(format!("event {text}"));
-        }
-        fn stop_main(&mut self) {
-            self.calls.lock().unwrap().push("stop_main".into());
-        }
-        fn stop_event(&mut self) {}
-        fn stop(&mut self) {}
-        fn poll(&mut self, _dt: f64) {
-            self.polls.fetch_add(1, Ordering::SeqCst);
-        }
-        fn request_refresh(&mut self) {}
-        fn available(&self) -> bool {
-            self.available.load(Ordering::SeqCst)
-        }
-        fn backend_name(&self) -> String {
-            "stub".to_string()
-        }
-        fn has_separate_event_voice(&self) -> bool {
-            true
-        }
-        fn event_backend_name(&self) -> String {
-            "stub-event".to_string()
-        }
-        fn supports_rate(&self) -> bool {
-            true
-        }
-        fn supports_pitch(&self) -> bool {
-            false
-        }
-        fn supports_volume(&self) -> bool {
-            true
-        }
-        fn event_supports_rate(&self) -> bool {
-            false
-        }
-        fn event_backend_options(&self) -> Vec<String> {
-            vec!["stub-event".to_string()]
-        }
-        fn select_event_backend(&mut self, name: Option<&str>) {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("select_event {}", name.unwrap_or("none")));
-        }
-        fn set_braille_only(&mut self, on: bool) {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("braille_only {on}"));
-        }
-        fn supports_braille(&self) -> bool {
-            false
-        }
-        fn voice_names(&self) -> Vec<String> {
-            vec!["Stub Voice".to_string()]
-        }
-        fn configure(
-            &mut self,
-            rate: Option<f64>,
-            _pitch: Option<f64>,
-            _volume: Option<f64>,
-            _voice: Option<&str>,
-        ) {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("configure rate={rate:?}"));
-        }
-        fn say_adjustment_preview(&mut self, setting: &str, _t: &str, _i: bool) -> bool {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("preview {setting}"));
-            true
-        }
-        fn refresh(&mut self, _announce: bool) -> bool {
-            true
-        }
-        fn shutdown(&mut self) {
-            self.calls.lock().unwrap().push("shutdown".into());
-        }
-    }
-
-    type CallLog = Arc<Mutex<Vec<String>>>;
-
-    /// The worker under test plus the stub's shared handles.
-    struct Rig {
-        sink: ThreadedSpeech,
-        calls: CallLog,
-        wedge: Arc<AtomicBool>,
-        entered_say: Arc<AtomicBool>,
-        slow: Arc<AtomicBool>,
-        polls: Arc<AtomicUsize>,
-        available: Arc<AtomicBool>,
-        /// How many sinks the factory has built: one, plus one per respawn.
-        spawns: Arc<AtomicUsize>,
-    }
-
-    fn rig() -> Rig {
-        let calls: Arc<Mutex<Vec<String>>> = Arc::default();
-        let wedge = Arc::new(AtomicBool::new(false));
-        let entered_say = Arc::new(AtomicBool::new(false));
-        let slow = Arc::new(AtomicBool::new(false));
-        let polls = Arc::new(AtomicUsize::new(0));
-        let available = Arc::new(AtomicBool::new(true));
-        let spawns = Arc::new(AtomicUsize::new(0));
-        let (calls2, wedge2, entered_say2, slow2, polls2, available2, spawns2) = (
-            calls.clone(),
-            wedge.clone(),
-            entered_say.clone(),
-            slow.clone(),
-            polls.clone(),
-            available.clone(),
-            spawns.clone(),
-        );
-        let sink = ThreadedSpeech::spawn_with(move |after_wedge| {
-            spawns2.fetch_add(1, Ordering::SeqCst);
-            // Only a replacement leaves a mark in the call log: the tests
-            // that pin exact call sequences never see one.
-            if after_wedge {
-                calls2
-                    .lock()
-                    .unwrap()
-                    .push("spawn after_wedge=true".to_string());
-            }
-            Box::new(StubSink {
-                calls: calls2.clone(),
-                wedge: wedge2.clone(),
-                entered_say: entered_say2.clone(),
-                slow: slow2.clone(),
-                polls: polls2.clone(),
-                available: available2.clone(),
-            })
-        });
-        Rig {
-            sink,
-            calls,
-            wedge,
-            entered_say,
-            slow,
-            polls,
-            available,
-            spawns,
-        }
-    }
-
-    fn wait_for(calls: &Arc<Mutex<Vec<String>>>, count: usize) {
-        for _ in 0..200 {
-            if calls.lock().unwrap().len() >= count {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        panic!(
-            "worker never processed {count} call(s): {:?}",
-            calls.lock().unwrap()
-        );
-    }
-
-    /// Quit must not wait through the say backlog: the shutdown flag makes
-    /// the worker DROP every sentence still queued, so the screen reader
-    /// gets the desk back after at most the in-flight utterance (Brandon,
-    /// 2026-08-31: closing the game took visibly longer than before the
-    /// speech worker existed).
-    #[test]
-    fn shutdown_skips_the_queued_backlog_instead_of_speaking_it() {
-        let Rig {
-            mut sink,
-            calls,
-            slow,
-            ..
-        } = rig();
-        // A slow utterance in flight, and a backlog a player would
-        // otherwise sit through queued behind it.
-        slow.store(true, Ordering::SeqCst);
-        for i in 0..50 {
-            sink.say(&format!("queued {i}"), false);
-        }
-        let started = Instant::now();
-        sink.shutdown();
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "shutdown waited through the backlog: {:?}",
-            started.elapsed()
-        );
-        let spoken = calls.lock().unwrap();
-        let says = spoken.iter().filter(|c| c.starts_with("say ")).count();
-        assert!(
-            says < 50,
-            "every queued sentence was spoken before release ({says})"
-        );
-        assert!(
-            spoken.iter().any(|c| c == "shutdown"),
-            "the backend was never released: {spoken:?}"
-        );
-    }
-
-    #[test]
-    fn says_arrive_on_the_worker_in_send_order() {
-        let Rig {
-            mut sink, calls, ..
-        } = rig();
-        sink.say("one", false);
-        sink.say("two", false);
-        sink.say_event("three", false);
-        wait_for(&calls, 3);
-        assert_eq!(
-            calls.lock().unwrap().as_slice(),
-            ["say one", "say two", "event three"]
-        );
-        sink.shutdown();
-        assert!(calls.lock().unwrap().iter().any(|c| c == "shutdown"));
-    }
-
-    /// The interrupt semantics apply to the QUEUE, not just the audio: an
-    /// interrupting say or a stop purges the sentences still waiting on
-    /// its channel, exactly as the direct backend purged their audio the
-    /// instant it was called. Without this the voice ran seconds behind
-    /// the game and kept the synthesizer busier than any pre-worker build
-    /// ("the screen reader got sluggish with the game open" -- Brandon,
-    /// 2026-08-31). The other channel's sentences are untouched.
-    #[test]
-    fn queued_says_are_purged_by_a_later_interrupt_before_they_speak() {
-        let Rig {
-            mut sink,
-            calls,
-            slow,
-            ..
-        } = rig();
-        // A slow first utterance holds the worker; once it is mid-say the
-        // rest of the sends are guaranteed to queue together behind it.
-        slow.store(true, Ordering::SeqCst);
-        sink.say("in flight", false);
-        std::thread::sleep(Duration::from_millis(50));
-        sink.say("stale", false);
-        sink.say_event("event stays", false);
-        sink.say("fresh", true);
-        wait_for(&calls, 3);
-        std::thread::sleep(Duration::from_millis(100));
-        let spoken = calls.lock().unwrap().clone();
-        assert!(
-            spoken.iter().any(|c| c == "say in flight"),
-            "the in-flight sentence was cut: {spoken:?}"
-        );
-        assert!(
-            !spoken.iter().any(|c| c == "say stale"),
-            "the purged sentence was spoken anyway: {spoken:?}"
-        );
-        assert!(
-            spoken.iter().any(|c| c == "event event stays"),
-            "the event channel was wrongly purged: {spoken:?}"
-        );
-        assert!(
-            spoken.iter().any(|c| c == "say fresh"),
-            "the interrupting say itself was lost: {spoken:?}"
-        );
-        sink.shutdown();
-    }
-
-    #[test]
-    fn queries_answer_from_the_snapshot_without_touching_the_backend() {
-        let Rig { sink, .. } = rig();
-        // Give the worker a beat to publish its first snapshot.
-        for _ in 0..100 {
-            if sink.available() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(sink.available());
-        assert_eq!(sink.backend_name(), "stub");
-        assert_eq!(sink.event_backend_name(), "stub-event");
-        assert!(sink.supports_rate());
-        assert!(!sink.supports_pitch());
-        assert_eq!(sink.voice_names(), ["Stub Voice"]);
-    }
-
-    /// Chris, 2026-09-03: a SAPI purge that never returned took both voices
-    /// for the rest of the drive. Past the respawn threshold the stuck
-    /// worker is abandoned, a replacement is built with `after_wedge` set
-    /// (fresh backend instances in production), the player's settings are
-    /// replayed to it in the order the game applied them, and speech
-    /// resumes. The cap holds: once it is spent, a second wedge is logged
-    /// but not answered with yet another thread.
-    #[test]
-    fn a_worker_stuck_past_the_respawn_threshold_is_replaced_and_speech_resumes() {
-        let Rig {
-            mut sink,
-            calls,
-            wedge,
-            entered_say,
-            spawns,
-            ..
-        } = rig();
-        sink.set_wedge_after_s(0.3);
-        sink.set_respawn(0.6, 1);
-        sink.select_event_backend(Some("stub-event"));
-        sink.configure(Some(80.0), None, None, None);
-        sink.set_braille_only(false);
-        wait_for(&calls, 3);
-        wedge.store(true, Ordering::SeqCst);
-        sink.say("this one wedges the backend", false);
-        for _ in 0..200 {
-            if entered_say.load(Ordering::SeqCst) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(entered_say.load(Ordering::SeqCst));
-        // Before the threshold: wedged, unavailable, still one worker.
-        std::thread::sleep(Duration::from_millis(400));
-        sink.poll(0.016);
-        assert!(!sink.available());
-        assert_eq!(spawns.load(Ordering::SeqCst), 1);
-        // Past it: a replacement, built as an after-wedge sink.
-        std::thread::sleep(Duration::from_millis(400));
-        wedge.store(false, Ordering::SeqCst);
-        sink.poll(0.016);
-        // The factory runs on the new thread; give it a moment to start.
-        for _ in 0..200 {
-            if spawns.load(Ordering::SeqCst) == 2 {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert_eq!(spawns.load(Ordering::SeqCst), 2);
-        sink.say("after the respawn", false);
-        wait_for(&calls, 8);
-        let log = calls.lock().unwrap().clone();
-        let replacement = log
-            .iter()
-            .position(|c| c == "spawn after_wedge=true")
-            .expect("a replacement worker was built");
-        assert_eq!(
-            &log[replacement + 1..replacement + 5],
-            &[
-                "select_event stub-event".to_string(),
-                "configure rate=Some(80.0)".to_string(),
-                "braille_only false".to_string(),
-                "say after the respawn".to_string(),
-            ],
-            "settings replay then speech, in the game's order: {log:?}"
-        );
-        // The replacement's heartbeat is fresh: available again.
-        std::thread::sleep(Duration::from_millis(50));
-        sink.poll(0.016);
-        assert!(sink.available());
-        // The cap: a second wedge on the replacement is not respawned.
-        wedge.store(true, Ordering::SeqCst);
-        sink.say("wedges the replacement", false);
-        std::thread::sleep(Duration::from_millis(900));
-        sink.poll(0.016);
-        assert_eq!(spawns.load(Ordering::SeqCst), 2);
-        assert!(!sink.available());
-        let quitting = Instant::now();
-        sink.shutdown();
-        assert!(quitting.elapsed() < Duration::from_secs(5));
-    }
-
-    #[test]
-    fn a_wedged_backend_never_blocks_a_say_and_the_watchdog_notices() {
-        let Rig {
-            mut sink,
-            wedge,
-            entered_say,
-            ..
-        } = rig();
-        // One second of patience instead of eight: the test is about what
-        // the watchdog does once the heartbeat is stale, not about how long
-        // the shipped value gives a slow screen reader.
-        sink.set_wedge_after_s(1.0);
-        wedge.store(true, Ordering::SeqCst);
-        sink.say("this one wedges the backend", false);
-        for _ in 0..200 {
-            if entered_say.load(Ordering::SeqCst) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(
-            entered_say.load(Ordering::SeqCst),
-            "speech worker never entered the deliberately wedged call"
-        );
-        // The whole point: further speech returns instantly while the
-        // backend sits inside its stuck call.
-        let started = Instant::now();
-        for i in 0..300 {
-            sink.say(&format!("line {i}"), false);
-        }
-        sink.stop();
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "queueing speech must never wait on the backend"
-        );
-        // The watchdog reads the stale heartbeat as unavailable well before
-        // it logs the wedge.
-        std::thread::sleep(Duration::from_secs(2));
-        sink.poll(0.016);
-        assert!(!sink.available());
-        // Bounded replies answer pessimistically instead of hanging.
-        let answered = Instant::now();
-        assert!(!sink.say_adjustment_preview("speech_rate", "preview", false));
-        assert!(answered.elapsed() < Duration::from_secs(4));
-        // Shutdown of a wedged worker is bounded too: abandoned, not joined.
-        let quitting = Instant::now();
-        sink.shutdown();
-        assert!(quitting.elapsed() < Duration::from_secs(5));
-    }
-
-    #[test]
-    fn the_worker_polls_the_backend_on_its_own_cadence() {
-        let Rig {
-            mut sink, polls, ..
-        } = rig();
-        std::thread::sleep(Duration::from_millis(900));
-        assert_eq!(
-            polls.load(Ordering::SeqCst),
-            0,
-            "the idle worker must not probe Prism every 200 ms"
-        );
-
-        for _ in 0..300 {
-            if polls.load(Ordering::SeqCst) == 1 {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert_eq!(
-            polls.load(Ordering::SeqCst),
-            1,
-            "the autonomous three-second health probe never ran"
-        );
-
-        // Returning focus is the one reason to probe before the ordinary
-        // three-second health interval: the player may have switched screen
-        // readers while another window was active.
-        sink.request_refresh();
-        for _ in 0..100 {
-            if polls.load(Ordering::SeqCst) == 2 {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert_eq!(polls.load(Ordering::SeqCst), 2);
-        sink.shutdown();
-    }
-
-    #[test]
-    fn utterance_failure_status_is_immediate_and_idle_poll_recovers_it() {
-        let Rig {
-            mut sink,
-            calls,
-            available,
-            ..
-        } = rig();
-        for _ in 0..100 {
-            if sink.available() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        // Stand in for a live utterance discovering that NVDA disappeared.
-        available.store(false, Ordering::SeqCst);
-        sink.say("backend failure", false);
-        wait_for(&calls, 1);
-        for _ in 0..100 {
-            if !sink.available() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(!sink.available());
-
-        // A backend that returns while the game stays focused is found by
-        // the ordinary autonomous health poll.
-        available.store(true, Ordering::SeqCst);
-        for _ in 0..350 {
-            if sink.available() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(sink.available());
-        sink.shutdown();
-    }
-
-    #[test]
-    fn bounded_replies_reach_the_backend_when_it_is_healthy() {
-        let Rig {
-            mut sink, calls, ..
-        } = rig();
-        assert!(sink.say_adjustment_preview("speech_rate", "faster", false));
-        assert!(sink.refresh(false));
-        wait_for(&calls, 1);
-        assert!(calls.lock().unwrap()[0].starts_with("preview"));
-        sink.shutdown();
-    }
-}
+#[cfg(test)]
+#[path = "threaded/tests.rs"]
+mod tests;

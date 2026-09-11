@@ -1272,6 +1272,11 @@
 
 ### Fixed
 
+- **Speech recovery keeps its replacement voices connected.** If a voice stops
+  responding during a drive, restoring your speech settings and checking the
+  voices no longer reconnects to the stalled voice. Your chosen event voice,
+  voice settings and braille-only preference are preserved during recovery.
+
 - **Exit assistance slows early enough and gives the pedals back.** The
   full mile-and-a-half slowdown approach now runs in real time at faster
   trip pacing. Ramp-end assistance releases a completed brake application

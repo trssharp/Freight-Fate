@@ -6152,14 +6152,24 @@ Everything not listed here ships fine after 1.9.0.
       replacement outlives the abandoned context's shutdown. Shipped:
       after 20 s stale the watchdog abandons the worker, builds one on
       `Speech::new_after_wedge` (a `PrismRegistry::new_fresh` whose
-      `acquire` creates instances until the start-up selection has
-      settled, then uses the cache again), replays event voice,
+      `acquire` retains one private instance per backend for the worker's
+      lifetime, including settings replay and health checks), replays event voice,
       rate/pitch/volume/voice and braille-only in the game's order, and
-      logs abandoned/recovered; capped at three per session. The stop-
+      logs recovered only after settings replay completes and a voice is
+      available; capped at three per session. After abandonment, a returning
+      call cannot dispatch more commands or snapshot/health queries. Native
+      objects from abandoned workers are retained until process exit, avoiding
+      unsafe re-entry during destruction. These recovery corrections follow
+      Darren's September 7 logs (2026-09-11); they do not establish the cause
+      of his original native stall or reported wider computer lockup. The stop-
       while-speaking probe (150 cycles, with and without NVDA cancel
       and the 3 s re-probe interleaved) does NOT reproduce the hang on
       the owner's machine, so the purge deadlock itself is unfixed and
       voice- or timing-specific; Chris's SAPI voice is worth asking.
+- [ ] **Confirm speech recovery on Darren's affected setup.** Retest with his
+      NVDA and SAPI voice combination and collect the next session log; the
+      deterministic recovery tests cannot reproduce his native stall or prove
+      the reported wider computer lockup is resolved.
 - [ ] **The frame-time p99 budget test is load-sensitive (found
       2026-08-30, pre-existing).** `frame_time::a_driven_frame_stays_
       well_inside_the_sixty_hertz_budget` fails inside a full

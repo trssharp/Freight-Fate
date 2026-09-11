@@ -7,7 +7,14 @@
 //! (`tests/test_speech_audio.py` does that with `FakeContext`); they are
 //! not an abstraction anyone else implements for real.
 
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::fmt;
+use std::rc::Rc;
+
+#[cfg(test)]
+#[path = "backend/recovery_tests.rs"]
+mod recovery_tests;
 
 /// A Prism backend id (a 64-bit hash of the registry name).
 pub type BackendId = prism::PrismBackendId;
@@ -133,8 +140,8 @@ pub trait VoiceRegistry {
     fn priority_of(&self, id: BackendId) -> i32;
     /// Acquire (or re-acquire: Prism caches instances) the backend.
     fn acquire(&self, id: BackendId) -> Result<Box<dyn VoiceBackend>, prism::Error>;
-    /// End a fresh-instance start (see [`PrismRegistry::new_fresh`]): from
-    /// here on `acquire` hands out Prism's cached instances again.
+    /// Finish startup. Recovery registries retain their private instances
+    /// for settings replay and every later health check.
     fn settle(&self) {}
 }
 
@@ -148,13 +155,46 @@ impl fmt::Debug for dyn VoiceBackend {
 
 // -- Prism -------------------------------------------------------------------
 
-/// A live Prism context as a [`VoiceRegistry`]. Main thread only (see the
-/// module docs of [`crate::speech`]).
+/// A live Prism context as a [`VoiceRegistry`]. Confined to the worker that
+/// created it (see the module docs of [`crate::speech`]).
 pub struct PrismRegistry {
+    // Cached backend owners must drop before the native context.
+    instances: BackendInstances<prism::Backend>,
     ctx: prism::Context,
-    /// While set, `acquire` builds a NEW backend instance instead of taking
-    /// Prism's cached one. Cleared by [`VoiceRegistry::settle`].
-    fresh: std::cell::Cell<bool>,
+}
+
+/// Select native acquisition independently of the external native calls.
+struct BackendInstances<T> {
+    fresh: Cell<bool>,
+    private: RefCell<HashMap<BackendId, Rc<RefCell<T>>>>,
+}
+
+impl<T> BackendInstances<T> {
+    fn new(fresh: bool) -> Self {
+        Self {
+            fresh: Cell::new(fresh),
+            private: RefCell::new(HashMap::new()),
+        }
+    }
+
+    fn acquire(
+        &self,
+        id: BackendId,
+        create: impl FnOnce(BackendId) -> Result<T, prism::Error>,
+        acquire: impl FnOnce(BackendId) -> Result<T, prism::Error>,
+    ) -> Result<Rc<RefCell<T>>, prism::Error> {
+        if !self.fresh.get() {
+            return acquire(id).map(|backend| Rc::new(RefCell::new(backend)));
+        }
+        if let Some(backend) = self.private.borrow().get(&id) {
+            return Ok(Rc::clone(backend));
+        }
+        let backend = Rc::new(RefCell::new(create(id)?));
+        self.private.borrow_mut().insert(id, Rc::clone(&backend));
+        Ok(backend)
+    }
+
+    fn settle(&self) {}
 }
 
 impl PrismRegistry {
@@ -170,14 +210,13 @@ impl PrismRegistry {
     /// worker wedges inside a native call (Chris, 2026-09-03: a SAPI purge
     /// that never returned took both voices for the rest of the session), a
     /// replacement that merely re-acquired SAPI would inherit the very
-    /// instance still stuck in that call. Until `settle`, every `acquire`
-    /// here creates a fresh instance -- for SAPI, its own apartment thread
-    /// and voice -- and the start-up selection runs on those. Afterwards
-    /// the three-second re-probe uses the cache again: creating and tearing
-    /// down a SAPI voice per probe is not a cost to pay forever.
+    /// instance still stuck in that call. Each backend id gets one private
+    /// instance -- for SAPI, its own apartment thread and voice. Startup,
+    /// settings replay and later probes reuse those private instances for
+    /// this registry's entire lifetime, without returning to the shared cache.
     pub fn new_fresh() -> Result<Self, prism::Error> {
         let registry = Self::from_context(prism::Context::new()?);
-        registry.fresh.set(true);
+        registry.instances.fresh.set(true);
         Ok(registry)
     }
 
@@ -185,7 +224,7 @@ impl PrismRegistry {
     pub fn from_context(ctx: prism::Context) -> Self {
         Self {
             ctx,
-            fresh: std::cell::Cell::new(false),
+            instances: BackendInstances::new(false),
         }
     }
 }
@@ -212,71 +251,69 @@ impl VoiceRegistry for PrismRegistry {
     }
 
     fn acquire(&self, id: BackendId) -> Result<Box<dyn VoiceBackend>, prism::Error> {
-        let backend = if self.fresh.get() {
-            self.ctx.create(id)?
-        } else {
-            self.ctx.acquire(id)?
-        };
+        let backend =
+            self.instances
+                .acquire(id, |id| self.ctx.create(id), |id| self.ctx.acquire(id))?;
         Ok(Box::new(PrismVoice { backend }))
     }
 
     fn settle(&self) {
-        self.fresh.set(false);
+        self.instances.settle();
     }
 }
 
 /// A Prism backend as a [`VoiceBackend`].
 pub struct PrismVoice {
-    backend: prism::Backend,
+    backend: Rc<RefCell<prism::Backend>>,
 }
 
 impl VoiceBackend for PrismVoice {
     fn name(&self) -> String {
-        self.backend.name()
+        self.backend.borrow().name()
     }
 
     fn features(&self) -> VoiceFeatures {
-        self.backend.features().into()
+        self.backend.borrow().features().into()
     }
 
     fn output(&mut self, text: &str, interrupt: bool) -> Result<(), prism::Error> {
-        self.backend.output(text, interrupt)
+        self.backend.borrow_mut().output(text, interrupt)
     }
 
     fn speak(&mut self, text: &str, interrupt: bool) -> Result<(), prism::Error> {
-        self.backend.speak(text, interrupt)
+        self.backend.borrow_mut().speak(text, interrupt)
     }
 
     fn braille(&mut self, text: &str) -> Result<(), prism::Error> {
-        self.backend.braille(text)
+        self.backend.borrow_mut().braille(text)
     }
 
     fn stop(&mut self) -> Result<(), prism::Error> {
-        self.backend.stop()
+        self.backend.borrow_mut().stop()
     }
 
     fn set_rate(&mut self, rate: f64) -> Result<(), prism::Error> {
-        self.backend.set_rate(rate as f32)
+        self.backend.borrow_mut().set_rate(rate as f32)
     }
 
     fn set_pitch(&mut self, pitch: f64) -> Result<(), prism::Error> {
-        self.backend.set_pitch(pitch as f32)
+        self.backend.borrow_mut().set_pitch(pitch as f32)
     }
 
     fn set_volume(&mut self, volume: f64) -> Result<(), prism::Error> {
-        self.backend.set_volume(volume as f32)
+        self.backend.borrow_mut().set_volume(volume as f32)
     }
 
     fn voices_count(&self) -> Result<usize, prism::Error> {
-        self.backend.voices_count()
+        self.backend.borrow().voices_count()
     }
 
     fn voice_name(&self, index: usize) -> Result<String, prism::Error> {
-        self.backend.voice_name(index)
+        self.backend.borrow().voice_name(index)
     }
 
     fn set_voice(&mut self, index: usize) -> Result<(), prism::Error> {
-        self.backend.set_voice(index)
+        self.backend.borrow_mut().set_voice(index)
     }
 }
 
