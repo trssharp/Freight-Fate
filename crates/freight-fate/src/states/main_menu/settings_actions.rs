@@ -201,7 +201,7 @@ impl SettingsCategoryState {
         }
         if matches!(
             field,
-            "curve_callouts" | "destination_approach_assist" | "predictive_cruise" | "speed_keeper"
+            "curve_callouts" | "predictive_cruise" | "speed_keeper"
         ) {
             // Input-accessibility aids and information layers, not realism
             // choices: they live outside the presets, so toggling one never
@@ -209,9 +209,6 @@ impl SettingsCategoryState {
             let s = &mut ctx.settings;
             match field {
                 "curve_callouts" => s.curve_callouts = !s.curve_callouts,
-                "destination_approach_assist" => {
-                    s.destination_approach_assist = !s.destination_approach_assist
-                }
                 "predictive_cruise" => s.predictive_cruise = !s.predictive_cruise,
                 _ => s.speed_keeper = !s.speed_keeper,
             }

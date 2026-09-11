@@ -181,13 +181,19 @@ pub enum AssistValue {
     Mode(&'static str),
 }
 
-pub const DRIVING_ASSIST_FIELDS: [&str; 9] = [
+pub const DRIVING_ASSIST_FIELDS: [&str; 10] = [
     "automatic_emergency_braking",
     "lane_departure_warning",
     "stop_and_go_assist",
     "lane_centering_assist",
     "descent_speed_control",
     "exit_speed_assist",
+    // Facility stopping assistance is a preset field again (owner, 2026-09-11).
+    // The 2026-08-31 merge with the rest-stop assist left it outside the
+    // presets, so a fresh install on Balanced coasted past its own pickup
+    // while the manual promised Balanced "stops for you at your destination".
+    // Realistic leaves it off, the way a real truck's assists would.
+    "destination_approach_assist",
     "curve_speed_assist",
     "route_transition_assist",
     // Lane keeping is a preset field like the rest. It used to sit outside
@@ -199,7 +205,7 @@ pub const DRIVING_ASSIST_FIELDS: [&str; 9] = [
 
 use AssistValue::{Flag, Mode};
 
-pub const DRIVING_ASSIST_PRESETS: [(&str, [AssistValue; 9]); 3] = [
+pub const DRIVING_ASSIST_PRESETS: [(&str, [AssistValue; 10]); 3] = [
     (
         "realistic",
         [
@@ -209,6 +215,7 @@ pub const DRIVING_ASSIST_PRESETS: [(&str, [AssistValue; 9]); 3] = [
             Flag(false),
             Mode("realistic"),
             Flag(true),
+            Flag(false),
             Flag(true),
             Flag(true),
             Mode("off"),
@@ -222,6 +229,7 @@ pub const DRIVING_ASSIST_PRESETS: [(&str, [AssistValue; 9]); 3] = [
             Flag(true),
             Flag(true),
             Mode("balanced"),
+            Flag(true),
             Flag(true),
             Flag(true),
             Flag(true),
@@ -239,13 +247,14 @@ pub const DRIVING_ASSIST_PRESETS: [(&str, [AssistValue; 9]); 3] = [
             Flag(true),
             Flag(true),
             Flag(true),
+            Flag(true),
             Mode("full"),
         ],
     ),
 ];
 
 /// `DRIVING_ASSIST_PRESETS[name]`.
-pub fn driving_assist_preset(name: &str) -> Option<&'static [AssistValue; 9]> {
+pub fn driving_assist_preset(name: &str) -> Option<&'static [AssistValue; 10]> {
     DRIVING_ASSIST_PRESETS
         .iter()
         .find(|(preset, _)| *preset == name)
@@ -642,7 +651,7 @@ impl Settings {
     }
 
     /// The preset fields' current values, in DRIVING_ASSIST_FIELDS order.
-    pub fn assist_values(&self) -> [AssistValue; 9] {
+    pub fn assist_values(&self) -> [AssistValue; 10] {
         [
             Flag(self.automatic_emergency_braking),
             Flag(self.lane_departure_warning),
@@ -650,6 +659,7 @@ impl Settings {
             Flag(self.lane_centering_assist),
             Mode(static_mode(&self.descent_speed_control)),
             Flag(self.exit_speed_assist),
+            Flag(self.destination_approach_assist),
             Flag(self.curve_speed_assist),
             Flag(self.route_transition_assist),
             Mode(static_mode(&self.lane_keeping)),
@@ -674,6 +684,7 @@ impl Settings {
             ("lane_centering_assist", Flag(v)) => self.lane_centering_assist = v,
             ("descent_speed_control", Mode(v)) => self.descent_speed_control = v.to_string(),
             ("exit_speed_assist", Flag(v)) => self.exit_speed_assist = v,
+            ("destination_approach_assist", Flag(v)) => self.destination_approach_assist = v,
             ("curve_speed_assist", Flag(v)) => self.curve_speed_assist = v,
             ("route_transition_assist", Flag(v)) => self.route_transition_assist = v,
             ("lane_keeping", Mode(v)) => self.lane_keeping = v.to_string(),

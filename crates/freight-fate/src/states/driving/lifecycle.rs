@@ -318,10 +318,10 @@ impl DrivingState {
             })
             .collect();
         log::info!(
-            "driving assists: preset {}, {}, destination_approach_assist={},              selected_stop_assist={}, speed_keeper={}, predictive_cruise={},              driving_speech={}",
+            "driving assists: preset {}, {}, selected_stop_assist={}, speed_keeper={}, \
+             predictive_cruise={}, driving_speech={}",
             s.driving_assistance_preset,
             fields.join(", "),
-            if s.destination_approach_assist { "on" } else { "off" },
             if s.selected_stop_assist { "on" } else { "off" },
             if s.speed_keeper { "on" } else { "off" },
             if s.predictive_cruise { "on" } else { "off" },

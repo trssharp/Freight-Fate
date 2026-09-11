@@ -1533,7 +1533,9 @@ Exit speed assistance slows for an already-selected exit. Facility stopping
 assistance (the destination approach assistance row) slows and stops at the
 selected facility arrival point. About a block out, it says "Facility stopping assistance taking the pedals" and controls the pedals until the gate. From a
 cleared stop or green light at the end of the destination ramp, it also pulls
-ahead for you and hands city streets to the speed keeper.
+ahead for you and hands city streets to the speed keeper. Realistic leaves it
+off; Balanced and All assists turn it on, and changing it by hand reads as
+Custom like any other preset row.
 
 The separate default-off planned-stop control stops at a sleep stop only after
 T plans it and X signals for it.

@@ -157,6 +157,10 @@ its status or release decision.
       parked highway run at its route pace, and the speed readout names a
       lead vehicle that is setting the speed keeper's number (agent drive,
       Dallas to Sherman with every assist on, 2026-09-11).
+- [x] Facility stopping assistance is a preset field again (owner ruling
+      2026-09-11): Realistic off, Balanced and All assists on, hand changes
+      read as Custom. The 2026-08-31 rest-stop merge had left it outside the
+      presets while the manual promised Balanced stops at the destination.
 - [ ] The S key names a connector arc's advisory ("The bend here advises
       40") at a highway-to-highway interchange, but connector arcs are
       excluded from the curve call, the curve servo and the cargo model by

@@ -564,6 +564,13 @@
 
 ### Changed
 
+- **Balanced and All assists now stop the truck at the facility for you.**
+  Facility stopping assistance is part of the driving assistance presets
+  again: Realistic leaves it off, Balanced and All assists turn it on, and
+  changing it by hand reads as Custom. A fresh install on Balanced used to
+  coast past its own pickup unless you braked. A saved choice made before
+  presets existed is kept as it was.
+
 - **Fuel counts toward your truck's weight.** Burning diesel makes the truck
   lighter, and refueling adds the weight back. Load offers and fuel menus tell
   you how much room remains under the gross-weight limit.

@@ -97,7 +97,7 @@ pub(super) const DRIVING_ASSIST_SPECS: [(&str, &str, &str); 13] = [
     (
         "destination_approach_assist",
         "Facility stopping assistance",
-        "On the final approach, after any exit, it works the throttle and brakes: up to 12 miles per hour through the facility lane, creeping the last 200 feet, then stopping at pickup and delivery facilities, rest stops, and required weigh stations. It never chooses an exit, enters a yard, or docks. Presets never change it.",
+        "On the final approach, after any exit, it works the throttle and brakes: up to 12 miles per hour through the facility lane, creeping the last 200 feet, then stopping at pickup and delivery facilities, rest stops, and required weigh stations. It never chooses an exit, enters a yard, or docks. Realistic leaves it off; Balanced and All assists turn it on.",
     ),
     (
         "curve_speed_assist",
