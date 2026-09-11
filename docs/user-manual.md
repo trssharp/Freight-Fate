@@ -490,6 +490,8 @@ available road guidance without claiming to identify an exact gate or dock.
 Each job lists:
 
 - Cargo and weight.
+- The margin under or over the 80,000-pound gross-weight limit with the load
+  and current fuel.
 - Origin facility.
 - Destination facility.
 - Distance.
@@ -686,6 +688,11 @@ Condition belongs to the truck, not to you. Each truck you own keeps its
 own wear, damage, fuel, and traction equipment, so switching tractors
 means switching into that truck's actual state.
 
+Fuel adds to gross weight. Burning fuel makes the truck lighter; refueling
+adds that weight back. Check the weight margin before accepting a load or
+filling the tank. The fuel menu reports the projected weight after refueling.
+This is a gross-weight check; the game does not simulate axle-weight limits.
+
 A loaded tractor-trailer pulls away gradually. The automatic transmission holds
 the first few gears long enough to feel the weight, then settles into normal
 highway acceleration. It shifts like a real automated box: quick, light
@@ -731,15 +738,20 @@ change lanes, or replace your attention.
 
 ## Truck damage and being out of service
 
-Damage is not one number that quietly costs money at the garage. Past certain
-points the truck itself changes, and each change is announced when you cross
-it and announced again when a repair brings you back out of it, so you always
-know which band you are in. Below the first band nothing changes at all: a
-driver who keeps the truck straight never meets any of this.
+Brakes, tires, and the engine also have service limits. At 80 percent wear,
+you hear a warning to arrange service. At 100 percent, the worn component
+puts the truck out of service even if overall damage is low. These are
+maintenance limits in the game. Check truck status to hear what needs repair.
+The garage can replace the tires, reline the brakes, or overhaul the engine.
+Roadside repair remains available if a component reaches its limit on a trip.
+
+Damage changes how the truck drives at the following thresholds. Each new
+band is announced, including when repairs move it back down. Wear can reduce
+performance or require service at any damage level.
 
 | Damage | What the truck does |
 | --- | --- |
-| Under 50 percent | Nothing. Full power. |
+| Under 50 percent | No damage-related power reduction. |
 | Past 50 percent | **Reduced power.** The engine holds back and burns more fuel for the same work. |
 | Past 75 percent | **Limp mode.** Reduced power, plus a road-speed cap of 45 miles per hour you cannot drive out of. The cap eases in over a few seconds rather than snapping on. |
 | Past 85 percent | A spoken last call that names the number ahead, so the wall is never a surprise. |
@@ -1304,6 +1316,11 @@ Freight Fate tracks an ELD-style hours clock. Realistic and relaxed modes use th
 - You need a 30-minute break after 8 cumulative hours of driving.
 - Sleeping 10 hours resets the shift clock.
 
+Driving to another city to find work counts as commercial repositioning,
+even when you are bobtail and chose the trip yourself. It uses driving time
+while moving and on-duty time while stopped. Running without a trailer
+does not make the trip personal conveyance.
+
 At sleep-capable truck parking, the sleeper berth means the bunk in your cab.
 You can choose 2, 3, 7, or 8 hours in the sleeper berth to plan an 8+2 or 7+3
 split. Sleep 10 hours remains the simplest full reset. Shoulder sleep and
@@ -1335,6 +1352,14 @@ Each answer starts with its own words, so a mis-key is obvious before the
 number arrives. With hours of service enforcement off, each key says so rather
 than going quiet. **C** still gives the clock, the deadline, and whichever
 limit comes first, and the **Tab** status menu keeps the full report.
+
+Rest advice estimates which suitable stop you can reach before your next
+hours limit, including time to enter the stop. A break-only stop cannot
+replace somewhere to sleep when your shift is ending. When rest is needed
+before your destination, the game names the last reachable stop and warns
+before you pass it. If none is reachable,
+the readout says so. Traffic and weather can change the estimate; check
+again as your hours run down.
 
 The Logbook is the spoken Record of Duty Status behind that clock. It records a
 rolling timeline of driving, on-duty work, off-duty breaks, and sleeper-berth

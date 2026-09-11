@@ -14,6 +14,11 @@
 > finished.
 > Track plan: `docs/plan-1.9-final-slate.md`.
 
+> On September 11, the owner approved five corrections to existing 1.9 systems:
+> commercial bobtail duty, braking estimates, component service limits, fuel
+> weight, and reachable HOS rest stops. The weekly HOS cycle and full personal
+> conveyance controls remain in the 1.10 plan.
+
 > Current stable: **1.8.8.1** (hotfix shipped 2026-08-08). Next release: **1.9.0**, in
 > flight on the `feat/career-1.9` branch -- driving realism between the exits
 > (discrete lanes, ramp terminals, congestion, real surface streets) plus the
@@ -39,8 +44,8 @@ bookmarks usable.
 
 ### Release gate -- what stands between here and a public 1.9.0
 
-The checklist below reports the recorded open release gates. This documentation
-edit has not revalidated their implementation status. The
+The checklist below retains the recorded open release gates. Verification here
+covers the September 11 corrections; other items have not been revalidated. The
 [detailed backlog](docs/roadmap-details.md) retains the supporting notes and
 [completed gate work](docs/roadmap-details.md#completed-19-release-gate-work).
 
@@ -77,8 +82,9 @@ These items are part of the release-gate sweep:
 - [ ] The 2026-08-13 Dropbox tester findings are still untriaged.
 - [ ] Cruise destination-lane selection still brakes for the lane the
       truck is leaving on held-wheel drift.
-- [ ] Emergency braking's warning budget disagrees with the stop the
-      truck actually makes.
+- [x] Braking estimates share the live brake-force calculation. Generic
+      hazard warnings retain service-braking and reaction time; emergency
+      braking has its own stopping estimate.
 
 - [ ] Testers hear sounds quieter at the quiet speech rung; three
       suspects eliminated, still unexplained.
@@ -113,6 +119,23 @@ The detailed backlog retains the remaining work and its recorded release scope.
 Update each item where it is recorded; this reorganization does not change
 its status or release decision.
 
+### September 11 trucking corrections
+
+- [x] Commercial bobtail repositioning records driving time while moving and
+      on-duty time while stopped, including terminal turnaround.
+- [x] Tires, brakes, and engine warn at the 80-percent game maintenance
+      threshold and require service at 100 percent. Garage and roadside
+      recovery remain available to company drivers and owner-operators.
+- [x] Remaining diesel contributes to gross weight. Dispatch previews use
+      the assigned tractor, and fuel menus report full-tank weight margin.
+- [x] HOS advice selects a compatible reachable rest stop and warns before
+      the last usable exit. Interrupted warnings retry after pause or resume;
+      completed warnings stay suppressed until the relevant reset.
+- [ ] Complete audible gameplay verification. The September 11 agent-server
+      session reached the real menus and pickup approach, but Prism reported
+      "Not initialized" and speech delivery failed. Menu and automated checks
+      passed; driving by ear and the owner's listening pass remain unverified.
+
 ## 1.10 planned -- the working week and home
 
 Design doc: `docs/eld-home-terminal-design.md`. The ELD grows from a daily
@@ -138,13 +161,10 @@ terminal becomes the anchor of that week instead of a spawn point.
 Regulatory baseline: [FMCSA personal-conveyance guidance](https://www.fmcsa.dot.gov/regulations/hours-service/personal-conveyance)
 and [FMCSA ELD recording guidance](https://www.fmcsa.dot.gov/hours-service/elds/if-driver-permitted-use-commercial-motor-vehicle-cmv-personal-reasons-how-must).
 
-- [ ] **Correct today's bobtail classification before adding the ELD
-      choice.** Separate physical configuration (bobtail means tractor
-      without a trailer) from duty purpose. Driving empty to another
-      city's dispatch board improves commercial readiness, so it must
-      record as driving/on-duty repositioning rather than off-duty
-      personal conveyance. Deadhead with an empty trailer remains a
-      separate physical configuration.
+- [x] **Commercial bobtail duty corrected in 1.9.** Driving empty to another
+      city's dispatch board records driving/on-duty repositioning. Bobtail
+      still means a tractor without a trailer; deadhead with an empty trailer
+      remains a separate physical configuration.
 - [ ] **Personal-conveyance first slice.** Add spoken Start personal
       conveyance and End personal conveyance actions to the ELD menu.
       Ask for a valid purpose and nearby destination: food, shower,

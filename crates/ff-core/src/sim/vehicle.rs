@@ -18,13 +18,18 @@ use crate::sim::transmission::Transmission;
 mod air;
 mod condition;
 mod forces;
+mod mass;
 mod shifting;
 mod updates;
+
+pub use mass::DIESEL_KG_PER_GAL;
 
 #[cfg(test)]
 mod damage_band_tests;
 #[cfg(test)]
 mod physics_bench_tests;
+#[cfg(test)]
+mod realism_tests;
 #[cfg(test)]
 mod tests;
 
@@ -47,6 +52,16 @@ pub const SURGE_EXCUSE_FORCE_N: f64 = 1500.0;
 // Full service application plus the spring brakes: the hardest stop the rig
 // can make, still scaled by weather grip and brake fade.
 pub const EMERGENCY_BRAKE_MULT: f64 = 1.6;
+
+/// Foundation-brake application used by estimates and live force calculations.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BrakeApplication {
+    /// Normal treadle-valve application, from released through full service.
+    Service(f64),
+    /// Full service plus the emergency/spring-brake force used by the B key.
+    Emergency,
+}
+
 /// About 10 mph: backing speed, not road speed.
 pub const MAX_REVERSE_MPS: f64 = 4.5;
 
@@ -54,7 +69,7 @@ pub const MAX_REVERSE_MPS: f64 = 4.5;
 pub const KG_PER_TON: f64 = 1000.0;
 /// International avoirdupois pound, for the federal 80,000 lb GVW cap.
 pub const KG_PER_LB: f64 = 0.45359237;
-/// Federal combination gross vehicle weight limit. Fuel is not counted.
+/// Federal combination gross vehicle weight limit, including fuel.
 pub const LEGAL_GVW_LB: f64 = 80_000.0;
 pub const LEGAL_GVW_KG: f64 = LEGAL_GVW_LB * KG_PER_LB;
 // Reference loaded Class 8: ~36 t gross at a full ~21.5 t payload, leaving a
@@ -67,8 +82,8 @@ pub const REFERENCE_CARGO_KG: f64 = 21_500.0;
 // deadhead hauling an empty box.
 pub const TRAILER_TARE_KG: f64 = 6_400.0;
 
-/// Tractor plus empty trailer for the stock Class 8 specs, used to clamp
-/// dispatched cargo so a legal load stays at or under 80,000 lb GVW.
+/// Tractor, empty trailer, and full fuel tank for the stock specs.
+/// Dispatch reserves this operating tare so filling up keeps its loads legal.
 pub fn combination_tare_kg(specs: &TruckSpecs) -> f64 {
     (specs.mass_kg - REFERENCE_CARGO_KG).max(0.0)
 }
@@ -115,6 +130,10 @@ pub const ENGINE_WEAR_LUG_PCT_PER_S: f64 = 0.05;
 pub const LUG_THROTTLE: f64 = 0.7;
 /// Of peak-torque RPM.
 pub const LUG_RPM_FRACTION: f64 = 0.7;
+/// Gameplay threshold for an advance service warning.
+pub const COMPONENT_SERVICE_WARNING_PCT: f64 = 80.0;
+/// Gameplay threshold where the truck requires service before it can continue.
+pub const COMPONENT_SERVICE_LIMIT_PCT: f64 = 100.0;
 
 // -- incident damage bands ---------------------------------------------------------
 // A real truck does not fail all at once, and it does not shrug off a wreck
@@ -749,7 +768,14 @@ impl TruckState {
     /// to be able to crawl out of a live lane -- so what stops the trip is
     /// the creep cap the driving layer holds, not a dead engine.
     pub fn out_of_service(&self) -> bool {
-        self.damage_pct >= DAMAGE_OUT_OF_SERVICE_PCT
+        self.damage_pct >= DAMAGE_OUT_OF_SERVICE_PCT || self.maintenance_required()
+    }
+
+    /// Whether ordinary wear has reached the game's required-service limit.
+    pub fn maintenance_required(&self) -> bool {
+        self.tire_wear_pct >= COMPONENT_SERVICE_LIMIT_PCT
+            || self.brake_wear_pct >= COMPONENT_SERVICE_LIMIT_PCT
+            || self.engine_wear_pct >= COMPONENT_SERVICE_LIMIT_PCT
     }
 
     /// The road-speed governor is holding fuel off right now.
@@ -846,13 +872,9 @@ impl TruckState {
         1.0 - ENGINE_WEAR_POWER_LOSS * self.engine_wear_pct / 100.0
     }
 
-    /// Unloaded weight: the tractor, plus the empty trailer when hitched.
+    /// Unloaded operating weight, including remaining diesel.
     pub fn tare_kg(&self) -> f64 {
-        let base = (self.specs.mass_kg - REFERENCE_CARGO_KG).max(0.0);
-        if self.trailer_attached {
-            return base;
-        }
-        (base - TRAILER_TARE_KG).max(0.0)
+        self.dry_tare_kg() + self.fuel_mass_kg()
     }
 
     /// Current gross weight: tare plus the payload aboard.
@@ -865,7 +887,7 @@ impl TruckState {
     }
 
     /// Whether this combination is over the federal 80,000 lb GVW cap.
-    /// Tractor + trailer + cargo only; fuel is not counted.
+    /// Includes the tractor, attached trailer, cargo, and remaining diesel.
     pub fn is_over_legal_gvw(&self) -> bool {
         self.gross_mass_kg() > LEGAL_GVW_KG
     }

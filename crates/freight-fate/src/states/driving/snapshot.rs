@@ -50,6 +50,13 @@ fn strings(data: &Map<String, Value>, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn warning_levels(data: &Map<String, Value>, key: &str) -> Option<[u8; 3]> {
+    let items = data.get(key)?.as_array()?;
+    (items.len() == 3).then(|| {
+        std::array::from_fn(|index| items[index].as_u64().unwrap_or_default().min(2) as u8)
+    })
+}
+
 impl DrivingState {
     /// Every field the live stop is judged by, as one object. Kept in one
     /// place so the snapshot and the restore cannot drift apart and quietly
@@ -202,6 +209,10 @@ impl DrivingState {
             json!(self.out_of_service_creep_s),
         );
         out.insert("start_wear".to_string(), json!({"tire": self.start_tire_wear, "brake": self.start_brake_wear, "engine": self.start_engine_wear}));
+        out.insert(
+            "maintenance_levels".to_string(),
+            json!(self.maintenance_levels),
+        );
         out.insert("rig_buffs".to_string(), json!(self.rig_buffs));
         out.insert(
             "speed_control_armed".to_string(),
@@ -353,6 +364,8 @@ impl DrivingState {
         state.start_tire_wear = f(&start_wear, "tire", state.trip.truck.tire_wear_pct);
         state.start_brake_wear = f(&start_wear, "brake", state.trip.truck.brake_wear_pct);
         state.start_engine_wear = f(&start_wear, "engine", state.trip.truck.engine_wear_pct);
+        state.maintenance_levels = warning_levels(data, "maintenance_levels")
+            .unwrap_or_else(|| state.maintenance_wear_levels());
         // Chains stay on the drives across a save; absent on older saves.
         state.trip.truck.chains_on = b(data, "chains_on", false);
         state.trailer_refused = b(data, "trailer_refused", false);

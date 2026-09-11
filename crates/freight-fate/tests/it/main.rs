@@ -13,6 +13,7 @@ mod states_driving_menus_support;
 mod states_main_menu_support;
 mod states_online_support;
 mod transcript_cruise_support;
+mod trucking_weight_braking;
 
 mod adversarial;
 mod agent_server;
@@ -153,3 +154,5 @@ mod updater;
 mod windows_subsystem;
 
 mod states_ramp_assist_control;
+
+mod states_driving_hos_planning;

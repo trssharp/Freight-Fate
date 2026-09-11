@@ -81,6 +81,7 @@ impl PauseMenuState {
         // player just stopped on. Left alone it sits in the event channel's
         // own queue and is performed over the pause menu, or replayed in full
         // on resume (tester transcript, 2026-08-11).
+        driving.prepare_warning_speech_pause(ctx);
         ctx.pause_event_speech();
         driving.pending_ambient_events.clear();
         driving.reverse_cue_active = false;
@@ -579,6 +580,7 @@ impl Menu for PauseMenuState {
     fn enter(&mut self, ctx: &mut GameContext) {
         ctx.audio.play("ui/pause");
         ctx.audio.stop_world();
+        self.driving.read(|d| d.prepare_warning_speech_pause(ctx));
         ctx.pause_event_speech();
         self.driving.read(|d| {
             d.pending_ambient_events.clear();

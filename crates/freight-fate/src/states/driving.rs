@@ -166,6 +166,10 @@ pub struct DrivingState {
 
     // ---- driving.py: hours, fatigue, hazards (driving_updates / driving_events) -------
     pub hos_fine_count: i64, // escalates with each failed inspection
+    /// Most recent quarter-game-minute HOS-stop planning check. This cache is
+    /// intentionally session-only; only a warning actually spoken is saved.
+    pub hos_stop_check_key: Option<String>,
+    pub hos_stop_warning_pending: Option<String>,
     pub enforcement_events: HashSet<String>,
     pub out_of_service_count: i64,
     pub drowsy_said: bool,
@@ -357,6 +361,11 @@ pub struct DrivingState {
     pub limp_cruise_said: bool,
     pub out_of_service_creep_s: f64,
     pub recovering: bool,
+    // Warning state for tires, brakes, and engine. New drives start clear so
+    // existing wear is announced once; resumed drives derive these levels
+    // from the saved wear and do not repeat an acknowledged warning.
+    pub maintenance_levels: [u8; 3],
+    pub maintenance_pending_levels: [u8; 3],
     // The highest cargo-condition rung already spoken, so each one warns
     // once. Trip-scoped and snapshotted like the damage band.
     pub cargo_cue_at: f64,

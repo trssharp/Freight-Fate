@@ -5,6 +5,7 @@ use ff_core::models::business::player_pays_operating_costs;
 use ff_core::models::economy::{damage_severity_mult, Economy, REPAIR_COST_PER_PCT};
 use ff_core::models::profile::Profile;
 use ff_core::pyfmt::{fmt_f, fmt_grouped, round_py_n};
+use ff_core::sim::vehicle::COMPONENT_SERVICE_LIMIT_PCT;
 
 use crate::app::GameContext;
 use crate::impl_state_for_menu;
@@ -45,6 +46,16 @@ fn record_terminal_duty(ctx: &mut GameContext, start_hour: f64, end_hour: f64, n
 fn save_equipment_change(ctx: &mut GameContext) {
     ctx.mark_meaningful_play(MeaningfulPlayReason::EquipmentChanged);
     ctx.save_profile();
+}
+
+fn remaining_balance_text(money: f64) -> String {
+    if money < 0.0 {
+        return format!(
+            "You have {} dollars; the unpaid balance is debt.",
+            fmt_grouped(money, 0)
+        );
+    }
+    format!("You have {} dollars left.", fmt_grouped(money, 0))
 }
 
 /// The two wear meters that share one service flow (`_service_wear_meter`).
@@ -469,7 +480,7 @@ impl GarageState {
         }
         let per_pct = Self::tire_cost_per_pct(ctx);
         let mut cost = round_py_n(wear * per_pct, 2);
-        if profile(ctx).money < cost {
+        if profile(ctx).money < cost && wear < COMPONENT_SERVICE_LIMIT_PCT {
             let serviceable = profile(ctx).money / per_pct;
             if serviceable < 1.0 {
                 ctx.audio.play("ui/error");
@@ -511,9 +522,9 @@ impl GarageState {
         save_equipment_change(ctx);
         ctx.audio.play("ui/notify");
         ctx.say(&format!(
-            "Tires replaced. {} dollars. You have {} dollars left.",
+            "Tires replaced. {} dollars. {}",
             fmt_grouped(cost, 0),
-            fmt_grouped(money, 0)
+            remaining_balance_text(money)
         ));
         self.refresh(ctx, true);
     }
@@ -733,7 +744,7 @@ impl GarageState {
             return;
         }
         let mut cost = round_py_n(wear * service.cost_per_pct, 2);
-        if profile(ctx).money < cost {
+        if profile(ctx).money < cost && wear < COMPONENT_SERVICE_LIMIT_PCT {
             let serviceable = profile(ctx).money / service.cost_per_pct;
             if serviceable < 1.0 {
                 ctx.audio.play("ui/error");
@@ -779,10 +790,10 @@ impl GarageState {
         save_equipment_change(ctx);
         ctx.audio.play("ui/notify");
         ctx.say(&format!(
-            "{} {} dollars. You have {} dollars left.",
+            "{} {} dollars. {}",
             service.done_say,
             fmt_grouped(cost, 0),
-            fmt_grouped(money, 0)
+            remaining_balance_text(money)
         ));
         self.refresh(ctx, true);
     }

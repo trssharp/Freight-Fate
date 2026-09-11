@@ -124,7 +124,18 @@ impl DrivingState {
             (truck.engine_wear_pct, "Engine"),
         ] {
             if worn >= WEAR_STATUS_PCT {
-                lines.push(format!("{label}: {worn:.0} percent worn"));
+                if worn >= ff_core::sim::vehicle::COMPONENT_SERVICE_WARNING_PCT {
+                    let component = match label {
+                        "Tires" => crate::states::driving_damage::MaintenanceComponent::Tires,
+                        "Brakes" => crate::states::driving_damage::MaintenanceComponent::Brakes,
+                        _ => crate::states::driving_damage::MaintenanceComponent::Engine,
+                    };
+                    lines.push(crate::states::driving_damage::maintenance_status_line(
+                        component, worn,
+                    ));
+                } else {
+                    lines.push(format!("{label}: {worn:.0} percent worn"));
+                }
             }
         }
         let now_h = self.absolute_game_hour(ctx, None);
@@ -161,7 +172,7 @@ impl DrivingState {
             lines.push(format!("HOS: {}", summary.trim_end_matches('.')));
             let context = self.hos_route_context(ctx);
             if !context.is_empty() {
-                lines.push(format!("Next legal stop: {context}"));
+                lines.push(format!("HOS route: {context}"));
             }
         }
         lines

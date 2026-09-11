@@ -15,14 +15,9 @@ impl DrivingState {
         let moving = self.trip.truck.speed_mph() > 5.0;
         let mode = ctx.settings.hos_mode.clone();
 
-        // A self-serve bobtail is the driver's own personal conveyance, off
-        // duty by FMCSA's own rule. A carrier-ASSIGNED reposition is the
-        // opposite: dispatch sent the truck there for the carrier's benefit,
-        // which is on-duty driving like any other move (ROADMAP: "Company
-        // drivers get ASSIGNED repositions").
-        if self.job.bobtail && !self.job.assigned {
-            hos_mut_of(ctx).off_duty(gm);
-        } else if moving {
+        // Traveling to find work is commercial repositioning, including
+        // self-serve bobtail runs. Stopped time remains on duty.
+        if moving {
             hos_mut_of(ctx).drive(gm);
         } else {
             hos_mut_of(ctx).on_duty(gm); // the 14-hour window runs even while parked
@@ -53,6 +48,9 @@ impl DrivingState {
         }
         self.trip.hos_violation = !hos::HOS_NON_ENFORCED_MODES.contains(&mode.as_str())
             && hos_of(ctx).in_violation(&mode);
+        if moving && self.hazard_deadline.is_none() {
+            self.warn_last_hos_stop(ctx);
+        }
 
         let night = is_night(self.trip.local_hour());
         let now_h = self.absolute_game_hour(ctx, None);

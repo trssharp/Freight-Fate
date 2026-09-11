@@ -564,6 +564,19 @@
 
 ### Changed
 
+- **Fuel counts toward your truck's weight.** Burning diesel makes the truck
+  lighter, and refueling adds the weight back. Load offers and fuel menus tell
+  you how much room remains under the gross-weight limit.
+
+- **Worn components can put your truck out of service.** Brakes, tires, and
+  the engine give advance service warnings. At their service limit, the
+  truck needs repair even if its overall damage is low.
+
+- **Rest advice names the last suitable stop within your hours.** The clock
+  readout checks the remaining drive and time to enter the stop. You hear a
+  warning before passing the last reachable stop when rest is needed before
+  your destination, or an explanation when none is reachable.
+
 - **The speech library behind every voice in the game is updated.** Prism,
   which carries the game's lines to NVDA, JAWS, SAPI and the other voices,
   moves from July's release to the current one on every platform. Its own
@@ -1266,6 +1279,15 @@
   The status readout still has the words if you ask for it.
 
 ### Fixed
+
+- **Bobtail trips to find work use your driving hours.** Choosing the trip
+  yourself no longer records commercial repositioning as off duty. Stops
+  during that travel count as on-duty time.
+
+- **Braking estimates use the brakes each situation calls for.** Planning
+  and hazard warnings allow for service braking and time to react. Service
+  and emergency stopping estimates use the same brake-force calculation as
+  the truck.
 
 - **Windows source builds no longer request unavailable Rust tools.** The
   build uses the required compiler components even when your Rust installation

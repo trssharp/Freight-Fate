@@ -256,15 +256,8 @@ impl DrivingState {
     /// those apply. Shared by the missed facility gate and the missed
     /// destination exit, whose loops are the same maneuver.
     pub fn charge_scripted_loop(&mut self, ctx: &mut GameContext, minutes: f64) {
-        // Self-serve bobtail is personal conveyance, off duty. A carrier-
-        // ASSIGNED reposition is on-duty driving, same as any other move.
-        if self.job.bobtail && !self.job.assigned {
-            hos_mut_of(ctx).off_duty(minutes);
-        } else {
-            // The loop is a real, if slow, drive through the next safe
-            // turnaround -- on-duty driving time, not a parked wait.
-            hos_mut_of(ctx).drive(minutes);
-        }
+        // A turnaround is driving time on every commercial reposition.
+        hos_mut_of(ctx).drive(minutes);
         let fatigue_mult = tuning_for_time_scale(self.trip.time_scale).fatigue_rate;
         let night = is_night(self.trip.local_hour());
         let now_h = self.absolute_game_hour(ctx, None);

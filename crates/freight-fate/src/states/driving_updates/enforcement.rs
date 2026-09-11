@@ -543,7 +543,7 @@ impl DrivingState {
 
     /// Whether this load is over the federal 80,000 lb GVW cap.
     ///
-    /// Tractor + trailer + cargo only. Fuel is not counted. An overweight
+    /// Tractor, trailer, cargo, and remaining diesel all count. An overweight
     /// truck is always red-lighted at a transponder scale.
     pub fn cargo_is_overweight(&self) -> bool {
         self.trip.truck.is_over_legal_gvw()

@@ -586,3 +586,6 @@ fn test_the_settlement_grade_round_trips_through_a_snapshot() {
     );
     assert_ne!(DAMAGE_BAND_NONE, resumed.worst_damage_band);
 }
+
+#[path = "maintenance_limits.rs"]
+mod maintenance_limits;

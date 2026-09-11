@@ -30,6 +30,7 @@
 
 pub mod clock;
 pub mod help;
+pub mod hos_stops;
 pub mod info;
 pub mod keys;
 pub mod latches;

@@ -5,6 +5,7 @@
 use ff_core::pyrandom::PyRandom;
 use ff_core::sim::driving_modes::tuning_for_time_scale;
 use ff_core::sim::trip_models::HAZARDS;
+use ff_core::sim::vehicle::BrakeApplication;
 use ff_core::speech_pacing::{EventPriority, SpeechCategory};
 use ff_core::speech_text::terse_silent;
 
@@ -41,9 +42,23 @@ impl DrivingState {
     /// hot brakes (playtest transcript, 2026-07-16).
     pub fn brake_budget_s(&self, target_mph: f64) -> f64 {
         let t = &self.trip.truck;
-        let over_mps = 0.0f64.max((t.speed_mph() - target_mph) / MPH_PER_MPS);
-        let decel = t.full_service_decel_mps2() + G * t.grade;
-        over_mps / decel.max(0.5)
+        t.braking_time_for_s(
+            t.velocity_mps,
+            target_mph / MPH_PER_MPS,
+            true,
+            BrakeApplication::Service(1.0),
+        )
+    }
+
+    /// Seconds of emergency braking to reach the given safe speed.
+    pub fn emergency_brake_budget_s(&self, target_mph: f64) -> f64 {
+        let t = &self.trip.truck;
+        t.braking_time_for_s(
+            t.velocity_mps,
+            target_mph / MPH_PER_MPS,
+            true,
+            BrakeApplication::Emergency,
+        )
     }
 
     /// Time-to-hazard at which automatic braking has to take the truck.
@@ -83,7 +98,8 @@ impl DrivingState {
             // 2026-08-24).
             window += LANE_TAP_CHANGE_S;
         }
-        self.aeb_engage_s(self.hazard_target_mph(Some(shape))) + window
+        let target_mph = self.hazard_target_mph(Some(shape));
+        self.aeb_engage_s(target_mph) + window
     }
 
     /// The live hazard's own shape, for the assist to budget against.
