@@ -190,6 +190,16 @@ cleanup](https://doc.rust-lang.org/book/ch21-03-graceful-shutdown-and-cleanup.ht
   tests and the binary. Everything in it runs headless and isolated -- dummy
   SDL drivers, no speech, a throwaway `FREIGHT_FATE_DATA_DIR` -- so it never
   touches the operator's real settings, saves or keyring.
+- Agent-server testing: run `cargo run -p freight-fate --bin freightfate --
+  --agent-server` when live gameplay verification is authorized. It provides
+  MCP tools over standard input/output. Use `listen`, `menu`, `press`,
+  `select`, `pedal`, `hold`, `release`, and `wait_for` to play one sandboxed
+  game through the normal controls. Check spoken readouts and event output
+  for the changed behavior, then end the session with `quit_game`. Treat
+  `observe` as diagnostic state, and record any information the driver needed
+  but could not hear. Keep this check separate from unit tests and the
+  adversarial battery. Recorded speech does not establish how speech sounds
+  to the owner; that still needs the owner's listening pass.
 - Rust CI (`.github/workflows/rust.yml`) is **Windows only**, deliberately:
   SDL2 is vendored for `windows-x86_64` alone. macOS and Linux build from
   source (BASS is fetched for both, Prism is vendored, and SDL2 is compiled

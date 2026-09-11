@@ -39,6 +39,10 @@ each release.
   `uv run python -m compileall src tests tools`.
 - For user-facing changes, include how you checked the spoken text, keyboard
   flow, or other accessibility impact.
+- Include a sandboxed agent-server session when live gameplay testing is
+  authorized. See [agent-server testing](CLAUDE.md#rust----gameplay-and-what-ci-gates)
+  for the controls and evidence to record. Keep automated tests, agent play,
+  and the owner's listening pass distinct in the results.
 - For player-facing changes, add a `CHANGELOG.md` entry (see Changelog
   entries below); CI enforces this.
 
