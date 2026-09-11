@@ -15,15 +15,23 @@ alone take `[skip changelog]`.
 
 Freight Fate's entities divide into a portable model layer and a game layer.
 
-**The portable layer** -- `models/` and most of `sim/` -- describes the world,
-the freight, the driver and the equipment. None of it should know that
-Freight Fate is a Pygame program: no pygame import, no audio backend, no
-speech. That rule is not stylistic. It is what keeps the model layer testable
-headless and reusable, and it is enforced by convention today, so watch for it
-in review.
+**The portable layer** is the `ff-core` crate: world data, career models,
+simulation, and spoken-text rules. It has no window, audio-device,
+screen-reader, or network dependencies. Cargo enforces that boundary, so
+these systems can run in headless tests.
 
-**The game layer** -- `states/`, the audio and speech stack, saves, online
-services -- is Freight Fate specific and always will be.
+**The game layer** is the `freight-fate` crate: the application and screen
+states, audio and speech backends, saves, and online services. Career 1.9
+uses this native Rust runtime. See [the contributor architecture guide](../CLAUDE.md#how-the-code-fits-together)
+for the crate layout and service boundaries.
+
+The Python module and class references below are **legacy port references**
+under `src/freight_fate/`, including `models/`, `sim/`, and `states/`.
+They are not the current gameplay implementation. Rust
+modules generally retain the names of their Python counterparts under
+`crates/ff-core/src/` or `crates/freight-fate/src/`; consult those modules
+for current behavior. The tables retain the reference names to help locate
+port history. Their canonical spoken vocabulary still applies to the game.
 
 The portable layer's vocabulary is documented alongside the code that owns it.
 This file catalogues the game layer, and then the spoken vocabulary for both.

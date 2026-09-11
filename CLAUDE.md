@@ -335,7 +335,7 @@ nothing. Reported 2026-08-24, on a closing summary with five headed sections
 that left the owner unsure whether the bugs in it were fixed or still open.
 
 Longer only when he asks for analysis, a decision needs context, or something
-is genuinely still broken.
+is still broken.
 
 **Stay steerable: background anything that would block.** A foreground tool
 call holds the turn and queues whatever the owner types next. Background any

@@ -160,7 +160,7 @@ past its limit now wears the engine. Companion volume, checklists 5
 and 9.
 
 **Winter is real.** Freezing rain is its own weather and the one worth
-parking for. Winter tires are a garage choice with honest trade-offs.
+parking for. Winter tires are a garage choice with trade-offs.
 Chains ride in the side box, take real minutes and fatigue to hang (more
 in the dark), transform ice stops and icy descents, and grind apart on
 bare pavement. Chain laws activate over the steep passes with flashing
@@ -207,10 +207,9 @@ flagger before the barrels; CB chatter hints at bears ahead. Traffic
 stops read a real logbook — the in-cab Record of Duty Status — and dock
 work takes spoken on-duty time. Chapter 7.
 
-**Three driving-pressure modes.** Relaxed keeps every system but spaces
-hazards wider, allows more response time, and quiets routine speech;
-Standard keeps the old balance; the former Fast is now called Realistic.
-Chapter 8.
+**Three trip-pacing modes.** Relaxed runs at ten times real time, Standard
+at twenty times, and Real time at normal speed. The retired Realistic
+pacing choice now uses Standard. Chapter 8 compares the accelerated modes.
 
 **The career reads like employment.** New careers choose among fictional
 starter carriers (assigned equipment, carrier-paid fuel and repairs,
@@ -291,7 +290,7 @@ lugging and the loaded hours, tire wear from the miles.
 
 ### 2.2 Wear talks back
 
-Setup: force a worn truck honestly (many legs) or use an established
+Setup: wear a truck through many legs or use an established
 high-mileage profile.
 
 Do: compare a hard stop and a fuel readout against a fresh truck's.
@@ -415,7 +414,7 @@ the lane readout always agrees with what you last did.
 
 ### 4.2 Change lanes or brake
 
-Setup: a busy leg, Standard or Realistic pressure.
+Setup: a busy leg with Standard trip pacing.
 
 Do: when a dodgeable hazard calls "Change lanes or brake!", dodge with a
 lane change instead of braking — but press L first to know where the
@@ -425,7 +424,7 @@ Listen for: a clean dodge when the adjacent lane is clear; sideswipe
 risk spoken when it is not; the CB nagging you to keep right if you camp
 the hammer lane afterward.
 
-Pass when: the lane change genuinely resolves the hazard and sideswiping
+Pass when: the lane change resolves the hazard and sideswiping
 real traffic carries real consequences.
 
 ### 4.2a The warning leaves you time to answer it
@@ -751,15 +750,15 @@ delivery windows price it in.
 ### 8.1 Relaxed is calmer, not smaller
 
 Setup: the same leg, same load, driven twice: once in Relaxed, once in
-Realistic (Settings, driving mode).
+Standard (Settings, driving mode).
 
-Do: drive both honestly.
+Do: drive the leg in each mode with the same load.
 
 Listen for: Relaxed keeping every system — weather, traffic, air brakes,
 fatigue, hazards, consequences — but spacing hazards farther apart,
 allowing more response time, building damage and fatigue more gently,
-and speaking routine matters more quietly. Realistic keeping the
-quickest decision cadence. Safety warnings staying ahead of hours and
+and speaking routine matters more quietly. Standard keeping the
+quicker decision cadence. Safety warnings staying ahead of hours and
 fatigue chatter in both.
 
 Pass when: the difference is pacing and breathing room, never missing
@@ -1020,7 +1019,7 @@ Press the limit key whenever something sounds wrong, so you can tell a
 real sign from a phantom.
 
 Listen for: curve calls that match the road you are on — a hairpin only
-where the country is genuinely steep enough for one. And a posted limit
+where the country is steep enough for one. And a posted limit
 that changes when the road changes and holds otherwise, rather than
 dipping and recovering for no reason you can hear.
 
@@ -1117,12 +1116,12 @@ place for the only copy of a career.
 Do: restore it.
 
 Listen for: a clean, ordinary restore. The new integrity layer runs
-behind the server's signature on every restore; an honest save should
-never hear it. If a restore is ever refused, the spoken line names the
-first problem in plain words — that sentence is the bug report.
+behind the server's signature on every restore; a valid save should
+restore without an integrity warning. If a restore is refused, the spoken
+line names the first problem in plain words. Include that sentence in the bug report.
 
-Pass when: honest saves restore silently and any refusal you can
-provoke says exactly why.
+Pass when: valid saves restore without an integrity warning and any refusal
+you can provoke says exactly why.
 
 ## Appendix A. Levers and keys
 
@@ -1195,7 +1194,7 @@ main menu, and unset them when the scenario is done. In PowerShell:
 Unset with `Remove-Item Env:FREIGHT_FATE_FORCE_CITY` (and the same for
 the other two) before normal play. When shared profiles arrive, the
 event ledger must record forced relocations and clock moves so a
-shared save carries an honest history (see docs/profile-invariants.md).
+shared save records those changes (see docs/profile-invariants.md).
 
 ## Appendix B. Reporting a run
 

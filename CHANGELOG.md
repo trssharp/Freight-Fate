@@ -17,26 +17,21 @@
 
 - **You can read another driver's profile without leaving the game.** On
   the Drivers on duty list, press Enter on a driver to open their public
-  profile: their name and whether they are on duty, then their current
-  career, employment and carrier, level and title, truck, and a career
-  resume, one fact per row, followed by their achievements across every
-  career and their latest road journal lines. It is the same profile the
-  orinks.net page shows. The Online menu also has a new row, Your profile,
-  which reads your own profile the way other players hear it. A driver whose
-  profile is not public says so, and yours tells you which setting to turn
-  on.
-- **You can stay a company driver, and an owner-operator can go back to
-  one.** Once the owner-operator buy-in opens, Business status has a new
-  row, Stay a company driver. Choose it and the game stops steering you at
-  the buy-in: the career plan, the next business unlock and the status
-  summary read as a company career instead, and the buy-in row simply stays
-  there for later. Reopen the owner-operator plan puts the reminders back.
-  If you have already bought in and want out, Business status also has Go
-  back to company driving. It asks twice. The carrier takes every tractor
-  and trailer you own, pays you for them, the buy-in tractor for what you
-  paid, anything bought since at its used value, and puts you back in a
-  carrier tractor on company wages with the same carrier. Nothing goes on
-  your record, and the buy-in stays open if you change your mind again.
+  profile. It reads their career, achievements, and latest road journal
+  entries, one fact per row, using the same information as orinks.net.
+  Choose Your profile on the Online menu to hear your own. Private profiles
+  remain private; your own profile tells you which sharing setting to enable.
+
+- **You can choose to stay a company driver.** In Business status, choose
+  Stay a company driver to stop the owner-operator reminders. The buy-in
+  remains available, and Reopen the owner-operator plan restores the reminders.
+
+- **Owner-operators can return to company driving.** Go back to company
+  driving in Business status asks you to confirm twice. Your carrier buys
+  every tractor and trailer you own: the buy-in tractor at its purchase
+  price, and later purchases at their used value. You return to company
+  wages and a carrier tractor with the same carrier. Your record is
+  unchanged, and you can buy in again later.
 
 - **You can play from a braille display with speech off.** A new row in
   Settings, Speech, called Output, switches between speech and braille and
@@ -253,7 +248,7 @@
   there: an empty crossroad lets the gamble pay, a near miss earns a
   hard horn, and a vehicle in the window is still the clip it always was.
 - **Yield signs and roundabouts at ramp ends, where the map really has
-  them.** About fourteen hundred exits whose ramps truly end at a give-way
+  them.** About fourteen hundred exits whose ramps end at a give-way
   or a roundabout now say so and play by yield rules: slow, listen for
   your gap, roll through at low speed if the road is clear, and stop only
   when it is not. Stopping is always legal, and route-transition
@@ -332,7 +327,7 @@
   highway survey, so congestion is placed from real volumes instead of a rough
   guess that almost never produced a jam. Run I-5 through Los Angeles or I-15
   out of Santa Ana at five in the afternoon and you will meet stop-and-go,
-  because those roads genuinely are over capacity then; the same roads at three
+  because those roads are over capacity then; the same roads at three
   in the morning are clear, and a quiet rural highway never jams at all.
 
 - **You can choose how much room the truck leaves to the vehicle ahead.** A new
@@ -1271,6 +1266,10 @@
   The status readout still has the words if you ask for it.
 
 ### Fixed
+
+- **The manual gives consistent speed-warning, police, and backup instructions.**
+  It clarifies the U key, speeding charges, and where Linux saves are stored.
+  Driving assistance now has shorter sections for finding each control.
 
 - **Speech recovery keeps its replacement voices connected.** If a voice stops
   responding during a drive, restoring your speech settings and checking the
