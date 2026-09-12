@@ -30,8 +30,10 @@ use ff_core::data::curves::RouteCurve;
 use ff_core::data::world::get_world;
 use ff_core::data::world_models::{CorridorDetail, Interchange, Leg, Route};
 use ff_core::data::world_parsing::parse_interchange;
+use ff_core::models::enforcement::{citation_fine, RED_LIGHT_FINE, STOP_SIGN_FINE};
 use ff_core::models::jobs::{Job, CARGO_CATALOG};
 use ff_core::models::profile::Profile;
+use ff_core::pyrandom::PyRandom;
 use ff_core::sim::trip_models::{RoadStop, Zone};
 use ff_core::sim::weather::WeatherKind;
 use ff_core::speech_pacing::EventPriority;
@@ -359,18 +361,148 @@ fn test_stop_sign_full_stop_clears() {
     assert_eq!(d.trip.truck.damage_pct, 0.0);
 }
 
-#[test]
-fn test_blowing_the_stop_sign_clips_cross_traffic() {
-    let mut app = TestApp::new();
-    let mut d = a_drive(&mut app);
-    on_ramp(&mut d, "stop", false, 30.0);
+/// Blow the terminal at `mph` on trip seed `seed`, past the bar, and return
+/// whether the trailer took damage, what the fine came to, and the wallet
+/// before the run.
+fn blow_the_terminal(app: &mut TestApp, control: &str, seed: i64, mph: f64) -> (bool, f64, f64) {
+    let mut d = a_drive(app);
+    let money_before = app.ctx.profile.as_ref().expect("a career").money;
+    d.trip_seed = seed;
+    d.cross_bubble = None; // the restored-save case: no bubble built yet
+    on_ramp(&mut d, control, control == "signal", mph);
     d.ramp_mi = Some(0.05); // past the bar at speed
     let before = d.trip.truck.damage_pct;
-
     d.update_ramp_terminal(&mut app.ctx);
-
+    app.ctx.run_deferred();
     assert!(d.ramp_terminal_done);
-    assert!(d.trip.truck.damage_pct > before);
+    (
+        d.trip.truck.damage_pct > before,
+        d.ticket_fines_paid,
+        money_before,
+    )
+}
+
+fn logged(app: &TestApp) -> Vec<String> {
+    app.ctx
+        .message_log
+        .messages
+        .iter()
+        .map(|m| m.text.clone())
+        .collect()
+}
+
+/// The first seed in `range(60)` whose watching roll lands under the catch
+/// chance, and the first that does not (the chain-law test's `_cited_seed`).
+fn signal_run_caught_and_missed(at_mi: f64) -> (i64, i64) {
+    let mut caught = None;
+    let mut missed = None;
+    for seed in 0..60 {
+        let roll = PyRandom::new_from_str(&format!("{seed}:signal-run:{at_mi:.1}")).random();
+        if roll < SIGNAL_RUN_CATCH_CHANCE && caught.is_none() {
+            caught = Some(seed);
+        } else if roll >= SIGNAL_RUN_CATCH_CHANCE && missed.is_none() {
+            missed = Some(seed);
+        }
+    }
+    (
+        caught.expect("some seed is seen"),
+        missed.expect("some seed gets away"),
+    )
+}
+
+#[test]
+fn test_blowing_the_stop_sign_is_dice_not_a_guaranteed_clip() {
+    // Owner playtest 2026-07-15: blowing the sign ALWAYS clipped cross
+    // traffic. The crossroad is a seeded traffic day now, even with no
+    // bubble to consult: some days a semi is crossing, some days nobody is.
+    let mut clipped = 0;
+    let mut clean = 0;
+    for seed in 0..40 {
+        let mut app = TestApp::new();
+        let (hit, _, _) = blow_the_terminal(&mut app, "stop", seed, 30.0);
+        if hit {
+            clipped += 1;
+        } else {
+            clean += 1;
+        }
+    }
+    assert!(clipped > 0, "no seed ever met cross traffic");
+    assert!(clean > 0, "every seed clipped: the certainty is back");
+}
+
+#[test]
+fn test_running_the_red_light_is_dice_not_a_guaranteed_clip() {
+    let mut clipped = 0;
+    let mut clean = 0;
+    for seed in 0..40 {
+        let mut app = TestApp::new();
+        let (hit, _, _) = blow_the_terminal(&mut app, "signal", seed, 30.0);
+        if hit {
+            clipped += 1;
+        } else {
+            clean += 1;
+        }
+    }
+    assert!(clipped > 0, "no seed ever met cross traffic");
+    assert!(clean > 0, "every seed clipped: the certainty is back");
+}
+
+#[test]
+fn test_running_the_red_light_risks_a_citation_on_a_seeded_roll() {
+    // The bar of `on_ramp` sits half a mile past the truck.
+    let at_mi = {
+        let mut app = TestApp::new();
+        let d = a_drive(&mut app);
+        d.trip.position_mi + 0.5
+    };
+    let (caught, missed) = signal_run_caught_and_missed(at_mi);
+
+    let mut app = TestApp::new();
+    let (_, fine, money_before) = blow_the_terminal(&mut app, "signal", caught, 30.0);
+    let expected = citation_fine(RED_LIGHT_FINE, 0, false, None);
+    assert!((fine - expected).abs() < 0.01, "{fine}");
+    let p = app.ctx.profile.as_ref().expect("a career");
+    assert!((p.money - (money_before - expected)).abs() < 0.01);
+    assert_eq!(p.driving_record.citations, 1);
+    let cited: Vec<String> = logged(&app)
+        .into_iter()
+        .filter(|s| s.contains("Running the red light is a citation"))
+        .collect();
+    assert_eq!(cited.len(), 1, "{:?}", logged(&app));
+    assert!(
+        cited[0].contains(&format!("{} dollars", expected as i64)),
+        "{}",
+        cited[0]
+    );
+
+    // Nobody watching: the crossroad decides the outcome, the wallet is untouched.
+    drop(app);
+    let mut app = TestApp::new();
+    let (_, fine, money_before) = blow_the_terminal(&mut app, "signal", missed, 30.0);
+    assert_eq!(fine, 0.0);
+    assert_eq!(
+        app.ctx.profile.as_ref().expect("a career").money,
+        money_before
+    );
+    assert!(!logged(&app).iter().any(|s| s.contains("is a citation")));
+}
+
+#[test]
+fn test_rolling_the_stop_sign_risks_the_stop_sign_citation() {
+    let at_mi = {
+        let mut app = TestApp::new();
+        let d = a_drive(&mut app);
+        d.trip.position_mi + 0.5
+    };
+    let (caught, _) = signal_run_caught_and_missed(at_mi);
+    let mut app = TestApp::new();
+    // A roll under the clip speed: no collision is possible, the citation still is.
+    let (hit, fine, _) = blow_the_terminal(&mut app, "stop", caught, STOP_ROLL_CLIP_MPH - 5.0);
+    assert!(!hit);
+    assert!((fine - citation_fine(STOP_SIGN_FINE, 0, false, None)).abs() < 0.01);
+    assert!(logged(&app)
+        .iter()
+        .any(|s| s.contains("Running the stop sign is a citation")));
 }
 
 #[test]

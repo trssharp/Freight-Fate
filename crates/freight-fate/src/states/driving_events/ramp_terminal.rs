@@ -379,11 +379,31 @@ impl DrivingState {
 
     /// What a terminal violation met, and the vehicle it met.
     ///
-    /// With no bubble to consult (older saves mid-ramp), the old certainty
-    /// stands: the violation hits.
-    pub fn cross_violation_meets(&self) -> (CrossMeeting, Option<CrossVehicle>) {
+    /// With no bubble to consult (older saves mid-ramp) this used to answer
+    /// with the old certainty -- the violation hits -- which is exactly the
+    /// guaranteed clip the owner's 2026-07-15 playtest called backwards.
+    /// Now the crossroad is rolled on the spot instead: the same seeded
+    /// traffic day `begin_ramp_terminal` would have built, asked the same
+    /// question, so a blown light meets whatever that road carries.
+    pub fn cross_violation_meets(&mut self) -> (CrossMeeting, Option<CrossVehicle>) {
+        if self.cross_bubble.is_none() {
+            let at_mi = self
+                .ramp_stop
+                .as_ref()
+                .map_or(self.trip.position_mi, |stop| stop.at_mi);
+            let control = match self.ramp_control.as_str() {
+                "roundabout" => "yield",
+                "signal" | "stop" | "yield" => self.ramp_control.as_str(),
+                _ => return (CrossMeeting::Empty, None),
+            };
+            self.cross_bubble = Some(CrossTraffic::new(
+                (self.trip_seed << 16) ^ (at_mi * 100.0) as i64 ^ 0x5AFE,
+                control,
+                self.trip.near_city(at_mi),
+            ));
+        }
         let Some(bubble) = self.cross_bubble.as_ref() else {
-            return (CrossMeeting::Hit, None);
+            return (CrossMeeting::Empty, None);
         };
         if let Some(vehicle) = bubble.occupant() {
             return (CrossMeeting::Hit, Some(vehicle.clone()));
@@ -392,6 +412,28 @@ impl DrivingState {
             return (CrossMeeting::Near, Some(vehicle.clone()));
         }
         (CrossMeeting::Empty, None)
+    }
+
+    /// How hard a blown terminal hits, by what actually arrived: a semi or
+    /// a bus broadsides the trailer, a car clips it.
+    pub fn cross_hit_severity(base: f64, vehicle: Option<&CrossVehicle>) -> f64 {
+        match vehicle {
+            Some(vehicle) if HEAVY_CROSS_CLASSES.contains(&vehicle.vehicle_class) => {
+                base * HEAVY_CROSS_HIT_MULTIPLIER
+            }
+            _ => base,
+        }
+    }
+
+    /// "cross traffic clipped the trailer" or "a semi hit the trailer
+    /// broadside": the collision clause for the vehicle a violation met.
+    pub fn cross_hit_clause(vehicle: Option<&CrossVehicle>) -> String {
+        match vehicle {
+            Some(vehicle) if HEAVY_CROSS_CLASSES.contains(&vehicle.vehicle_class) => {
+                format!("a {} hit the trailer broadside", vehicle.vehicle_class)
+            }
+            _ => "cross traffic clipped the trailer".to_string(),
+        }
     }
 
     /// The crossing cue for the vehicle a violation met.

@@ -380,11 +380,19 @@ fn test_the_cross_bubble_answers_an_empty_crossroad() {
     let mut app = TestApp::new();
     let mut d = a_real_drive(&mut app);
     d.cross_bubble = None;
-    // With no bubble to consult (older saves mid-ramp) the old certainty
-    // stands: the violation hits.
+    // No bubble and no controlled terminal: there is no crossroad to meet.
+    d.ramp_control = String::new();
     let (met, vehicle) = d.cross_violation_meets();
-    assert_eq!(met, CrossMeeting::Hit);
+    assert_eq!(met, CrossMeeting::Empty);
     assert!(vehicle.is_none());
+    assert!(d.cross_bubble.is_none());
+    // No bubble at a controlled terminal (a save restored mid-ramp): the
+    // crossroad is rolled on the spot instead of the old certainty that the
+    // violation hits, and the answer names the vehicle when it meets one.
+    d.ramp_control = "stop".to_string();
+    let (met, vehicle) = d.cross_violation_meets();
+    assert!(d.cross_bubble.is_some(), "the crossroad was not rolled");
+    assert_eq!(vehicle.is_some(), met != CrossMeeting::Empty);
     assert_eq!(DrivingState::cross_vehicle_sound(None), "traffic/car_cross");
 }
 

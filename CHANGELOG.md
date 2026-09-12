@@ -622,6 +622,22 @@
   how you know you are far enough over, with nothing spoken. The I key still
   turns the same tock on and off whenever you want it.
 
+### Fixed
+
+- **Running the light or the sign at a ramp end is a gamble now, and it can
+  cost you a ticket.** Before, blowing the red or the stop sign always clipped
+  cross traffic and never drew a citation. Now the crossroad decides: some
+  days nobody is crossing, some days a car leans on the horn, and some days a
+  semi hits the trailer broadside, which costs far more than a clip. Whatever
+  you meet, a patrol car sitting at the crossroad sees it about a third of the
+  time and writes you up, about 490 dollars for the red light and 240 for the
+  stop sign, more with citations on your record or in a work zone.
+- **The S key no longer names a bend the truck is not being asked to slow
+  for.** Inside a highway-to-highway connector it used to add "The bend here
+  advises 40" to the posted limit, though nothing in the cab acts on that
+  number. The readout now names mainline bends only; the D key still gives the
+  safe speed through the connector.
+
 ### Changed
 
 - **Balanced and All assists now stop the truck at the facility for you.**

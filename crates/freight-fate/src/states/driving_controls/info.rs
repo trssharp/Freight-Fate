@@ -168,7 +168,11 @@ impl DrivingState {
         // A posted 55 through hairpin country is honest -- the yellow
         // diamond is advisory, not the limit -- but S saying only "55"
         // mid-canyon reads as nonsense, so name the bend's number too.
-        let curve = self.binding_curve();
+        // Mainline bends only: a connector arc at an interchange is excluded
+        // from the curve call, the servo and the cargo model by design, so
+        // naming its number here told the driver about a bend nothing acts on
+        // (owner drive, I-30 to I-35 at Fort Worth).
+        let curve = self.binding_mainline_curve();
         let advisory = match curve {
             Some(curve) if (curve.advisory_mph as f64) < limit => format!(
                 " The bend here advises {}.",
@@ -188,9 +192,28 @@ impl DrivingState {
     }
 
     /// The bend under the wheels, or the next one close ahead -- whichever
-    /// binds. Both S and D ask the same question this way.
+    /// binds. D asks this way: a connector arc counts while the truck is
+    /// inside one, because the safe speed through it is real.
     fn binding_curve(&self) -> Option<RouteCurve> {
         if let Some(curve) = self.trip.curve_at(self.trip.position_mi) {
+            return Some(curve);
+        }
+        self.trip
+            .curves_within(SAFE_SPEED_CURVE_MI)
+            .first()
+            .copied()
+    }
+
+    /// The same question for S, mainline bends only. The posted-limit
+    /// readout names a bend to explain a limit the assists honour; a
+    /// connector arc is not one of those, so it is left out the way
+    /// `curves_within` already leaves it out of the bends ahead.
+    fn binding_mainline_curve(&self) -> Option<RouteCurve> {
+        if let Some(curve) = self
+            .trip
+            .curve_at(self.trip.position_mi)
+            .filter(|curve| !curve.connector)
+        {
             return Some(curve);
         }
         self.trip

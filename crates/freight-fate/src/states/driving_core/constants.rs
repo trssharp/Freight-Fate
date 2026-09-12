@@ -64,6 +64,13 @@ pub const CHAIN_REMOVE_FATIGUE: f64 = 2.0;
 // bottom of the grade is staffed often enough that gambling is a bad trade.
 // What the citation costs is priced in models/enforcement with every other fine.
 pub const CHAIN_LAW_CHECKPOINT_CHANCE: f64 = 0.6;
+// Running the ramp-end red or stop sign is seen when someone is watching the
+// crossroad -- a patrol car on the corner, a camera on the mast arm -- and
+// most of the time nobody is. Same shape as CHAIN_LAW_CHECKPOINT_CHANCE: a
+// flat, named, seeded roll, not a difficulty knob, priced in models/enforcement
+// with every other fine. Under half, so the lesson of a blown light stays the
+// cross traffic, not the paperwork.
+pub const SIGNAL_RUN_CATCH_CHANCE: f64 = 0.35;
 // Road wear service at branded travel centers -- the brand IS the capability
 // (amenities.classify_brand): Love's and Speedco run dedicated tire bays at
 // close to the terminal-garage rate and turn the truck around fast; TA and
@@ -247,16 +254,22 @@ pub const STOP_ROLL_CLIP_MPH: f64 = 15.0; // blowing a stop sign this fast clips
 pub const YIELD_ROLL_MPH: f64 = 15.0;
 pub const RED_RUN_DAMAGE: f64 = 0.3; // collision severity for running the red
 pub const STOP_ROLL_DAMAGE: f64 = 0.2; // lighter clip for blowing the stop sign
-                                       // Heuristic control mix when OSM has none baked: (signal, stop) cumulative
-                                       // weights; the remainder is free flow. Urban terminals are mostly signalized.
-                                       // A ramp onto ANOTHER FREEWAY is a system interchange: it ends in a merge,
-                                       // never a stop sign and never a light. Nothing stops traffic where an
-                                       // interstate meets an interstate. 4,999 of the world's 18,011 exits -- 27.8
-                                       // percent -- lead to one, and every single one of them was rolling the dice
-                                       // below, so half the rural ones were being given stop signs that cannot
-                                       // exist (owner, 2026-08-17: "no stop signs at the end of ramps"). Matched on
-                                       // the interchange's own `via`, which is baked from OSM. See
-                                       // `freeway_via_matches` for the compiled pattern.
+                                       // A blown terminal met by a semi, a bus or a box truck is a broadside, not a
+                                       // clip: the same violation scaled to what actually arrived, which is what
+                                       // makes the roll dice rather than a fixed price (owner playtest 2026-07-15,
+                                       // "sometimes a T-bone"). Cars and pickups keep the base severity.
+pub const HEAVY_CROSS_HIT_MULTIPLIER: f64 = 2.5;
+pub const HEAVY_CROSS_CLASSES: [&str; 3] = ["semi", "bus", "box truck"];
+// Heuristic control mix when OSM has none baked: (signal, stop) cumulative
+// weights; the remainder is free flow. Urban terminals are mostly signalized.
+// A ramp onto ANOTHER FREEWAY is a system interchange: it ends in a merge,
+// never a stop sign and never a light. Nothing stops traffic where an
+// interstate meets an interstate. 4,999 of the world's 18,011 exits -- 27.8
+// percent -- lead to one, and every single one of them was rolling the dice
+// below, so half the rural ones were being given stop signs that cannot
+// exist (owner, 2026-08-17: "no stop signs at the end of ramps"). Matched on
+// the interchange's own `via`, which is baked from OSM. See
+// `freeway_via_matches` for the compiled pattern.
 pub const FREEWAY_VIA_PATTERN: &str = r"\bI[-\s]?\d";
 
 // Cumulative (signal, stop) thresholds for a ramp terminal OSM never tagged:

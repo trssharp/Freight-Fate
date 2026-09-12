@@ -77,8 +77,10 @@ These items are part of the release-gate sweep:
 
 - [ ] Lane centering assist is a settings promise with no feature:
       implement or retire before 1.9 ships (owner decision).
-- [ ] Signal running always clips cross traffic and never draws a
-      citation -- backwards both ways.
+- [x] Signal running is dice and tickets (2026-09-12): the crossroad's
+      seeded traffic decides whether a blown red or stop sign meets nothing,
+      a horn, a clip or a heavy broadside, and a flat seeded roll draws the
+      red-light or stop-sign citation on the chain-law checkpoint rails.
 - [ ] The 2026-08-13 Dropbox tester findings are still untriaged.
 - [x] Cruise switches its traffic focus on the actual held-wheel lane
       crossing, keeping the origin lane until then and protecting traffic in
@@ -165,13 +167,12 @@ its status or release decision.
       2026-09-11): Realistic off, Balanced and All assists on, hand changes
       read as Custom. The 2026-08-31 rest-stop merge had left it outside the
       presets while the manual promised Balanced stops at the destination.
-- [ ] The S key names a connector arc's advisory ("The bend here advises
-      40") at a highway-to-highway interchange, but connector arcs are
-      excluded from the curve call, the curve servo and the cargo model by
-      design, so the truck stayed at 70 through it with no cargo at risk.
-      Either drop the connector from that readout or say it is the
-      interchange's number, so the driver is not told about a bend no
-      assist acts on (same drive, I-30 to I-35 at Fort Worth).
+- [x] The S key names mainline bends only (2026-09-12). It used to add a
+      connector arc's advisory ("The bend here advises 40") at a
+      highway-to-highway interchange, though connector arcs are excluded
+      from the curve call, the curve servo and the cargo model by design,
+      so the driver was told about a bend no assist acts on (I-30 to I-35
+      at Fort Worth). D still answers with the connector's safe speed.
 
 ### September 12 live data and dispatch
 

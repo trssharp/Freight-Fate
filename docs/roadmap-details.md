@@ -7067,15 +7067,18 @@ repository root; Markdown links are relative to this document.
       until the truck is through a light/sign terminal, instead of
       easing compression only with speed. Free-flow ramps compress as
       before.
-- [ ] **Signal running: dice and tickets, not a guaranteed clip (owner
-      playtest 2026-07-15).** Blowing the ramp-end red or stop sign today
-      ALWAYS clips cross traffic and never draws a citation -- backwards
-      on both counts. Make the clip a seeded traffic roll (sometimes the
-      horn and a near miss, sometimes a T-bone that belongs in the
-      catastrophic tier), and make running the light risk a citation on
-      the existing trooper/citation rails (chain-law checkpoint pattern).
-      Rides the back-road stoplights feature where the signal mechanic
-      lives.
+- [x] **Signal running: dice and tickets, not a guaranteed clip (owner
+      playtest 2026-07-15; shipped 2026-09-12).** Blowing the ramp-end red
+      or stop sign used to ALWAYS clip cross traffic and never draw a
+      citation -- backwards on both counts. The cross-traffic bubble now
+      decides what the run meets (nothing, a horn, a clip, or a semi, bus
+      or box truck broadside at two and a half times the clip severity),
+      and a save restored mid-ramp rolls the same seeded crossroad instead
+      of falling back to the certainty. Running the light or sign risks a
+      citation on the chain-law checkpoint rails: a flat seeded roll for
+      whether anyone was watching, then the career's repeat scaling and the
+      work-zone doubling, priced with every other fine in
+      `models/enforcement`.
 - [x] **Dense maxspeed and curve-geometry sweep (2026-07-15).** Every leg in
       the country re-sampled along its real routed geometry with a
       curvature-adaptive sampler (dense through curves, collapsed on tangents):

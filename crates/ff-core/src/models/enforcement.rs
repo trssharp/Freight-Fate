@@ -158,6 +158,15 @@ pub const LANE_MISUSE_FINE: f64 = 500.0;
 /// Running dark after sunset: an equipment violation everywhere, written as a
 /// fix-it-plus-fine in most states.
 pub const LIGHTS_FINE: f64 = 350.0;
+/// Running the red light where a ramp meets the surface road. California
+/// Vehicle Code 21453(a) carries a 100-dollar base fine that the uniform bail
+/// schedule's penalty assessments bring to about 490 dollars, the figure a
+/// driver actually pays; most states land in the same range.
+pub const RED_LIGHT_FINE: f64 = 490.0;
+/// Rolling or blowing the stop sign at a ramp end. California Vehicle Code
+/// 22450 carries a 35-dollar base fine, about 238 dollars with the same
+/// assessments -- half the red light, as the schedules everywhere price it.
+pub const STOP_SIGN_FINE: f64 = 240.0;
 /// Driving through the barrels instead of merging out of a coned-off lane.
 /// Missouri RSMo 304.585 (endangerment of a highway worker) lists striking or
 /// moving barrels, barriers and signs as an offense in its own right -- the one
