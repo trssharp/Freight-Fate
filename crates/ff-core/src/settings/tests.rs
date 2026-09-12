@@ -108,7 +108,7 @@ fn the_defaults_match_the_python_dataclass() {
         "jake_voice": "real", "acc_following_gap": "normal", "automatic_transmission": true,
         "automatic_direction_changes": "simple", "time_scale": 10.0,
         "pace_retired_notice_left": 0, "real_weather": false, "real_traffic": false,
-        "real_parking": false, "real_fuel_prices": false,
+        "real_parking": false, "real_fuel_prices": true,
         "live_weather_controls_calendar": true,
         "hos_mode": "realistic", "lane_keeping": "off", "lane_keeping_rename_notice_left": 0,
         "lane_cue_loudness": "standard", "lane_guide_tone": false,

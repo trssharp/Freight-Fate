@@ -255,6 +255,11 @@ impl TestApp {
         // app without knowing it exists.
         let settings = Settings {
             online_offer_seen: true,
+            // The live diesel feed is on by default for players; a test app
+            // must not ask the network for it on every frame (the guard
+            // would refuse it, noisily, from a worker thread). Tests that
+            // want the week's price seed an offline provider and turn it on.
+            real_fuel_prices: false,
             ..Default::default()
         };
         let _ = settings.save();

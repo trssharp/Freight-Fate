@@ -40,11 +40,11 @@
   settlement and its hours in the deadline, and a save on the way resumes
   where you were. A rich board relays nothing. The old empty repositions
   that appeared one board in nine, wherever you were, are gone.
-- **Real diesel prices.** A new Settings, World row, Fuel prices, puts this
-  week's national average diesel price from the federal weekly survey at
-  every pump, with each region's usual difference on top, in place of the
-  price the game drew for the session. The garage line says when the price
-  is this week's.
+- **Real diesel prices.** The pumps now charge this week's national average
+  diesel price from the federal weekly survey, with each region's usual
+  difference on top, in place of the price the game drew for the session.
+  On by default; a new Settings, World row, Fuel prices, switches back to
+  the simulated price. The garage line says when the price is this week's.
 
 - **Nineteen new songs on the in-house stations.** Glory Road, Puro Tejano
   and Neon Drive each have a full eight-song rotation now, and the Night

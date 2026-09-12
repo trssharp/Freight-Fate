@@ -822,12 +822,14 @@ impl JobBoardState {
         };
         let equipment_note = slip_seat_note(ctx, &job);
         profile_mut(ctx).dispatch_board_cache = None;
+        // The facility text already names its city; whole miles for a run
+        // this long (heard live: "in Las Vegas, Nevada in Las Vegas, Nevada"
+        // and "211.0 miles", 2026-09-12).
         let line = format!(
-            "Dispatch accepted.{equipment_note} Load waiting at {} in {}: deadhead {} on {} \
-             first, then the pickup.",
+            "Dispatch accepted.{equipment_note} Load waiting at {}: deadhead {} on {} first, \
+             then the pickup.",
             job.origin_facility_text(),
-            job.spoken_origin(),
-            ctx.settings.distance_text(corridor.miles(), true),
+            ctx.settings.distance_text(corridor.miles(), false),
             corridor.highways().first().cloned().unwrap_or_default(),
         );
         ctx.mark_meaningful_play(MeaningfulPlayReason::JobAccepted);

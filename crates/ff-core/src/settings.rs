@@ -376,8 +376,10 @@ settings_fields! {
     real_parking: bool = false => bool_truthy,
     /// This week's US diesel price from the federal weekly survey at every
     /// pump, with each region's usual difference on top, in place of the
-    /// price drawn for the session
-    real_fuel_prices: bool = false => bool_truthy,
+    /// price drawn for the session. On by default (owner ruling,
+    /// 2026-09-12): the feed is keyless and the pumps should charge what
+    /// the country is paying this week.
+    real_fuel_prices: bool = true => bool_truthy,
     /// Preserve the historical behavior by default: live weather also
     /// follows the wall-clock date. Turn this off to let the career calendar
     /// advance while live conditions continue to come from the NWS.
