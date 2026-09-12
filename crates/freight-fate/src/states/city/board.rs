@@ -89,6 +89,16 @@ fn settlement_for(p: &Profile, job: &Job, with_reputation: bool) -> BusinessSett
 /// company yard where the data has none), so the board can hand out loads
 /// that ship from it. Name and city both have to match: a same-named yard
 /// in another city is a drive away.
+/// Minutes of shift the hours warning refuses to plan away.
+///
+/// The route estimate already runs slower than the posted limits
+/// (`DEADLINE_PLANNING_SPEED_FACTOR`), but a plan that lands on the last
+/// minute of the window still loses to rain, town limits and a slow ramp.
+/// Half an hour is the smallest unit a dispatcher plans in (the break
+/// requirement is 30 minutes), so a load that fits with less than that to
+/// spare is called what it is: one that needs a rest first.
+pub const HOS_FIT_CUSHION_MIN: f64 = 30.0;
+
 pub fn job_origin_is_this_yard(ctx: &GameContext, job: &Job, terminal_name: &str) -> bool {
     if job.bobtail {
         return false;
@@ -586,11 +596,26 @@ impl JobBoardState {
         // mile; being over 30 non-driving minutes, they also reset the break
         // clock, so only the drive and duty limits matter here.
         let pickup_work_min = PICKUP_CHECK_IN_MIN + PICKUP_LOADING_MIN;
-        let drive_h = route_drive_hours(Some(&route), 0.0, Some(ctx.world));
+        // The deadhead to the pickup is driving too. Counting the loaded
+        // route alone let a 5-hour job through on 4 h 17 m of window
+        // (Chippewa Falls to Duluth, owner, 2026-09-12): it fit by minutes on
+        // paper, the pickup and the yard roads ate them, and the drive ended
+        // with a forced 10-hour sleep 5 hours past the deadline.
+        let deadhead_h = if job_origin_is_this_yard(ctx, job, &home_terminal(ctx).name) {
+            0.0
+        } else {
+            ctx.world
+                .facility_approach_route(&job.origin, &job.origin_location)
+                .map(|approach| route_drive_hours(Some(&approach), 0.0, Some(ctx.world)))
+                .unwrap_or(0.0)
+        };
+        let drive_h = deadhead_h + route_drive_hours(Some(&route), 0.0, Some(ctx.world));
         let shift_h = drive_limit / 60.0;
-        let fresh_first_h = drive_limit.min(duty_limit - pickup_work_min) / 60.0;
-        let current_first_h = (drive_limit - p.hos.driving_min)
-            .min(duty_limit - p.hos.duty_min - pickup_work_min)
+        let fresh_first_h = (drive_limit - HOS_FIT_CUSHION_MIN)
+            .min(duty_limit - pickup_work_min - HOS_FIT_CUSHION_MIN)
+            / 60.0;
+        let current_first_h = (drive_limit - p.hos.driving_min - HOS_FIT_CUSHION_MIN)
+            .min(duty_limit - p.hos.duty_min - pickup_work_min - HOS_FIT_CUSHION_MIN)
             .max(0.0)
             / 60.0;
         sleeps_needed(drive_h, current_first_h, shift_h)

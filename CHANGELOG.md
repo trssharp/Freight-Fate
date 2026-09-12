@@ -1305,6 +1305,14 @@
 
 ### Fixed
 
+- **The dispatch board warns about a load that only just fits your hours.**
+  The hours warning before you accept a load now counts the drive to the
+  pickup as well as the loaded route, and wants half an hour of duty window
+  to spare. A 5-hour job accepted with 4 hours 17 minutes of window used to
+  pass in silence, and the drive ended in a forced 10-hour sleep 5 hours past
+  the deadline. You still hear the warning once and can press Enter again to
+  take the load anyway.
+
 - **The clock key counts the whole run while you are still on the streets
   out of the pickup.** Before the on-ramp it estimated arrival from the two
   miles of city streets alone, so a 123-mile run read as "arrival in 0.1

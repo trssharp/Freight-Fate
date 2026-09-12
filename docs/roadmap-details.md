@@ -8977,6 +8977,27 @@ From a batch of player reports:
 
 ### Fatigue and driver responsibility
 
+- [x] **The dispatch hours warning counts the deadhead and keeps a cushion
+      -- landed 2026-09-12 (owner's log).** A 5-hour Chippewa Falls to
+      Duluth load accepted on 4 h 17 m of duty window passed
+      `job_exceeds_current_hos` in silence: the check timed the loaded
+      route alone at planning speed and fit it with minutes to spare, then
+      the 8-mile deadhead, the hour at the dock, rain and town limits ate
+      them. At the last reachable rest area (123 miles out, 2 hours of
+      window, deadline 4.8 hours off) no rest option was on time and the
+      only on-time path blew the 14-hour window; the driver took the
+      10-hour sleep and delivered 5.2 hours late. The check now adds the
+      yard-to-pickup approach route's drive time and subtracts
+      `HOS_FIT_CUSHION_MIN` (30 minutes) from the remaining shift, so a fit
+      with less than half an hour to spare speaks the Hours warning and
+      offers Sleep first. Pinned by
+      `test_dispatch_warns_when_the_load_fits_the_window_only_on_paper`.
+- [ ] **Say the deadline against the shift on the board.** The warning
+      says "needs an extra legal rest" but not that the rest makes the
+      delivery late; "sleeping first puts you 5 hours past the deadline;
+      declining costs dispatch trust" would let the driver weigh the two
+      costs the game already knows.
+
 - [x] **Drowsiness consequences.** Shipped: at severe fatigue
   (`FATIGUE_SEVERE`, 80+) the driver involuntarily nods off on a shrinking
   interval. Each microsleep plays a rumble-strip jolt with a short reaction
