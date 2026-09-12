@@ -105,7 +105,10 @@ These items are part of the release-gate sweep:
       audit -- cannot ship in a public build (separate from the
       resolved Splice matter; owner may already know better).
 - [ ] Colorado's live traffic and construction are dead (CARS GraphQL
-      retired).
+      retired; COtrip's WZDx feed wants a registered key, as do Ohio,
+      Oregon, Texas, Virginia, Michigan and Illinois). The 2026-09-12 FHWA
+      registry sweep put every keyless statewide feed in: 29 states carry
+      live construction now, 15 of them new that day.
 
 #### Owner decisions
 
@@ -169,6 +172,35 @@ its status or release decision.
       Either drop the connector from that readout or say it is the
       interchange's number, so the driver is not told about a bend no
       assist acts on (same drive, I-30 to I-35 at Fort Worth).
+
+### September 12 live data and dispatch
+
+- [x] Dispatch reads the state 511 construction reports onto each route
+      option at the pickup departure, takes the next route when the road is
+      closed or the delay outweighs the extra miles, and says why. Fifteen
+      more states' feeds came in from the FHWA WZDx registry, all keyless;
+      29 states carry live construction.
+- [x] National Weather Service warnings ride the real weather toggle:
+      dispatch plans around a blizzard, ice storm, hurricane or tornado
+      warning, prices a winter storm, high wind, flash flood or dense fog
+      warning into the route, and only mentions a thunderstorm; the cab reads
+      a warning out as the truck drives into it, and a winter warning posts
+      the chain law before the first flake. Driven live out of Pittsburgh.
+- [x] Convenience stations the map had typed as travel centers with only
+      assumed truck parking read as bobtail-only at load: no announcement,
+      no exit signal, no rest stop with a trailer on. 242 stops, nine in ten
+      kept; the sleep-gap corridors held.
+- [x] The pumps charge this week's federal survey diesel price with each
+      region's usual spread on top, on by default; Settings, World, Fuel
+      prices switches back to simulated.
+- [x] Company drivers get a load RELAYED from a nearby freight town when the
+      board here is thin (few loads, poor pay, or half the freight of a market
+      in range), deadhead paid and timed as part of the assignment, driven as
+      one pickup drive that resumes from a save. The one-in-nine empty
+      reposition is gone. Home-time relays wait for the 1.10 home terminal.
+- [x] The agent server's `scenario` tool stages the sandbox career in any
+      situation; the sandbox turns every live feed on. Driven live: Tonopah,
+      relayed Las Vegas load assigned and accepted.
 
 ## 1.10 planned -- the working week and home
 
