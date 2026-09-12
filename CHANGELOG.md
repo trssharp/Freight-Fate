@@ -4,13 +4,20 @@
 
 ### Added
 
-- **Dispatch checks the state 511 construction reports before choosing your
-  route.** With real traffic on, in a state that publishes them (Arizona,
-  Florida, Georgia, Idaho, Nevada, New York and Wisconsin today), dispatch
-  reads each route option for reported construction, tells you what is on
-  the way and about how many minutes it costs, and takes the next route
-  when the road is closed or the delay outweighs the extra miles. Drivers
-  who plan their own route hear the same reports on each option.
+- **Dispatch checks the state construction reports before choosing your
+  route.** With real traffic on, dispatch reads each route option for the
+  construction the state reports, tells you what is on the way and about
+  how many minutes it costs, and takes the next route when the road is
+  closed or the delay outweighs the extra miles. Drivers who plan their
+  own route hear the same reports on each option. Twenty-nine states
+  publish these reports without a key today, and the game reads every
+  one of them. Elsewhere nothing changes.
+- **Real construction reports now cover fifteen more states.** Iowa,
+  Kansas, Kentucky, Maryland, Missouri, Washington, New Jersey,
+  Mississippi, North Dakota, Delaware, Louisiana, New Hampshire, Vermont,
+  Maine and Massachusetts join the states whose live work zones appear on
+  your route when real traffic is on, replacing the made-up roadwork on
+  those stretches.
 
 - **Nineteen new songs on the in-house stations.** Glory Road, Puro Tejano
   and Neon Drive each have a full eight-song rotation now, and the Night

@@ -19,6 +19,14 @@ use super::{construction_severity, describe_lanes_affected, event_list, float_pa
 /// into a snake_case `core_details` object.
 pub fn parse_wzdx_events(data: &Value, _state: &str) -> Vec<TrafficEvent> {
     let mut events = Vec::new();
+    // NJIT's New Jersey feed arrives JSON-encoded twice: the body is one
+    // string holding the document (checked 2026-09-12). Unwrap it once.
+    if let Some(text) = data.as_str() {
+        return match serde_json::from_str::<Value>(text) {
+            Ok(inner) if !inner.is_string() => parse_wzdx_events(&inner, _state),
+            _ => events,
+        };
+    }
     let Some(features) = event_list(data, &["features", "events", "results"]) else {
         return events;
     };
@@ -288,4 +296,42 @@ pub fn build_wzdx_location_text(props: &Map<String, Value>) -> String {
         return format!("Near milepost {begin}");
     }
     String::new()
+}
+
+#[cfg(test)]
+mod double_encoded {
+    use super::*;
+
+    #[test]
+    fn test_a_body_that_is_one_json_string_is_unwrapped_once() {
+        // NJIT's New Jersey feed (checked 2026-09-12): the HTTP body is a
+        // JSON string whose contents are the GeoJSON document.
+        let document = serde_json::json!({
+            "feed_info": {"version": "4.1"},
+            "features": [{
+                "id": "nj-1",
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [-74.4, 40.5]},
+                "properties": {
+                    "core_details": {
+                        "event_type": "work-zone",
+                        "road_names": ["I-287"],
+                        "description": "Bridge deck repair"
+                    },
+                    "vehicle_impact": "some-lanes-closed"
+                }
+            }]
+        });
+        let wrapped = Value::String(document.to_string());
+        let events = parse_wzdx_construction_events(&wrapped, "new jersey");
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].road_name, "I-287");
+        assert_eq!(events[0].closure, "single lane");
+        assert_eq!(events[0].latitude, Some(40.5));
+        // A string that is not a document, or a string inside a string,
+        // yields nothing rather than looping.
+        assert!(parse_wzdx_construction_events(&Value::String("nope".into()), "x").is_empty());
+        let twice = Value::String(Value::String(document.to_string()).to_string());
+        assert!(parse_wzdx_construction_events(&twice, "x").is_empty());
+    }
 }

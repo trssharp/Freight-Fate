@@ -631,11 +631,51 @@ fn test_wzdx_states_in_state_apis() {
 #[test]
 fn test_no_api_states_return_empty() {
     let provider = RealTrafficProvider::offline();
-    for key in ["alabama", "kansas", "wyoming"] {
+    for key in ["alabama", "montana", "wyoming"] {
         assert_eq!(state_api(key).unwrap().parser, "no_api");
         assert!(provider.request(key).events.is_empty());
         assert!(provider.fetch_construction(key).events.is_empty());
     }
+}
+
+#[test]
+fn test_registry_wzdx_feeds_read_one_full_url() {
+    // The FHWA registry feeds live at a URL of their own: the base IS the
+    // feed and both endpoints are empty, so the fetch concatenates to the
+    // registry URL exactly. Kansas was on the no_api bench until 2026-09-12.
+    for key in [
+        "iowa",
+        "kansas",
+        "kentucky",
+        "maryland",
+        "missouri",
+        "washington",
+        "new jersey",
+        "mississippi",
+        "north dakota",
+        "delaware",
+        "louisiana",
+        "new hampshire",
+        "vermont",
+        "maine",
+        "massachusetts",
+    ] {
+        let config = state_api(key).unwrap_or_else(|| panic!("{key} in STATE_APIS"));
+        assert_eq!(config.parser, "wzdx", "{key}");
+        assert_eq!(config.construction_parser, None, "{key}");
+        assert_eq!(config.events_endpoint, Some(""), "{key}");
+        assert_eq!(config.construction_endpoint, Some(""), "{key}");
+        let url = config.base_url.unwrap_or_default();
+        assert!(url.starts_with("https://"), "{key}: {url}");
+        assert!(
+            !url.contains("key") && !url.contains("token"),
+            "{key}: {url}"
+        );
+    }
+    // The three New England states share one Compass document.
+    let compass = state_api("vermont").unwrap().base_url;
+    assert_eq!(state_api("new hampshire").unwrap().base_url, compass);
+    assert_eq!(state_api("maine").unwrap().base_url, compass);
 }
 
 #[test]
