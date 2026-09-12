@@ -80,8 +80,9 @@ These items are part of the release-gate sweep:
 - [ ] Signal running always clips cross traffic and never draws a
       citation -- backwards both ways.
 - [ ] The 2026-08-13 Dropbox tester findings are still untriaged.
-- [ ] Cruise destination-lane selection still brakes for the lane the
-      truck is leaving on held-wheel drift.
+- [x] Cruise switches its traffic focus on the actual held-wheel lane
+      crossing, keeping the origin lane until then and protecting traffic in
+      the lane entered.
 - [x] Braking estimates share the live brake-force calculation. Generic
       hazard warnings retain service-braking and reaction time; emergency
       braking has its own stopping estimate.

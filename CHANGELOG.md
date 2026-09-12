@@ -1305,6 +1305,12 @@
 
 ### Fixed
 
+- **Cruise stops slowing for a car you have left behind once you cross the
+  lane line.** Holding the wheel toward an open lane keeps following a slower
+  vehicle in your current lane until the truck crosses over. On that crossing,
+  cruise lets that vehicle go and watches the lane you entered instead. The
+  lane-change confirmation and occupied-lane collision warning are unchanged.
+
 - **The dispatch board warns about a load that only just fits your hours.**
   The hours warning before you accept a load now counts the drive to the
   pickup as well as the loaded route, and wants half an hour of duty window
