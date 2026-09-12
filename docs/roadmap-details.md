@@ -1834,10 +1834,19 @@ repository root; Markdown links are relative to this document.
       2026-09-11 but not yet generated: twenty more ads
       (`radio_content_ads.py`, 38 in the rotation), two spoken liners per
       station (`radio_content_liners.py`, `id_<station>_05/06`) and a third
-      sung jingle per station (`id_<station>_04`). Two things block the
-      run: the scoped ElevenLabs key has no `text_to_speech` permission
-      (sound generation and music work), and the month's credits are spent.
-      Once both clear: `--plan-ids` then `--plan-ads`, measure the clip
+      sung jingle per station (`id_<station>_04`). One thing blocks the
+      run: the month's credits are spent (the key's missing
+      `text_to_speech`, `user_read`, `models_read` and `voices` scopes were
+      granted the same night). Budget for the next wave, measured on the
+      usage page 2026-09-11: Eleven Music `music_v2_5` bills about 1,600
+      credits per minute of audio, not the 900 the pricing page lists for
+      v1, so a three-and-a-half-minute song is roughly 5,500 credits and
+      the Creator plan's 100,000 covers about eighteen songs a month with
+      nothing else running. TTS liners and ads are cheap by comparison
+      (one credit per character, about 20,000 for the whole second wave),
+      so run `--plan-ids` and `--plan-ads` FIRST after the reset, then
+      size the song top-ups with `--limit` from what is left.
+      Once the credits are back: `--plan-ids` then `--plan-ads`, measure the clip
       durations, add the rows to `radio_content.rs` `STATION_ID_ROWS` /
       `AD_ROWS` / `AD_FORMAT_ROWS` (and the Python mirror), repack
       `music.pak`. The break planner already draws two spots per stopset,
