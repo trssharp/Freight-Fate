@@ -4,6 +4,14 @@
 
 ### Added
 
+- **Dispatch checks the state 511 construction reports before choosing your
+  route.** With real traffic on, in a state that publishes them (Arizona,
+  Florida, Georgia, Idaho, Nevada, New York and Wisconsin today), dispatch
+  reads each route option for reported construction, tells you what is on
+  the way and about how many minutes it costs, and takes the next route
+  when the road is closed or the delay outweighs the extra miles. Drivers
+  who plan their own route hear the same reports on each option.
+
 - **Nineteen new songs on the in-house stations.** Glory Road, Puro Tejano
   and Neon Drive each have a full eight-song rotation now, and the Night
   Line has two more slow ballads. Until now those three stations repeated

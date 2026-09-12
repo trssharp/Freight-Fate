@@ -336,6 +336,20 @@ impl GameContext {
         self.real_traffic.as_deref()
     }
 
+    /// The same 511 provider as an owned handle, for a caller that has to
+    /// keep changing the context while it consults the feeds. None when real
+    /// traffic is off.
+    pub fn real_traffic_provider_arc(&mut self) -> Option<Arc<RealTrafficProvider>> {
+        self.real_traffic_provider()?;
+        self.real_traffic.clone()
+    }
+
+    /// Put a provider in place of the live one. Tests seed an offline
+    /// provider's cache with the construction they want dispatch to see.
+    pub fn set_real_traffic_provider(&mut self, provider: Arc<RealTrafficProvider>) {
+        self.real_traffic = Some(provider);
+    }
+
     /// Shared TPIMS provider when real parking is enabled, else None.
     pub fn truck_parking_provider(&mut self) -> Option<&TruckParkingProvider> {
         if !self.settings.real_parking {

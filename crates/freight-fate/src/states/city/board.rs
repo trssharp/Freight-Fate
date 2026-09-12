@@ -38,6 +38,7 @@ use crate::states::city::{
     launch_driving, profile, profile_mut, sleeps_needed, DrivingLaunch, LaunchAnnouncement,
     DRIVE_PHASE_DELIVERY, DRIVE_PHASE_PICKUP, PICKUP_CHECK_IN_MIN, PICKUP_LOADING_MIN,
 };
+use crate::states::city_pickup::warm_construction_feeds;
 use crate::states::city_pickup::{
     pickup_snapshot, PickupFacilityState, PickupOptions, PickupSnapshotOptions,
 };
@@ -745,6 +746,8 @@ impl JobBoardState {
             job.origin_facility_text()
         );
         ctx.mark_meaningful_play(MeaningfulPlayReason::JobAccepted);
+        // The deadhead is time enough for 511 to answer before the pickup.
+        warm_construction_feeds(ctx, &job.origin, &job.destination);
         launch_driving(
             ctx,
             DrivingLaunch::new(
@@ -764,6 +767,7 @@ impl JobBoardState {
     /// draw, the board cache, a trip snapshot so a save resumes at the
     /// pickup), then the pickup facility itself instead of a drive to it.
     fn accept_at_home_yard(&mut self, ctx: &mut GameContext, job: Job, terminal_name: &str) {
+        warm_construction_feeds(ctx, &job.origin, &job.destination);
         let equipment_note = slip_seat_note(ctx, &job);
         profile_mut(ctx).dispatch_board_cache = None;
         let snapshot = pickup_snapshot(&job, &PickupSnapshotOptions::default());

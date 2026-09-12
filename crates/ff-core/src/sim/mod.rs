@@ -12,6 +12,7 @@ pub mod real_traffic_list511;
 pub mod real_traffic_parsers;
 pub mod real_weather;
 pub mod road_event_pacing;
+pub mod route_roadwork;
 pub mod season;
 pub mod surge;
 pub mod timezones;

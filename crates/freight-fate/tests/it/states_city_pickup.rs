@@ -1022,3 +1022,109 @@ fn test_pickup_arrival_settles_the_engine_to_idle() {
     assert!((rpm - idle).abs() < 1e-6, "{rpm} vs idle {idle}");
     assert_eq!(throttle, 0.0);
 }
+
+// -- dispatch reads 511 before naming the lane ----------------------------------------
+
+#[test]
+fn test_dispatch_departs_by_the_route_511_construction_recommends() {
+    // A company driver leaves the pickup on the route dispatch names. With
+    // real traffic on, dispatch checks the state 511 construction reports
+    // on each option first, says what it found, and drives the route its
+    // ranking put first -- here the shortest way is reported closed.
+    use std::sync::Arc;
+
+    use ff_core::data::world::get_world;
+    use ff_core::sim::real_traffic::{wall_time, RealTrafficProvider, TrafficData};
+    use ff_core::sim::real_traffic_parsers::TrafficEvent;
+    use ff_core::sim::route_roadwork::{
+        choose_dispatch_route, dispatch_route_line, route_state_keys,
+    };
+    use ff_core::sim::trip_traffic::TrafficProvider;
+
+    let mut app = TestApp::new();
+    career(&mut app, "Roadwork Dispatch", "Chicago");
+    let mut job = drop_yard_job("chicago-live-load", 92.0);
+    job.origin_type = "mine_quarry".to_string();
+    push_pickup(&mut app, job.clone(), PickupOptions::default());
+    key(&mut app, Key::Return); // check in
+    key(&mut app, Key::Return); // load cargo
+    finish_timed_state(&mut app);
+    assert_eq!(
+        current_label::<PickupFacilityState>(&app),
+        "Depart for destination"
+    );
+
+    let world = get_world();
+    let routes = world
+        .supported_route_options(&job.origin, &job.destination, 3)
+        .expect("routes to the destination");
+    let leg = &routes[0].legs[0];
+    let points = leg.route_points();
+    let point = &points[points.len() / 2];
+    let state = route_state_keys(&routes[0])
+        .first()
+        .cloned()
+        .expect("the first leg names its state");
+    let mut event = TrafficEvent::new("closed", "construction", "high", "Roadwork", "Test");
+    event.latitude = Some(point.lat);
+    event.longitude = Some(point.lon);
+    event.closure = "full closure".to_string();
+    event.work_type = "construction".to_string();
+    let provider = Arc::new(RealTrafficProvider::offline());
+    let now = wall_time();
+    provider.seed_cache(
+        &format!("{state}:construction"),
+        TrafficData::new(&state, vec![event], now, now, "test"),
+    );
+    app.ctx.settings.real_traffic = true;
+    app.ctx.set_real_traffic_provider(Arc::clone(&provider));
+    let routing = choose_dispatch_route(&routes, Some(&*provider as &dyn TrafficProvider), world);
+    let expected = dispatch_route_line(&routes, &routing, world, &app.ctx.settings);
+    assert!(
+        expected.contains("the road closed on ") || expected.starts_with("The road is closed on "),
+        "{expected}"
+    );
+
+    app.clear_speech();
+    key(&mut app, Key::Return); // depart for destination
+    assert!(is::<DrivingState>(&app));
+    let departure = app
+        .main_lines()
+        .into_iter()
+        .rev()
+        .find(|text| text.contains("Dispatch routed you to"))
+        .expect("a departure line");
+    assert!(departure.contains(&expected), "{departure}");
+    let driven = with_state::<DrivingState, _>(&app, |d, _| d.trip.route.cities.clone());
+    assert_eq!(driven, routes[routing.pick()].cities);
+}
+
+#[test]
+fn test_dispatch_departure_is_unchanged_with_real_traffic_off() {
+    // No feeds, no construction talk, the shortest route: the day-one path.
+    let mut app = TestApp::new();
+    career(&mut app, "Quiet Dispatch", "Chicago");
+    let mut job = drop_yard_job("chicago-live-load", 92.0);
+    job.origin_type = "mine_quarry".to_string();
+    push_pickup(&mut app, job.clone(), PickupOptions::default());
+    key(&mut app, Key::Return);
+    key(&mut app, Key::Return);
+    finish_timed_state(&mut app);
+    assert!(!app.ctx.settings.real_traffic);
+    app.clear_speech();
+    key(&mut app, Key::Return);
+    assert!(is::<DrivingState>(&app));
+    let departure = app
+        .main_lines()
+        .into_iter()
+        .rev()
+        .find(|text| text.contains("Dispatch routed you to"))
+        .expect("a departure line");
+    assert!(!departure.contains("Construction"), "{departure}");
+    assert!(!departure.contains("road is closed"), "{departure}");
+    let routes = ff_core::data::world::get_world()
+        .supported_route_options(&job.origin, &job.destination, 3)
+        .expect("routes");
+    let driven = with_state::<DrivingState, _>(&app, |d, _| d.trip.route.cities.clone());
+    assert_eq!(driven, routes[0].cities);
+}
