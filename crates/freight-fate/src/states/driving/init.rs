@@ -264,6 +264,7 @@ impl DrivingState {
             rig_buffs: RigBuffs::new(),
             weather_source_real: ctx.settings.real_weather,
             alerts_next_poll_mi: 0.0,
+            alerts_pending: None,
             alerts_said: std::collections::HashSet::new(),
             live_weather_controls_calendar: ctx.settings.live_weather_controls_calendar,
             traffic_source_real: ctx.settings.real_traffic,

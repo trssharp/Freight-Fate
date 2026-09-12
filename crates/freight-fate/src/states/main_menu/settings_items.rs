@@ -344,7 +344,6 @@ impl SettingsCategoryState {
             ],
             "world" => vec![
                 adjust(|s, ctx, d| s.toggle_real_weather(ctx, d)),
-                adjust(|s, ctx, d| s.toggle_real_weather_alerts(ctx, d)),
                 adjust(|s, ctx, d| s.toggle_real_traffic(ctx, d)),
                 adjust(|s, ctx, d| s.toggle_real_parking(ctx, d)),
                 adjust(|s, ctx, d| s.toggle_live_weather_calendar(ctx, d)),
@@ -441,24 +440,10 @@ impl SettingsCategoryState {
                         )
                     }),
                     adjust(|s, ctx, d| s.toggle_real_weather(ctx, d)),
-                    "Real world uses live city conditions when available.",
-                ),
-                row(
-                    dyn_label(|s| {
-                        format!(
-                            "Weather warnings: {}",
-                            if s.real_weather_alerts {
-                                "National Weather Service"
-                            } else {
-                                "off"
-                            }
-                        )
-                    }),
-                    adjust(|s, ctx, d| s.toggle_real_weather_alerts(ctx, d)),
-                    "On, dispatch reads the Weather Service's active warnings along \
-                     your route and plans around a blizzard, ice storm, hurricane or \
-                     tornado warning, and the cab reads a warning out as you drive \
-                     into it.",
+                    "Real world uses live city conditions when available, and reads \
+                     the Weather Service's active warnings along your route: dispatch \
+                     plans around a blizzard, ice storm, hurricane or tornado warning, \
+                     and the cab reads a warning out as you drive into it.",
                 ),
                 row(
                     dyn_label(|s| {

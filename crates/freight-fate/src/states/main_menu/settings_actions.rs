@@ -533,12 +533,6 @@ impl SettingsCategoryState {
         self.announce(ctx);
     }
 
-    pub(super) fn toggle_real_weather_alerts(&mut self, ctx: &mut GameContext, _d: i64) {
-        ctx.settings.real_weather_alerts = !ctx.settings.real_weather_alerts;
-        save_settings(&ctx.settings);
-        self.announce(ctx);
-    }
-
     pub(super) fn toggle_real_traffic(&mut self, ctx: &mut GameContext, _d: i64) {
         ctx.settings.real_traffic = !ctx.settings.real_traffic;
         save_settings(&ctx.settings);

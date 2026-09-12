@@ -3,9 +3,10 @@
 //! drives into, and the cab reads one out as the truck drives into it
 //! (`sim/real_weather_alerts.rs`, `city_pickup.rs`, `live_sources.rs`).
 //!
-//! The provider is the offline one with its cache seeded, so nothing here
-//! reaches api.weather.gov, and the warnings setting is its own opt-in so
-//! the live sky stays off too.
+//! The alerts provider is the offline one with its cache seeded. Real
+//! weather has to be on for the warnings to count, which also builds the
+//! drive's live sky provider; the test network guard refuses its fetches,
+//! so nothing here reaches api.weather.gov.
 
 use std::sync::Arc;
 
@@ -75,9 +76,11 @@ fn test_dispatch_departure_briefs_the_weather_alerts_on_the_way() {
             "* WHAT...West winds 30 to 40 mph with gusts up to 60 mph.",
         )],
     );
-    app.ctx.settings.real_weather_alerts = true;
+    // The warnings ride the real weather toggle. The drive's own sky
+    // provider is built too, and the test network guard refuses its
+    // fetches; the alerts provider is the seeded offline one.
+    app.ctx.settings.real_weather = true;
     app.ctx.set_weather_alerts_provider(Arc::clone(&alerts));
-    assert!(!app.ctx.settings.real_weather, "the live sky stays off");
 
     app.clear_speech();
     key(&mut app, Key::Return); // depart for destination
@@ -106,9 +109,27 @@ fn test_dispatch_departure_briefs_the_weather_alerts_on_the_way() {
 #[test]
 fn test_the_cab_reads_a_warning_once_as_the_truck_drives_into_it() {
     let mut harness = bench_drive("Alert Cab", 65.0, 0.0);
-    let (lat, lon) = harness.read_drive(|d| d.trip.latlon_at(None));
-    assert!(lat != 0.0 || lon != 0.0, "the delivery route has geometry");
     let alerts = Arc::new(WeatherAlertsProvider::offline());
+    // Let the departure's own lines finish before the warnings arrive: a
+    // safety line that cuts a line still speaking is requeued behind it by
+    // the pacer, and the capture would then hold it twice for one saying.
+    frames(&mut harness, 30, 0.1);
+    harness.clear_speech();
+    harness.app.ctx.settings.real_weather = true;
+    harness
+        .app
+        .ctx
+        .set_weather_alerts_provider(Arc::clone(&alerts));
+
+    // The first poll asks about the truck's own point and gets no answer
+    // yet, as a live fetch would; the cab keeps reading that same point on
+    // the frames that follow instead of asking about a new one each time.
+    frame(&mut harness, 0.1);
+    let (lat, lon, _) = harness
+        .read_drive(|d| d.alerts_pending)
+        .expect("a point asked about and not yet answered");
+    assert!(lat != 0.0 || lon != 0.0, "the delivery route has geometry");
+    assert!(!said_any(&harness, "Weather alert"));
     alerts.seed(
         lat,
         lon,
@@ -125,16 +146,8 @@ fn test_the_cab_reads_a_warning_once_as_the_truck_drives_into_it() {
             ),
         ],
     );
-    // Let the departure's own lines finish before the warnings arrive: a
-    // safety line that cuts a line still speaking is requeued behind it by
-    // the pacer, and the capture would then hold it twice for one saying.
-    frames(&mut harness, 30, 0.1);
-    harness.clear_speech();
-    harness.app.ctx.settings.real_weather_alerts = true;
-    harness.app.ctx.set_weather_alerts_provider(alerts);
-
     frame(&mut harness, 0.1);
-    frame(&mut harness, 0.1);
+    assert!(harness.read_drive(|d| d.alerts_pending).is_none());
     // Both warnings found at once come as one line, so neither cuts the
     // other off.
     assert!(
@@ -160,8 +173,8 @@ fn test_the_cab_reads_a_warning_once_as_the_truck_drives_into_it() {
         .collect();
     assert_eq!(mentions.len(), 1, "{mentions:?}");
 
-    // Switching the warnings off clears what the trip holds.
-    harness.app.ctx.settings.real_weather_alerts = false;
+    // Switching real weather off clears what the trip holds.
+    harness.app.ctx.settings.real_weather = false;
     frame(&mut harness, 0.1);
     assert!(harness.read_drive(|d| d.trip.live_alerts.is_empty()));
     assert_eq!(harness.read_drive(|d| d.trip.chain_law_level()), 0);

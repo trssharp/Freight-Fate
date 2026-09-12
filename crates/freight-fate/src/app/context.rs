@@ -354,10 +354,10 @@ impl GameContext {
     }
 
     /// The National Weather Service alerts provider, shared for the session,
-    /// when weather warnings are switched on. Dispatch at the pickup and the
-    /// cab on the road read the same cache. None with the setting off.
+    /// when real weather is on. Dispatch at the pickup and the cab on the
+    /// road read the same cache. None with real weather off.
     pub fn weather_alerts_provider_arc(&mut self) -> Option<Arc<WeatherAlertsProvider>> {
-        if !self.settings.real_weather_alerts {
+        if !self.settings.real_weather {
             return None;
         }
         if self.weather_alerts.is_none() {

@@ -19,8 +19,8 @@
   your route when real traffic is on, replacing the made-up roadwork on
   those stretches.
 - **Weather warnings from the National Weather Service reach dispatch and
-  the cab.** A new Settings, World row, Weather warnings, turns them on.
-  Dispatch then reads the active warnings along each route option: a
+  the cab.** With real weather on, dispatch reads the Service's active
+  warnings along each route option: a
   blizzard, ice storm, hurricane or tornado warning sends the load the other
   way when there is one, a winter storm, high wind, flash flood or dense fog
   warning counts its slower miles against the route, and a thunderstorm is

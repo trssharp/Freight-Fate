@@ -198,7 +198,6 @@ fn gameplay_subcategory_rows(category: &str) -> &'static [&'static str] {
         "difficulty" => &["Driving mode", "Hours of service", "Back"],
         "world" => &[
             "Weather source",
-            "Weather warnings",
             "Traffic source",
             "Parking source",
             "Live weather controls calendar",

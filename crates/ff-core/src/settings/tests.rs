@@ -80,15 +80,15 @@ fn old_stopping_toggles_migrate_to_the_one_facility_assist() {
 // -- the field table -----------------------------------------------------------
 
 #[test]
-fn the_struct_carries_the_seventy_seven_persisted_fields_in_python_order() {
+fn the_struct_carries_the_seventy_six_persisted_fields_in_python_order() {
     // 73 came over from the Python dataclass; backup_announcements,
-    // duty_notifications and braille_only (2026-09-02) and
-    // real_weather_alerts (2026-09-12) were added on the Rust side.
-    assert_eq!(Settings::FIELD_NAMES.len(), 77);
+    // duty_notifications and braille_only (2026-09-02) were added on the
+    // Rust side.
+    assert_eq!(Settings::FIELD_NAMES.len(), 76);
     assert_eq!(Settings::FIELD_NAMES[0], "online_services");
-    assert_eq!(Settings::FIELD_NAMES[76], "settings_layout_notice_from");
+    assert_eq!(Settings::FIELD_NAMES[75], "settings_layout_notice_from");
     let pairs = Settings::default().ordered_values();
-    assert_eq!(pairs.len(), 77);
+    assert_eq!(pairs.len(), 76);
     for ((name, _), field) in pairs.iter().zip(Settings::FIELD_NAMES) {
         assert_eq!(name, field);
     }
@@ -107,8 +107,7 @@ fn the_defaults_match_the_python_dataclass() {
         "online_services": true, "imperial_units": true, "engine_voice": "real",
         "jake_voice": "real", "acc_following_gap": "normal", "automatic_transmission": true,
         "automatic_direction_changes": "simple", "time_scale": 10.0,
-        "pace_retired_notice_left": 0, "real_weather": false, "real_weather_alerts": false,
-        "real_traffic": false,
+        "pace_retired_notice_left": 0, "real_weather": false, "real_traffic": false,
         "real_parking": false, "live_weather_controls_calendar": true,
         "hos_mode": "realistic", "lane_keeping": "off", "lane_keeping_rename_notice_left": 0,
         "lane_cue_loudness": "standard", "lane_guide_tone": false,
@@ -141,7 +140,7 @@ fn the_defaults_match_the_python_dataclass() {
     let Value::Object(expected) = expected else {
         unreachable!()
     };
-    assert_eq!(expected.len(), 77);
+    assert_eq!(expected.len(), 76);
     for (name, value) in s.ordered_values() {
         assert_eq!(Some(&value), expected.get(name), "{name}");
     }

@@ -366,13 +366,10 @@ settings_fields! {
     /// saved pacing was the retired Realistic, because their truck now bills
     /// the clock at half the rate it did and nothing else would tell them.
     pace_retired_notice_left: i64 = 0 => int_strict,
-    /// live conditions from the NWS API
+    /// live conditions from the NWS API, and with them the Service's active
+    /// warnings (blizzard, high wind, flash flood, dense fog): dispatch plans
+    /// around those and the cab reads one out on the way in
     real_weather: bool = false => bool_truthy,
-    /// The National Weather Service's active warnings (blizzard, high wind,
-    /// flash flood, dense fog) read onto the route: dispatch plans around
-    /// them and the cab reads one out on the way in. Its own opt-in, so a
-    /// test or a player can have the warnings without the live sky.
-    real_weather_alerts: bool = false => bool_truthy,
     /// live traffic incidents from state 511 APIs
     real_traffic: bool = false => bool_truthy,
     /// live truck parking availability from TPIMS APIs
