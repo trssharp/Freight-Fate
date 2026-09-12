@@ -1589,6 +1589,25 @@ struct BendRun {
     lines: Vec<String>,
 }
 
+#[test]
+fn test_curve_fixture_stays_empty_after_traffic_update() {
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+
+    a_hot_bend_ahead(&mut app, &mut d, 60.0, 35, 307, 0.5);
+    assert!(
+        d.trip.traffic_manager.vehicles.is_empty(),
+        "the bend fixture should start with no traffic"
+    );
+
+    d.trip.update(DT);
+
+    assert!(
+        d.trip.traffic_manager.vehicles.is_empty(),
+        "updating the empty-road bend fixture replenished traffic"
+    );
+}
+
 /// The engine running, air up, rolling at `speed_mph` on the corridor's first
 /// open-road mile, curve speed assistance on, with a bend of `advisory` and
 /// `radius` set `ahead_mi` up the road.
@@ -1601,6 +1620,7 @@ fn a_hot_bend_ahead(
     ahead_mi: f64,
 ) -> RouteCurve {
     app.ctx.settings.curve_speed_assist = true;
+    d.trip.traffic_manager.rolling_bubble = false;
     d.trip.position_mi = open_road_mile(d);
     d.trip.truck.set_air_ready(false);
     d.trip.truck.start_engine();

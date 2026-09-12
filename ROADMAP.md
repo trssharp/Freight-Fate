@@ -149,10 +149,10 @@ its status or release decision.
 - [ ] Complete the owner's listening pass and longer gameplay verification
       of wear thresholds and interrupted warnings. Captured live readouts and
       successful native calls do not establish what the owner heard.
-- [ ] Stabilize the curve-assistance test's empty-road fixture. It clears
-      current vehicles but leaves random traffic replenishment enabled. One
-      full run reported cargo damage; focused and full reruns passed. Disable
-      replenishment in that fixture before treating the road as empty.
+- [x] Stabilized the curve-assistance test's empty-road fixture. It clears
+      current vehicles and disables random traffic replenishment before the
+      bend cases run. One full run reported cargo damage; focused and full
+      reruns passed.
 - [x] The clock key's arrival estimate on the departure streets adds the
       parked highway run at its route pace, and the speed readout names a
       lead vehicle that is setting the speed keeper's number (agent drive,
