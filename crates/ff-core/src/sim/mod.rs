@@ -11,6 +11,7 @@ pub mod real_traffic;
 pub mod real_traffic_list511;
 pub mod real_traffic_parsers;
 pub mod real_weather;
+pub mod real_weather_alerts;
 pub mod road_event_pacing;
 pub mod route_roadwork;
 pub mod season;

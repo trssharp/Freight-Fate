@@ -35,6 +35,7 @@ use ff_core::playtest_levers::LeverContext;
 use ff_core::settings::Settings;
 use ff_core::sim::real_traffic::RealTrafficProvider;
 use ff_core::sim::real_weather::RealWeatherProvider;
+use ff_core::sim::real_weather_alerts::WeatherAlertsProvider;
 use ff_core::sim::truck_parking::TruckParkingProvider;
 use ff_core::speech_pacing::EventSpeechPacer;
 use ff_core::speech_text::achievement_announced;
@@ -192,6 +193,7 @@ pub struct GameContext {
     // -- live-data providers, lazy and session-long -----------------------------------
     real_weather: Option<Arc<RealWeatherProvider>>,
     real_traffic: Option<Arc<RealTrafficProvider>>,
+    weather_alerts: Option<Arc<WeatherAlertsProvider>>,
     truck_parking: Option<Arc<TruckParkingProvider>>,
 
     // -- the state stack ----------------------------------------------------------------
@@ -257,6 +259,7 @@ impl GameContext {
             music_rotation_elapsed_s: 0.0,
             real_weather: None,
             real_traffic: None,
+            weather_alerts: None,
             truck_parking: None,
             stack: Vec::new(),
             deferred: Vec::new(),
@@ -348,6 +351,27 @@ impl GameContext {
     /// provider's cache with the construction they want dispatch to see.
     pub fn set_real_traffic_provider(&mut self, provider: Arc<RealTrafficProvider>) {
         self.real_traffic = Some(provider);
+    }
+
+    /// The National Weather Service alerts provider, shared for the session,
+    /// when weather warnings are switched on. Dispatch at the pickup and the
+    /// cab on the road read the same cache. None with the setting off.
+    pub fn weather_alerts_provider_arc(&mut self) -> Option<Arc<WeatherAlertsProvider>> {
+        if !self.settings.real_weather_alerts {
+            return None;
+        }
+        if self.weather_alerts.is_none() {
+            self.weather_alerts = Some(Arc::new(WeatherAlertsProvider::new(Arc::new(
+                UreqTransport,
+            ))));
+        }
+        self.weather_alerts.clone()
+    }
+
+    /// Put a provider in place of the live one. Tests seed an offline
+    /// provider with the warnings they want dispatch and the cab to see.
+    pub fn set_weather_alerts_provider(&mut self, provider: Arc<WeatherAlertsProvider>) {
+        self.weather_alerts = Some(provider);
     }
 
     /// Shared TPIMS provider when real parking is enabled, else None.

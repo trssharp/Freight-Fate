@@ -842,12 +842,20 @@ impl Trip {
     }
 
     /// 0 = no law, 1 = winter-rated tires or chains, 2 = chains required.
+    ///
+    /// The sky the truck is under sets the floor; an active Weather Service
+    /// warning for this stretch (a winter storm, a blizzard, an ice storm)
+    /// raises it, the way a state posts the law on the warning, not on the
+    /// first flake.
     pub fn chain_law_level(&self) -> i64 {
-        match self.weather.effects().surface {
+        let from_sky = match self.weather.effects().surface {
             "ice" => 2,
             "snow" => 1,
             _ => 0,
-        }
+        };
+        from_sky.max(crate::sim::real_weather_alerts::alerts_chain_law_level(
+            &self.live_alerts,
+        ))
     }
 
     /// Index of the chain-law area containing this milepost, or None.

@@ -161,6 +161,7 @@ impl DrivingState {
             }
         }
         self.sync_weather_source(ctx);
+        self.sync_weather_alerts(ctx);
         let ramp = dt * 2.2;
         self.brake_lockout_cue_timer = (self.brake_lockout_cue_timer - dt).max(0.0);
         // Controller triggers/clutch are analog held positions blended in below;

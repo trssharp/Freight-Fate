@@ -271,6 +271,9 @@ pub struct Trip {
     pub toll_charges: Vec<TollCharge>,
     pub traffic_manager: TrafficManager,
     pub zones: Vec<Zone>,
+    /// The National Weather Service warnings active where the truck is,
+    /// as the cab last read them; empty with real weather off.
+    pub live_alerts: Vec<crate::sim::real_weather_alerts::WeatherAlert>,
     pub traffic_pressures: Vec<TrafficPressure>,
     pub navigation_cues: Vec<NavigationCue>,
     pub landmarks: Vec<RoadsideCallout>,
@@ -429,6 +432,7 @@ impl Trip {
             toll_charges: Vec::new(),
             traffic_manager,
             zones: Vec::new(),
+            live_alerts: Vec::new(),
             traffic_pressures: Vec::new(),
             navigation_cues: Vec::new(),
             landmarks: Vec::new(),

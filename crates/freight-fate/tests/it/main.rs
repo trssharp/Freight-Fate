@@ -8,6 +8,7 @@
 
 mod account_achievements;
 mod audio_support;
+mod live_weather_alerts;
 mod states_city_support;
 mod states_driving_menus_support;
 mod states_main_menu_support;

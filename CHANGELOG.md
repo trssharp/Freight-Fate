@@ -18,6 +18,16 @@
   Maine and Massachusetts join the states whose live work zones appear on
   your route when real traffic is on, replacing the made-up roadwork on
   those stretches.
+- **Weather warnings from the National Weather Service reach dispatch and
+  the cab.** A new Settings, World row, Weather warnings, turns them on.
+  Dispatch then reads the active warnings along each route option: a
+  blizzard, ice storm, hurricane or tornado warning sends the load the other
+  way when there is one, a winter storm, high wind, flash flood or dense fog
+  warning counts its slower miles against the route, and a thunderstorm is
+  mentioned and nothing more. The departure line names each warning and the
+  town it sits near. On the road the cab reads a warning out as you drive
+  into it, with the gusts when the warning gives them, and a winter warning
+  posts the chain law before the first flake.
 
 - **Nineteen new songs on the in-house stations.** Glory Road, Puro Tejano
   and Neon Drive each have a full eight-song rotation now, and the Night

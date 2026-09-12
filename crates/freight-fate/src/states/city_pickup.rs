@@ -15,6 +15,7 @@ use ff_core::models::trailer_yard::{
 use ff_core::music::{select_menu_music_sequence, MenuMusicProfile};
 use ff_core::pyfmt::{fmt_f, fmt_grouped, round_py_n};
 use ff_core::settings::Settings;
+use ff_core::sim::real_weather_alerts::{route_option_weather_note, warm_route_alerts};
 use ff_core::sim::route_roadwork::{
     choose_dispatch_route, dispatch_route_line, route_option_note, route_planning_note,
     route_state_keys, DispatchRouting,
@@ -125,34 +126,44 @@ pub fn route_planning_summary(route: &Route) -> String {
     )
 }
 
-/// Ask the state 511 feeds now for the construction on a load's route, so
-/// the answer is in the provider's cache by the time dispatch chooses the
-/// lane at the pickup. Never blocks: the provider fetches in the background
-/// and this returns at once. Nothing happens with real traffic off.
-pub fn warm_construction_feeds(ctx: &mut GameContext, origin: &str, destination: &str) {
-    let Some(provider) = ctx.real_traffic_provider_arc() else {
+/// Ask the state 511 feeds and the Weather Service now for what lies on a
+/// load's route, so the answers are in the providers' caches by the time
+/// dispatch chooses the lane at the pickup. Never blocks: the providers
+/// fetch in the background and this returns at once. Nothing happens with
+/// both live sources off.
+pub fn warm_route_feeds(ctx: &mut GameContext, origin: &str, destination: &str) {
+    let traffic = ctx.real_traffic_provider_arc();
+    let alerts = ctx.weather_alerts_provider_arc();
+    if traffic.is_none() && alerts.is_none() {
         return;
-    };
+    }
     let Ok(routes) = ctx.world.supported_route_options(origin, destination, 3) else {
         return;
     };
     let mut seen: HashSet<String> = HashSet::new();
     for route in &routes {
-        for state in route_state_keys(route) {
-            if seen.insert(state.clone()) {
-                provider.fetch_construction(&state);
+        if let Some(traffic) = &traffic {
+            for state in route_state_keys(route) {
+                if seen.insert(state.clone()) {
+                    traffic.fetch_construction(&state);
+                }
             }
+        }
+        if let Some(alerts) = &alerts {
+            warm_route_alerts(route, alerts, ctx.world);
         }
     }
 }
 
 /// Dispatch's ranking of the route options against the 511 construction
-/// reports it can see. With real traffic off the order is the world's.
+/// reports and the Weather Service warnings it can see. With both live
+/// sources off the order is the world's.
 fn dispatch_routing(ctx: &mut GameContext, routes: &[Route]) -> DispatchRouting {
     let provider = ctx.real_traffic_provider_arc();
     let provider: Option<&dyn TrafficProvider> =
         provider.as_deref().map(|p| p as &dyn TrafficProvider);
-    choose_dispatch_route(routes, provider, ctx.world)
+    let alerts = ctx.weather_alerts_provider_arc();
+    choose_dispatch_route(routes, provider, alerts.as_deref(), ctx.world)
 }
 
 pub fn route_departure_summary(route: &Route, settings: &Settings) -> String {
@@ -772,10 +783,21 @@ impl PickupFacilityState {
             .order
             .iter()
             .map(|&i| {
-                routing
+                let mut note = routing
                     .report(i)
                     .map(|report| route_option_note(report, &ctx.settings))
-                    .unwrap_or_default()
+                    .unwrap_or_default();
+                let weather = routing
+                    .weather_report(i)
+                    .map(route_option_weather_note)
+                    .unwrap_or_default();
+                if !weather.is_empty() {
+                    if !note.is_empty() {
+                        note.push(' ');
+                    }
+                    note.push_str(&weather);
+                }
+                note
             })
             .collect();
         let routes: Vec<Route> = routing.order.iter().map(|&i| routes[i].clone()).collect();
@@ -905,8 +927,8 @@ impl Menu for PickupFacilityState {
     fn announce_entry(&mut self, ctx: &mut GameContext) {
         ctx.audio
             .set_ambient(Some(facility_ambient_key(&self.job.origin_type)));
-        // Loading takes a while; by departure the 511 answer is usually in.
-        warm_construction_feeds(ctx, &self.job.origin, &self.job.destination);
+        // Loading takes a while; by departure the live answers are usually in.
+        warm_route_feeds(ctx, &self.job.origin, &self.job.destination);
         let plan = self.pickup_plan(ctx);
         let facility = self.facility();
         let lead = if self.loaded {

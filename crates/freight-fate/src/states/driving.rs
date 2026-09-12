@@ -100,6 +100,10 @@ pub struct DrivingState {
     // the trip and die with it -- keyed by buff group, see data/buffs.py.
     pub rig_buffs: RigBuffs,
     pub weather_source_real: bool,
+    /// The route mile the cab next asks the Weather Service for warnings at.
+    pub alerts_next_poll_mi: f64,
+    /// Warning ids already read out this drive, so each is said once.
+    pub alerts_said: std::collections::HashSet<String>,
     pub live_weather_controls_calendar: bool,
     pub traffic_source_real: bool,
     pub parking_source_real: bool,

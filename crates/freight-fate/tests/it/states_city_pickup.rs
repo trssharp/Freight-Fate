@@ -1078,7 +1078,12 @@ fn test_dispatch_departs_by_the_route_511_construction_recommends() {
     );
     app.ctx.settings.real_traffic = true;
     app.ctx.set_real_traffic_provider(Arc::clone(&provider));
-    let routing = choose_dispatch_route(&routes, Some(&*provider as &dyn TrafficProvider), world);
+    let routing = choose_dispatch_route(
+        &routes,
+        Some(&*provider as &dyn TrafficProvider),
+        None,
+        world,
+    );
     let expected = dispatch_route_line(&routes, &routing, world, &app.ctx.settings);
     assert!(
         expected.contains("the road closed on ") || expected.starts_with("The road is closed on "),

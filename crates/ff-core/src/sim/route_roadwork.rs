@@ -12,6 +12,12 @@
 //! reported full closure sorts last whatever its time: a dispatcher does not
 //! send a truck at a closed road while another way exists.
 //!
+//! The active National Weather Service warnings ride the same ranking
+//! (`real_weather_alerts`): a blizzard, ice storm, hurricane or tornado
+//! warning on a route sorts it last like a closure, and a winter storm,
+//! high wind, flash flood or dense fog warning prices the alerted stretch at
+//! that condition's safe speed.
+//!
 //! Every number here is derived from the feed and the deadline model, and
 //! says so: the delay through a zone is its length at the zone's limit minus
 //! the same length at the route's own planned pace. No queue penalty is
@@ -25,6 +31,9 @@ use crate::data::world_models::{Leg, Route};
 use crate::models::jobs::route_drive_hours;
 use crate::pyfmt::fmt_f;
 use crate::settings::Settings;
+use crate::sim::real_weather_alerts::{
+    scan_route_weather, weather_brief, RouteWeather, WeatherAlertsProvider,
+};
 use crate::sim::trip::Trip;
 use crate::sim::trip_models::ZONE_MIN_GAP_MI;
 use crate::sim::trip_route_helpers::nearest_mile_on_leg;
@@ -91,8 +100,10 @@ impl RouteConstruction {
 pub struct DispatchRouting {
     /// Indices into the routes given, dispatch's pick first.
     pub order: Vec<usize>,
-    /// One report per route given, in the routes' original order.
+    /// One construction report per route given, in the routes' original order.
     pub reports: Vec<RouteConstruction>,
+    /// One weather report per route given, in the routes' original order.
+    pub weather: Vec<RouteWeather>,
 }
 
 impl DispatchRouting {
@@ -108,6 +119,29 @@ impl DispatchRouting {
 
     pub fn report(&self, index: usize) -> Option<&RouteConstruction> {
         self.reports.get(index)
+    }
+
+    pub fn weather_report(&self, index: usize) -> Option<&RouteWeather> {
+        self.weather.get(index)
+    }
+
+    /// Drive hours plus every delay dispatch counts, for one route.
+    pub fn total_h(&self, index: usize) -> f64 {
+        self.report(index).map(|r| r.total_h()).unwrap_or(0.0)
+            + self.weather_report(index).map(|w| w.delay_h).unwrap_or(0.0)
+    }
+
+    /// A closed road or a warning dispatch will not drive into, on one route.
+    pub fn is_blocked(&self, index: usize) -> bool {
+        self.report(index).is_some_and(|r| r.blocked)
+            || self.weather_report(index).is_some_and(|w| w.avoid)
+    }
+
+    /// True when something on the routes (construction or a warning) was
+    /// found at all, so a re-ranking could have happened.
+    pub fn found_anything(&self) -> bool {
+        self.reports.iter().any(|r| !r.spots.is_empty())
+            || self.weather.iter().any(|w| !w.alerts.is_empty())
     }
 }
 
@@ -244,12 +278,14 @@ pub fn scan_route_construction(
 }
 
 /// Rank the route options the way dispatch does: quickest first counting
-/// reported construction, a full closure last, and the shorter route keeping
-/// its place when the difference is under a minute. With no provider the
-/// order is the one given.
+/// reported construction and the active weather warnings, a closed road or a
+/// warning nobody drives into last, and the shorter route keeping its place
+/// when the difference is under a minute. With no providers the order is
+/// the one given.
 pub fn choose_dispatch_route(
     routes: &[Route],
     provider: Option<&dyn TrafficProvider>,
+    alerts: Option<&WeatherAlertsProvider>,
     world: &World,
 ) -> DispatchRouting {
     let reports: Vec<RouteConstruction> = routes
@@ -262,22 +298,46 @@ pub fn choose_dispatch_route(
             },
         })
         .collect();
-    let mut order: Vec<usize> = (0..routes.len()).collect();
-    if provider.is_some() && reports.iter().any(|r| !r.spots.is_empty()) {
-        order.sort_by(|&a, &b| {
-            let (ra, rb) = (&reports[a], &reports[b]);
-            // An open road before a closed one, whatever the clock says.
-            ra.blocked.cmp(&rb.blocked).then_with(|| {
-                let gap_min = (ra.total_h() - rb.total_h()) * 60.0;
-                if gap_min.abs() < TIE_MINUTES {
-                    a.cmp(&b)
+    let weather: Vec<RouteWeather> = routes
+        .iter()
+        .zip(&reports)
+        .map(|(route, report)| match alerts {
+            Some(alerts) => {
+                let pace = if report.drive_h > 0.0 {
+                    route.miles() / report.drive_h
                 } else {
-                    ra.total_h().total_cmp(&rb.total_h())
-                }
-            })
+                    0.0
+                };
+                scan_route_weather(route, alerts, world, pace)
+            }
+            None => RouteWeather::default(),
+        })
+        .collect();
+    let mut routing = DispatchRouting {
+        order: (0..routes.len()).collect(),
+        reports,
+        weather,
+    };
+    if routing.found_anything() {
+        let mut order = routing.order.clone();
+        order.sort_by(|&a, &b| {
+            // An open road before a closed one, whatever the clock says.
+            routing
+                .is_blocked(a)
+                .cmp(&routing.is_blocked(b))
+                .then_with(|| {
+                    let (ta, tb) = (routing.total_h(a), routing.total_h(b));
+                    let gap_min = (ta - tb) * 60.0;
+                    if gap_min.abs() < TIE_MINUTES {
+                        a.cmp(&b)
+                    } else {
+                        ta.total_cmp(&tb)
+                    }
+                })
         });
+        routing.order = order;
     }
-    DispatchRouting { order, reports }
+    routing
 }
 
 fn minutes_words(hours: f64) -> String {
@@ -305,8 +365,71 @@ pub fn spot_text(spot: &ConstructionSpot, settings: &Settings) -> String {
     )
 }
 
+/// The city a detour route goes by way of, spoken, or empty.
+fn by_way_of(route: &Route, world: &World) -> String {
+    route
+        .cities
+        .get(1)
+        .filter(|_| route.cities.len() > 2)
+        .map(|key| {
+            world
+                .cities
+                .get(key)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| key.clone())
+        })
+        .map(|name| format!(" by way of {name}"))
+        .unwrap_or_default()
+}
+
+/// Why the shortest route lost: the closed road or the warning first, else
+/// the construction it costs, else the weather it costs.
+fn avoided_reason(routing: &DispatchRouting) -> Option<(String, bool)> {
+    let construction = routing.report(0)?;
+    let weather = routing.weather_report(0)?;
+    if let Some(spot) = construction.spots.first().filter(|_| construction.blocked) {
+        return Some((
+            format!(
+                "The road is closed on {} near {}.",
+                spot.road, spot.near_city
+            ),
+            true,
+        ));
+    }
+    if let Some(alert) = weather.avoided() {
+        return Some((
+            format!(
+                "A {} covers the road near {}.",
+                alert.alert.event, alert.near_city
+            ),
+            true,
+        ));
+    }
+    if let Some(spot) = construction.spots.first() {
+        return Some((
+            format!(
+                "{} on {} near {}",
+                spot.closure_words(),
+                spot.road,
+                spot.near_city
+            ),
+            false,
+        ));
+    }
+    weather
+        .alerts
+        .iter()
+        .find(|a| a.delay_h > 0.0)
+        .map(|alert| {
+            (
+                format!("the {} near {}", alert.alert.event, alert.near_city),
+                false,
+            )
+        })
+}
+
 /// What dispatch says about the route it picked, before naming the
-/// destination. Empty when 511 reported nothing on any option.
+/// destination. Empty when nothing was reported on any option.
 pub fn dispatch_route_line(
     routes: &[Route],
     routing: &DispatchRouting,
@@ -314,39 +437,28 @@ pub fn dispatch_route_line(
     settings: &Settings,
 ) -> String {
     let pick = routing.pick();
-    let (Some(picked), Some(report)) = (routes.get(pick), routing.report(pick)) else {
+    let (Some(picked), Some(report), Some(weather)) = (
+        routes.get(pick),
+        routing.report(pick),
+        routing.weather_report(pick),
+    ) else {
         return String::new();
     };
     let mut parts: Vec<String> = Vec::new();
     if routing.detoured() {
-        if let (Some(shortest), Some(avoided)) = (routes.first(), routing.report(0)) {
+        if let (Some(shortest), Some((reason, hard))) = (routes.first(), avoided_reason(routing)) {
             let extra_mi = picked.miles() - shortest.miles();
             let adds = if extra_mi > 0.5 {
                 format!("adds {} and ", settings.distance_text(extra_mi, false))
             } else {
                 String::new()
             };
-            let spot = avoided.spots.first();
-            let place = spot
-                .map(|spot| format!("on {} near {}", spot.road, spot.near_city))
-                .unwrap_or_default();
-            if avoided.blocked {
-                // A closed road is not a time saving; the detour costs what it
-                // costs against the road as it would have run open.
-                let extra_h = report.total_h() - avoided.drive_h;
-                let via = picked
-                    .cities
-                    .get(1)
-                    .filter(|_| picked.cities.len() > 2)
-                    .map(|key| {
-                        world
-                            .cities
-                            .get(key)
-                            .map(|c| c.name.clone())
-                            .unwrap_or_else(|| key.clone())
-                    })
-                    .map(|name| format!(" by way of {name}"))
-                    .unwrap_or_default();
+            if hard {
+                // A closed road or a warning is not a time saving; the detour
+                // costs what it costs against the road as it would have run.
+                let open_h = routing.report(0).map(|r| r.drive_h).unwrap_or(0.0);
+                let extra_h = routing.total_h(pick) - open_h;
+                let via = by_way_of(picked, world);
                 let cost = if extra_h * 60.0 >= 0.5 {
                     format!("This way {adds}takes {}.", minutes_words(extra_h))
                 } else if extra_mi > 0.5 {
@@ -355,78 +467,62 @@ pub fn dispatch_route_line(
                     "This way costs no time.".to_string()
                 };
                 parts.push(format!(
-                    "The road is closed {place}. Dispatch is routing you around it{via}. {cost}"
+                    "{reason} Dispatch is routing you around it{via}. {cost}"
                 ));
             } else {
-                let what = spot
-                    .map(|spot| format!("{} {place}", spot.closure_words()))
-                    .unwrap_or_else(|| "construction".to_string());
-                let saved_h = avoided.total_h() - report.total_h();
+                let saved_h = routing.total_h(0) - routing.total_h(pick);
                 parts.push(format!(
-                    "Dispatch is routing you around {what}. This way {adds}saves {}.",
+                    "Dispatch is routing you around {reason}. This way {adds}saves {}.",
                     minutes_words(saved_h)
                 ));
             }
         }
     }
+    let has_cost = !report.spots.is_empty()
+        || weather.alerts.iter().any(|a| {
+            a.delay_h > 0.0 || a.effect == crate::sim::real_weather_alerts::AlertEffect::Avoid
+        });
     if !report.spots.is_empty() {
         let listed: Vec<String> = report
             .spots
             .iter()
             .map(|spot| spot_text(spot, settings))
             .collect();
-        let tail = if routing.detoured() {
-            ""
-        } else {
-            " No quicker way around."
-        };
         parts.push(format!(
-            "Construction reported on the way: {}.{tail}",
+            "Construction reported on the way: {}.",
             listed.join("; ")
         ));
+    }
+    let brief = weather_brief(weather);
+    if !brief.is_empty() {
+        parts.push(brief);
+    }
+    if !routing.detoured() && has_cost {
+        parts.push("No quicker way around.".to_string());
     }
     parts.join(" ")
 }
 
 /// What the route planning screen says about dispatch's ranking, for a
-/// driver who chooses their own route. Empty unless construction moved the
+/// driver who chooses their own route. Empty unless something moved the
 /// recommendation off the shortest way; the per-option notes carry the rest.
 pub fn route_planning_note(routes: &[Route], routing: &DispatchRouting, world: &World) -> String {
     if !routing.detoured() {
         return String::new();
     }
     let pick = routing.pick();
-    let (Some(picked), Some(report), Some(avoided)) =
-        (routes.get(pick), routing.report(pick), routing.report(0))
-    else {
+    let (Some(picked), Some((reason, hard))) = (routes.get(pick), avoided_reason(routing)) else {
         return String::new();
     };
-    let spot = avoided.spots.first();
-    let place = spot
-        .map(|spot| format!("on {} near {}", spot.road, spot.near_city))
-        .unwrap_or_default();
-    if avoided.blocked {
-        let via = picked
-            .cities
-            .get(1)
-            .filter(|_| picked.cities.len() > 2)
-            .map(|key| {
-                world
-                    .cities
-                    .get(key)
-                    .map(|c| c.name.clone())
-                    .unwrap_or_else(|| key.clone())
-            })
-            .map(|name| format!(" by way of {name}"))
-            .unwrap_or_default();
-        return format!("The road is closed {place}. Route 1 goes around it{via}.");
+    if hard {
+        return format!(
+            "{reason} Route 1 goes around it{}.",
+            by_way_of(picked, world)
+        );
     }
-    let what = spot
-        .map(|spot| format!("{} {place}", spot.closure_words()))
-        .unwrap_or_else(|| "construction".to_string());
-    let saved_h = avoided.total_h() - report.total_h();
+    let saved_h = routing.total_h(0) - routing.total_h(pick);
     format!(
-        "Route 1 avoids {what} and saves {}.",
+        "Route 1 avoids {reason} and saves {}.",
         minutes_words(saved_h)
     )
 }
@@ -489,7 +585,7 @@ mod tests {
     fn test_no_provider_keeps_the_distance_order_and_says_nothing() {
         let world = get_world();
         let routes = ohio_routes();
-        let routing = choose_dispatch_route(&routes, None, world);
+        let routing = choose_dispatch_route(&routes, None, None, world);
         assert_eq!(routing.order, vec![0, 1, 2]);
         assert!(!routing.detoured());
         assert!(routing
@@ -516,7 +612,7 @@ mod tests {
                 "",
             )],
         );
-        let routing = choose_dispatch_route(&routes, Some(&provider), world);
+        let routing = choose_dispatch_route(&routes, Some(&provider), None, world);
         assert!(routing.reports[0].blocked);
         assert!(!routing.reports[1].blocked);
         assert_eq!(routing.pick(), 1, "{:?}", routing.order);
@@ -553,7 +649,7 @@ mod tests {
             "ohio",
             vec![construction("lane", "single lane", ON_I71.0, ON_I71.1, "")],
         );
-        let routing = choose_dispatch_route(&routes, Some(&provider), world);
+        let routing = choose_dispatch_route(&routes, Some(&provider), None, world);
         assert_eq!(routing.pick(), 0, "{:?}", routing.order);
         let report = &routing.reports[0];
         assert_eq!(report.spots.len(), 1);
@@ -605,7 +701,7 @@ mod tests {
                 "Between milepost 152 and 172",
             )],
         );
-        let routing = choose_dispatch_route(&routes, Some(&provider), world);
+        let routing = choose_dispatch_route(&routes, Some(&provider), None, world);
         assert_eq!(routing.reports[0].spots.len(), 1);
         assert!((routing.reports[0].spots[0].length_mi - 20.0).abs() < 1e-9);
         assert_eq!(routing.pick(), 1, "{:?}", routing.order);
@@ -620,9 +716,123 @@ mod tests {
             note.starts_with("Route 1 avoids one lane closed on I-65 near "),
             "{note}"
         );
+        assert!(route_planning_note(
+            &routes,
+            &choose_dispatch_route(&routes, None, None, world),
+            world
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn test_a_blizzard_warning_on_the_shortest_route_sends_dispatch_around_it() {
+        // No construction anywhere. A Blizzard Warning at Cincinnati, where
+        // every option ends, so no route can avoid it and the order holds.
+        use crate::sim::real_weather_alerts::{WeatherAlert, WeatherAlertsProvider};
+        let world = get_world();
+        let routes = ohio_routes();
+        let alerts = WeatherAlertsProvider::offline();
+        let cincinnati = world.cities.get(&routes[0].cities[1]).expect("Cincinnati");
+        alerts.seed(
+            cincinnati.lat,
+            cincinnati.lon,
+            vec![WeatherAlert {
+                id: "blizzard".into(),
+                event: "Blizzard Warning".into(),
+                severity: "Extreme".into(),
+                headline: "Blizzard Warning".into(),
+                area: "Hamilton".into(),
+                description: "Whiteout conditions.".into(),
+            }],
+        );
+        let routing = choose_dispatch_route(&routes, None, Some(&alerts), world);
+        // Every route ends at Cincinnati, so every route carries the warning
+        // and none can avoid it: the order stays the shortest first.
+        assert!(routing.weather.iter().all(|w| w.avoid));
+        assert_eq!(routing.pick(), 0, "{:?}", routing.order);
+        let line = dispatch_route_line(&routes, &routing, world, &Settings::default());
         assert!(
-            route_planning_note(&routes, &choose_dispatch_route(&routes, None, world), world)
-                .is_empty()
+            line.starts_with("Weather alerts on the way: Blizzard Warning near Cincinnati."),
+            "{line}"
+        );
+        assert!(line.ends_with("No quicker way around."), "{line}");
+
+        // Now the warning sits on Columbus only for the direct run: seed a
+        // Winter Storm Warning at Columbus (both routes start there) and a
+        // Blizzard at nobody. The slow warning costs the same on both, so the
+        // shorter route keeps its place.
+        let alerts = WeatherAlertsProvider::offline();
+        let columbus = world.cities.get(&routes[0].cities[0]).expect("Columbus");
+        alerts.seed(
+            columbus.lat,
+            columbus.lon,
+            vec![WeatherAlert {
+                id: "snow".into(),
+                event: "Winter Storm Warning".into(),
+                severity: "Severe".into(),
+                headline: "Winter Storm Warning".into(),
+                area: "Franklin".into(),
+                description: "Heavy snow.".into(),
+            }],
+        );
+        let routing = choose_dispatch_route(&routes, None, Some(&alerts), world);
+        assert_eq!(routing.pick(), 0, "{:?}", routing.order);
+        assert!(routing.weather[0].delay_h > 0.0);
+        let line = dispatch_route_line(&routes, &routing, world, &Settings::default());
+        assert!(
+            line.starts_with(
+                "Weather alerts on the way: Winter Storm Warning near Columbus, about "
+            ),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn test_a_tornado_warning_on_the_middle_city_moves_dispatch_to_the_clear_route() {
+        // The avoid rule needs a warning only the shortest route carries.
+        // Dayton to Cleveland: the shortest way passes Mansfield, the next
+        // one passes Akron instead.
+        use crate::sim::real_weather_alerts::{WeatherAlert, WeatherAlertsProvider};
+        let world = get_world();
+        let routes = world
+            .supported_route_options("Dayton", "Cleveland", 3)
+            .expect("Dayton to Cleveland routes");
+        // Route 0 goes Columbus, Mansfield, Cleveland; route 1 goes Columbus,
+        // Akron, Cleveland. Mansfield is on the shortest route only.
+        let mansfield = routes[0]
+            .cities
+            .iter()
+            .find(|c| c.starts_with("mansfield"))
+            .expect("Mansfield on the shortest route");
+        assert!(!routes[1].cities.contains(mansfield));
+        let city = world.cities.get(mansfield).expect("Mansfield");
+        let alerts = WeatherAlertsProvider::offline();
+        alerts.seed(
+            city.lat,
+            city.lon,
+            vec![WeatherAlert {
+                id: "tornado".into(),
+                event: "Tornado Warning".into(),
+                severity: "Extreme".into(),
+                headline: "Tornado Warning".into(),
+                area: "Richland".into(),
+                description: "A tornado is on the ground.".into(),
+            }],
+        );
+        let routing = choose_dispatch_route(&routes, None, Some(&alerts), world);
+        assert!(routing.weather[0].avoid);
+        assert!(!routing.weather[1].avoid);
+        assert_eq!(routing.pick(), 1, "{:?}", routing.order);
+        let line = dispatch_route_line(&routes, &routing, world, &Settings::default());
+        assert!(
+            line.starts_with("A Tornado Warning covers the road near Mansfield. Dispatch is routing you around it by way of Columbus."),
+            "{line}"
+        );
+        assert!(line.contains("This way adds "), "{line}");
+        let note = route_planning_note(&routes, &routing, world);
+        assert_eq!(
+            note,
+            "A Tornado Warning covers the road near Mansfield. Route 1 goes around it by way of Columbus."
         );
     }
 
