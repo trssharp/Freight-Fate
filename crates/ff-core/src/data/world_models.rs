@@ -10,8 +10,8 @@
 use std::fmt;
 
 use super::world_constants::{
-    lookup, vehicle_access_allows, DEFAULT_VEHICLE_ACCESS, LOCATION_TYPE_LABELS,
-    PARKING_CERTAINTY_LABELS, STOP_TYPE_LABELS, TOLL_METHOD_LABELS,
+    lookup, screened_vehicle_access, vehicle_access_allows, DEFAULT_VEHICLE_ACCESS,
+    LOCATION_TYPE_LABELS, PARKING_CERTAINTY_LABELS, STOP_TYPE_LABELS, TOLL_METHOD_LABELS,
 };
 use crate::pyfmt::{py_int, py_str_float, round_py_int, round_py_n};
 
@@ -324,7 +324,24 @@ impl Stop {
     /// take it. A stop a rig cannot enter is worse than no stop at all: it
     /// burns driving hours and can strand someone with no legal alternative.
     pub fn accessible_to(&self, bobtail: bool) -> bool {
-        vehicle_access_allows(&self.vehicle_access, bobtail)
+        vehicle_access_allows(self.effective_vehicle_access(), bobtail)
+    }
+
+    /// The access level this stop's own record supports: the recorded value,
+    /// screened for the assumed `tractor_trailer` default on a convenience
+    /// station the map typed as a travel center. See
+    /// `world_constants::screened_vehicle_access`; this is what the runtime
+    /// road stop carries, so announcements, exit arming, rest planning and
+    /// the tablet all read the same answer.
+    pub fn effective_vehicle_access(&self) -> &str {
+        screened_vehicle_access(
+            &self.name,
+            &self.stop_type,
+            &self.parking,
+            self.parking_spaces,
+            &self.services,
+            &self.vehicle_access,
+        )
     }
 
     pub fn label(&self) -> &'static str {

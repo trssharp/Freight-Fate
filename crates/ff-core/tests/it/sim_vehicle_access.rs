@@ -125,8 +125,11 @@ fn test_stop_and_road_stop_agree() {
                 vehicle_access: level.to_string(),
                 ..Default::default()
             };
+            // The runtime stop carries the SCREENED level, as placement copies
+            // it: a nameless travel center with unverified parking reads as
+            // bobtail-only in both places, or in neither.
             let road_stop = RoadStop {
-                vehicle_access: level.to_string(),
+                vehicle_access: world_stop.effective_vehicle_access().to_string(),
                 ..RoadStop::new("X", 10.0, "travel_center")
             };
             assert_eq!(

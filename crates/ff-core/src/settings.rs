@@ -374,6 +374,10 @@ settings_fields! {
     real_traffic: bool = false => bool_truthy,
     /// live truck parking availability from TPIMS APIs
     real_parking: bool = false => bool_truthy,
+    /// This week's US diesel price from the federal weekly survey at every
+    /// pump, with each region's usual difference on top, in place of the
+    /// price drawn for the session
+    real_fuel_prices: bool = false => bool_truthy,
     /// Preserve the historical behavior by default: live weather also
     /// follows the wall-clock date. Turn this off to let the career calendar
     /// advance while live conditions continue to come from the NWS.

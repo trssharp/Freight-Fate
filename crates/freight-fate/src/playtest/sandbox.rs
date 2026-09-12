@@ -94,7 +94,12 @@ pub fn is_identity(path: &Path) -> bool {
 /// anything, and a sandbox exists to test the game against the world, so
 /// they are on in every sandbox whatever the real settings say (owner
 /// ruling, 2026-09-12: the agent drive has to be able to hear live data).
-pub const LIVE_SETTINGS: [&str; 3] = ["real_weather", "real_traffic", "real_parking"];
+pub const LIVE_SETTINGS: [&str; 4] = [
+    "real_weather",
+    "real_traffic",
+    "real_parking",
+    "real_fuel_prices",
+];
 
 /// Copy the real settings in, with everything that publishes turned off
 /// and every live-data feed turned on.

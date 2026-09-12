@@ -62,6 +62,212 @@ pub fn vehicle_access_allows(access: &str, bobtail: bool) -> bool {
     access != "none"
 }
 
+/// National truck-stop chains, lower-cased. A stop whose name starts with
+/// one of these is read as truck-serving whatever else its record left
+/// unsaid: the chain's business is trucks. Read from the operator's own
+/// knowledge of the industry, not from the record.
+pub const TRUCK_STOP_CHAINS: &[&str] = &[
+    "love's",
+    "pilot",
+    "flying j",
+    "ta ",
+    "travelcenters",
+    "petro",
+    "road ranger",
+    "one9",
+    "sapp bros",
+    "bosselman",
+    "iowa 80",
+    "little america",
+    "ambest",
+    "roady's",
+    "stamart",
+    "onvo",
+    "kwik trip",
+    "kwik star",
+];
+
+/// Words in a stop's own name that say trucks are served there.
+pub const TRUCK_STOP_NAME_WORDS: &[&str] = &[
+    "truck",
+    "travel",
+    "plaza",
+    "rest area",
+    "service area",
+    "traffic center",
+    "fuel center",
+    "welcome center",
+];
+
+/// The access level a stop's own record supports.
+///
+/// The map's curation tool typed a good many convenience stations as travel
+/// centers and left their access at the `tractor_trailer` default with
+/// parking merely "likely": a Circle K or a QuikTrip announced and armed like
+/// a truck stop (owner, 2026-09-12: "stops on the map like Circle K where a
+/// truck would never park"). A silent upstream is not a reading, so this
+/// screens that default at load and never edits the bake: a fuel-type stop
+/// with no confirmed parking, no surveyed spaces, no truck facility in its
+/// services, no truck-stop chain at the head of its name and no truck word
+/// in it is read as `bobtail_only`, which is what the same tool gave the
+/// stations it did recognise as generic. Everything else is returned as
+/// recorded, explicit values included.
+pub fn screened_vehicle_access<'a>(
+    name: &str,
+    stop_type: &str,
+    parking: &str,
+    parking_spaces: i64,
+    services: &[String],
+    vehicle_access: &'a str,
+) -> &'a str {
+    if vehicle_access != DEFAULT_VEHICLE_ACCESS {
+        return vehicle_access;
+    }
+    if !matches!(
+        stop_type,
+        "travel_center" | "service_plaza" | "fuel_station"
+    ) {
+        return vehicle_access;
+    }
+    if parking == "confirmed" || parking_spaces > 0 {
+        return vehicle_access;
+    }
+    if services.iter().any(|s| s == "scale" || s == "showers") {
+        return vehicle_access;
+    }
+    let lower = name.trim().to_lowercase();
+    if TRUCK_STOP_CHAINS
+        .iter()
+        .any(|chain| lower.starts_with(chain) || lower == chain.trim())
+        || TRUCK_STOP_NAME_WORDS
+            .iter()
+            .any(|word| lower.contains(word))
+    {
+        return vehicle_access;
+    }
+    "bobtail_only"
+}
+
+#[cfg(test)]
+mod screen_tests {
+    use super::*;
+
+    fn screen(
+        name: &str,
+        stop_type: &str,
+        parking: &str,
+        spaces: i64,
+        services: &[&str],
+    ) -> &'static str {
+        let services: Vec<String> = services.iter().map(|s| s.to_string()).collect();
+        screened_vehicle_access(
+            name,
+            stop_type,
+            parking,
+            spaces,
+            &services,
+            DEFAULT_VEHICLE_ACCESS,
+        )
+    }
+
+    #[test]
+    fn test_a_convenience_station_typed_as_a_travel_center_is_bobtail_only() {
+        assert_eq!(
+            screen(
+                "QuikTrip",
+                "travel_center",
+                "likely",
+                0,
+                &["diesel", "parking"]
+            ),
+            "bobtail_only"
+        );
+        assert_eq!(
+            screen("Circle K", "service_plaza", "likely", 0, &["diesel"]),
+            "bobtail_only"
+        );
+        assert_eq!(
+            screen("Speedway", "fuel_station", "limited", 0, &["diesel"]),
+            "bobtail_only"
+        );
+        assert_eq!(
+            screen("Horner Industrial Group", "travel_center", "likely", 0, &[]),
+            "bobtail_only"
+        );
+    }
+
+    #[test]
+    fn test_evidence_of_trucks_keeps_the_recorded_access() {
+        assert_eq!(
+            screen(
+                "Love's Travel Stop",
+                "travel_center",
+                "likely",
+                0,
+                &["diesel"]
+            ),
+            "tractor_trailer"
+        );
+        assert_eq!(
+            screen("Pilot", "service_plaza", "likely", 0, &["diesel"]),
+            "tractor_trailer"
+        );
+        assert_eq!(
+            screen("TA Ontario", "travel_center", "likely", 0, &[]),
+            "tractor_trailer"
+        );
+        assert_eq!(
+            screen("Plaza 23 Truck Stop", "travel_center", "likely", 0, &[]),
+            "tractor_trailer"
+        );
+        assert_eq!(
+            screen("Allentown Service Plaza", "service_plaza", "likely", 0, &[]),
+            "tractor_trailer"
+        );
+        assert_eq!(
+            screen("Shell", "travel_center", "confirmed", 0, &["diesel"]),
+            "tractor_trailer"
+        );
+        assert_eq!(
+            screen("Shell", "travel_center", "likely", 40, &["diesel"]),
+            "tractor_trailer"
+        );
+        assert_eq!(
+            screen("Shell", "travel_center", "likely", 0, &["diesel", "scale"]),
+            "tractor_trailer"
+        );
+        // Types that serve trucks by definition are never screened.
+        assert_eq!(
+            screen("Bay 2", "public_rest_area", "likely", 0, &[]),
+            "tractor_trailer"
+        );
+        assert_eq!(
+            screen("Bay 2", "weigh_station", "none", 0, &[]),
+            "tractor_trailer"
+        );
+    }
+
+    #[test]
+    fn test_explicit_values_pass_through_untouched() {
+        let services: Vec<String> = Vec::new();
+        assert_eq!(
+            screened_vehicle_access(
+                "Circle K",
+                "fuel_station",
+                "limited",
+                0,
+                &services,
+                "bobtail_only"
+            ),
+            "bobtail_only"
+        );
+        assert_eq!(
+            screened_vehicle_access("Circle K", "fuel_station", "limited", 0, &services, "none"),
+            "none"
+        );
+    }
+}
+
 // Alternate routes should feel like real dispatch choices, not graph leftovers.
 // A little extra mileage is fine for traffic, weather, grades, or avoiding a
 // metro corridor; hundreds of out-of-direction miles on a short lane are not.

@@ -145,7 +145,12 @@ impl CityMenuState {
             .map(|c| c.region.clone())
             .unwrap_or_default();
         let price = ctx.economy.fuel_price(&region);
-        format!("Garage: fuel {} per gallon", fmt_f(price, 2))
+        let live = if ctx.economy.live_national_price().is_some() {
+            ", this week's price"
+        } else {
+            ""
+        };
+        format!("Garage: fuel {} per gallon{live}", fmt_f(price, 2))
     }
 
     fn garage(&mut self, ctx: &mut GameContext) {

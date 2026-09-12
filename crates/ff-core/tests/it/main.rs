@@ -25,6 +25,7 @@ mod data_lane_data;
 mod data_local_approaches;
 mod data_local_geometry;
 mod data_regions;
+mod data_stop_access;
 mod data_street_turns;
 mod data_surface_streets;
 mod data_world;

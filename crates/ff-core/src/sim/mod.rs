@@ -7,6 +7,7 @@ pub mod hos;
 pub mod lane;
 pub mod lane_guidance;
 pub mod pedal_latch;
+pub mod real_fuel_price;
 pub mod real_traffic;
 pub mod real_traffic_list511;
 pub mod real_traffic_parsers;

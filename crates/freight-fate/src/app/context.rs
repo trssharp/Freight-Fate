@@ -33,6 +33,7 @@ use ff_core::models::profile::Profile;
 use ff_core::music::music_track_duration_s;
 use ff_core::playtest_levers::LeverContext;
 use ff_core::settings::Settings;
+use ff_core::sim::real_fuel_price::FuelPriceProvider;
 use ff_core::sim::real_traffic::RealTrafficProvider;
 use ff_core::sim::real_weather::RealWeatherProvider;
 use ff_core::sim::real_weather_alerts::WeatherAlertsProvider;
@@ -194,6 +195,7 @@ pub struct GameContext {
     real_weather: Option<Arc<RealWeatherProvider>>,
     real_traffic: Option<Arc<RealTrafficProvider>>,
     weather_alerts: Option<Arc<WeatherAlertsProvider>>,
+    fuel_prices: Option<Arc<FuelPriceProvider>>,
     truck_parking: Option<Arc<TruckParkingProvider>>,
 
     // -- the state stack ----------------------------------------------------------------
@@ -260,6 +262,7 @@ impl GameContext {
             real_weather: None,
             real_traffic: None,
             weather_alerts: None,
+            fuel_prices: None,
             truck_parking: None,
             stack: Vec::new(),
             deferred: Vec::new(),
@@ -372,6 +375,30 @@ impl GameContext {
     /// provider with the warnings they want dispatch and the cab to see.
     pub fn set_weather_alerts_provider(&mut self, provider: Arc<WeatherAlertsProvider>) {
         self.weather_alerts = Some(provider);
+    }
+
+    /// Bring the economy's diesel price in line with this week's federal
+    /// survey figure when real fuel prices are on: ask the keyless feed
+    /// (never blocking) and apply whatever has arrived. Off, the price drawn
+    /// for the session stands. Cheap enough to run every frame.
+    pub fn sync_fuel_prices(&mut self) {
+        if !self.settings.real_fuel_prices {
+            self.economy.set_live_national_price(None);
+            return;
+        }
+        let provider = self
+            .fuel_prices
+            .get_or_insert_with(|| Arc::new(FuelPriceProvider::new(Arc::new(UreqTransport))))
+            .clone();
+        provider.request();
+        self.economy
+            .set_live_national_price(provider.get().map(|price| price.per_gal));
+    }
+
+    /// Put a provider in place of the live one. Tests seed an offline
+    /// provider with the week's price they want the pumps to charge.
+    pub fn set_fuel_price_provider(&mut self, provider: Arc<FuelPriceProvider>) {
+        self.fuel_prices = Some(provider);
     }
 
     /// Shared TPIMS provider when real parking is enabled, else None.
@@ -813,6 +840,9 @@ impl GameContext {
 
     /// Advance music beds when their one-shot playback ends.
     pub fn update_music_rotation(&mut self, dt: f64) {
+        // Every state's per-frame update lands here, which makes it the one
+        // place the live diesel price is sure to be kept current.
+        self.sync_fuel_prices();
         let (Some(_), Some(track)) = (&self.music_rotation_pool, &self.music_rotation_track) else {
             // No menu bed is rotating. A drive sitting under this menu
             // (pause, settings, a traffic stop...) keeps its own playlist

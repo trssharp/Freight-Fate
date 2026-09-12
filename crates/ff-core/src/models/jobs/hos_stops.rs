@@ -239,11 +239,15 @@ mod tests {
 
     #[test]
     fn route_stops_respect_reverse_direction_and_vehicle_access() {
+        // Confirmed parking: a nameless travel center with only assumed
+        // parking is screened to bobtail-only at load, which is not what
+        // this case is about.
         let stop = Stop {
             name: "Reverse stop".into(),
             at_mi: 20.0,
             actions: vec!["sleep".into()],
             directions: vec!["reverse".into()],
+            parking: "confirmed".into(),
             ..Default::default()
         };
         let route = Route::from_legs(

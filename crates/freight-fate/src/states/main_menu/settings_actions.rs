@@ -539,6 +539,15 @@ impl SettingsCategoryState {
         self.announce(ctx);
     }
 
+    pub(super) fn toggle_real_fuel_prices(&mut self, ctx: &mut GameContext, _d: i64) {
+        ctx.settings.real_fuel_prices = !ctx.settings.real_fuel_prices;
+        save_settings(&ctx.settings);
+        // Ask for this week's price straight away so the garage line has it
+        // by the time the player gets there.
+        ctx.sync_fuel_prices();
+        self.announce(ctx);
+    }
+
     pub(super) fn toggle_real_parking(&mut self, ctx: &mut GameContext, _d: i64) {
         ctx.settings.real_parking = !ctx.settings.real_parking;
         save_settings(&ctx.settings);

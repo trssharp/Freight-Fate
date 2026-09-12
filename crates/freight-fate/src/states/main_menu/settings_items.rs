@@ -345,6 +345,7 @@ impl SettingsCategoryState {
             "world" => vec![
                 adjust(|s, ctx, d| s.toggle_real_weather(ctx, d)),
                 adjust(|s, ctx, d| s.toggle_real_traffic(ctx, d)),
+                adjust(|s, ctx, d| s.toggle_real_fuel_prices(ctx, d)),
                 adjust(|s, ctx, d| s.toggle_real_parking(ctx, d)),
                 adjust(|s, ctx, d| s.toggle_live_weather_calendar(ctx, d)),
             ],
@@ -459,6 +460,22 @@ impl SettingsCategoryState {
                     adjust(|s, ctx, d| s.toggle_real_traffic(ctx, d)),
                     "Real time uses live traffic incidents from state 511 \
                      services when available.",
+                ),
+                row(
+                    dyn_label(|s| {
+                        format!(
+                            "Fuel prices: {}",
+                            if s.real_fuel_prices {
+                                "this week's national average"
+                            } else {
+                                "simulated"
+                            }
+                        )
+                    }),
+                    adjust(|s, ctx, d| s.toggle_real_fuel_prices(ctx, d)),
+                    "This week's national average puts the federal weekly diesel survey \
+                     price at every pump, with each region's usual difference on top. \
+                     Simulated draws a price per region for the session.",
                 ),
                 row(
                     dyn_label(|s| {

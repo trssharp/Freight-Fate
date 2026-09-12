@@ -28,6 +28,11 @@
   town it sits near. On the road the cab reads a warning out as you drive
   into it, with the gusts when the warning gives them, and a winter warning
   posts the chain law before the first flake.
+- **Real diesel prices.** A new Settings, World row, Fuel prices, puts this
+  week's national average diesel price from the federal weekly survey at
+  every pump, with each region's usual difference on top, in place of the
+  price the game drew for the session. The garage line says when the price
+  is this week's.
 
 - **Nineteen new songs on the in-house stations.** Glory Road, Puro Tejano
   and Neon Drive each have a full eight-song rotation now, and the Night
@@ -1330,6 +1335,13 @@
 
 ### Fixed
 
+- **Convenience stores stop posing as truck stops.** A Circle K, QuikTrip or
+  Speedway the map had typed as a travel center with only assumed truck
+  parking now reads as the car-scale station it is: with a trailer on it is
+  not announced, cannot be signalled for, and does not count as a rest stop.
+  Bobtailing, it is still there for fuel. Truck-stop chains, and any stop
+  with confirmed truck parking, a scale, showers, or a truck-stop name, are
+  unchanged.
 - **Cruise stops slowing for a car you have left behind once you cross the
   lane line.** Holding the wheel toward an open lane keeps following a slower
   vehicle in your current lane until the truck crosses over. On that crossing,
