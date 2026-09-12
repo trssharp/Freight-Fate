@@ -1865,9 +1865,12 @@ repository root; Markdown links are relative to this document.
       stand-ins, not only the six believed outstanding. Regenerated through
       the Sound Effects API (`eleven_text_to_sound_v2`, named explicitly
       now); the synths stay as `--synth-traffic`. The new `music.pak`
-      (378 entries, sha `9b7c9123…`) is built locally and pinned in
-      `build_release.py`; it still has to be uploaded to the private
-      download host before a release build can fetch it.
+      (378 entries, sha `9b7c9123…`) is pinned in `build_release.py` and
+      was uploaded the same night to the here.now site behind
+      `dev.orinks.net/downloads/music.pak` with
+      `tools/publish_music_pack.py` (here.now's agent API: a one-time
+      code by email, then a key in `~/.herenow/credentials`; update in
+      place by slug, so the URL never changes).
 - [x] **Generation tooling on current ElevenLabs models -- 2026-09-11.**
       TTS on `eleven_v3` (stability 0.5, no style knob), music on
       `music_v2_5` (`music_v1` is deprecated; there is no music v3),
