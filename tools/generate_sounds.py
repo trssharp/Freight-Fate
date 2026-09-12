@@ -35,6 +35,12 @@ ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "src" / "freight_fate" / "assets" / "sounds"
 KEY_FILE = Path.home() / "AI API Keys.txt"
 SOUND_API = "https://api.elevenlabs.io/v1/sound-generation"
+# The current sound-effects model. It is also the API default, but naming it
+# pins what a re-run produces when ElevenLabs moves the default again.
+SOUND_MODEL = "eleven_text_to_sound_v2"
+# When set, the raw MP3 the API returned is kept here too (one file per
+# asset), so a later re-encode starts from the master instead of the Vorbis.
+MASTERS_ENV = "FREIGHT_FATE_RADIO_MASTERS"
 
 # key -> (prompt, duration_seconds, prompt_influence)
 SPECS: dict[str, tuple[str, float, float]] = {
@@ -361,7 +367,27 @@ def _request_mp3(key: str, payload: dict) -> bytes:
         headers={"xi-api-key": key, "Content-Type": "application/json", "Accept": "audio/mpeg"},
     )
     with urllib.request.urlopen(req, timeout=120) as resp:
+        # The API reports what it charged in a response header; a scoped key
+        # cannot read the account meter, so this is the only cost signal.
+        cost = resp.headers.get("character-cost")
+        if cost:
+            print(f"    cost {cost} credits", flush=True)
         return resp.read()
+
+
+def stash_master(mp3: bytes, stem: str) -> None:
+    """Keep the API's MP3 under ``$FREIGHT_FATE_RADIO_MASTERS/<stem>.mp3``.
+
+    No-op when the variable is unset. Re-encoding later (Opus for the music
+    pack, a different Vorbis quality) then costs no credits and adds no
+    second lossy generation.
+    """
+    masters = os.environ.get(MASTERS_ENV)
+    if not masters:
+        return
+    target = Path(masters) / f"{stem}.mp3"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(mp3)
 
 
 def _generate(key: str, spec_key: str, prompt: str, duration: float, influence: float) -> None:
@@ -369,6 +395,7 @@ def _generate(key: str, spec_key: str, prompt: str, duration: float, influence: 
         "text": prompt,
         "duration_seconds": duration,
         "prompt_influence": influence,
+        "model_id": SOUND_MODEL,
         "output_format": "mp3_44100_128",
     }
     if spec_key in LOOP_KEYS:
@@ -384,6 +411,7 @@ def _generate(key: str, spec_key: str, prompt: str, duration: float, influence: 
         payload.pop("loop")
         print("    loop flag rejected; retrying without it...", flush=True)
         mp3 = _request_mp3(key, payload)
+    stash_master(mp3, spec_key.replace("/", "_"))
     out = ASSETS / f"{spec_key}.ogg"
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
@@ -574,10 +602,12 @@ def generate_scale_verdict_cues() -> None:
 # --- Procedural traffic pass and crossing synths (no API, deterministic) ---
 #
 # The ElevenLabs key went dead mid-expansion (401, 2026-08-20), so these
-# eleven cues are numpy-synthesized under the SAME keys the API specs above
-# describe: regenerate via the API later and the files drop in place with no
-# code change, per the keep-asset-keys-stable rule. Same deterministic-numpy
-# tradition as the weigh-station warning -- a rebuild reproduces the same PCM.
+# eleven cues shipped numpy-synthesized under the SAME keys the API specs
+# above describe. The API versions replaced them on 2026-09-11 (the key came
+# back with sound-generation scope); the synths stay as the no-key fallback
+# (--synth-traffic), and a rebuild reproduces the same PCM, same
+# deterministic-numpy tradition as the weigh-station warning. The default
+# run and a named key both take the API path, never these.
 #
 # Anatomy of a vehicle event: an engine tone (sum of harmonics on a phase
 # integral, so the doppler bend is continuous), tire/wind noise (bright and

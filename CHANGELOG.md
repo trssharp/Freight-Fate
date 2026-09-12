@@ -4,6 +4,24 @@
 
 ### Added
 
+- **Nineteen new songs on the in-house stations.** Glory Road, Puro Tejano
+  and Neon Drive each have a full eight-song rotation now, and the Night
+  Line has two more slow ballads. Until now those three stations repeated
+  one to three songs.
+
+- **Passing and crossing traffic sounds like the vehicle it is.** A pickup,
+  a motorcycle, a bus or a farm tractor going by, and every vehicle
+  crossing in front of you at a ramp end, now plays a recorded-style cue
+  instead of the stand-in tone the game shipped with in August. The cues
+  still pan to the side the vehicle is on.
+
+### Changed
+
+- **Station breaks run more like radio.** Every twelve songs a station now
+  airs two host breaks, four station IDs and three commercials, with the
+  commercials in stopsets of two and one, each followed by the station
+  naming itself. Before, the same stretch carried one commercial.
+
 - **Steering and assisted lane changes use the mechanical blinker sound.** The
   automatic position cue and full-assist lane-change signals wait for each
   recording to finish before repeating. Their panning, the I-key lane locator,

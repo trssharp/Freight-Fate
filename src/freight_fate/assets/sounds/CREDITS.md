@@ -52,6 +52,8 @@ current idle, start, and shutdown cues.
 | Box truck pass-by | `traffic/box_truck_pass.ogg` | ElevenLabs-generated nearby medium-truck pass-by cue |
 | Semi pass-by | `traffic/semi_pass.ogg` | ElevenLabs-generated nearby tractor-trailer pass-by cue |
 | State trooper pass-by | `traffic/trooper_pass.ogg` | ElevenLabs-generated patrol-car pass-by cue without siren |
+| Pickup, motorcycle, bus and tractor pass-bys | `traffic/pickup_pass.ogg`, `traffic/motorcycle_pass.ogg`, `traffic/bus_pass.ogg`, `traffic/tractor_pass.ogg` | ElevenLabs Sound Effects API pass-by cues, 2026-09-11; replaced the deterministic numpy stand-ins (tools/generate_sounds.py, still the no-key fallback) that shipped under the same keys from 2026-08-20 |
+| Cross traffic at ramp ends (car, pickup, box truck, semi, motorcycle, bus, tractor) | `traffic/car_cross.ogg`, `traffic/pickup_cross.ogg`, `traffic/box_truck_cross.ogg`, `traffic/semi_cross.ogg`, `traffic/motorcycle_cross.ogg`, `traffic/bus_cross.ogg`, `traffic/tractor_cross.ogg` | ElevenLabs Sound Effects API crossing cues (a vehicle driving through in front of the stopped truck, panned by the game), 2026-09-11; replaced the numpy stand-ins that shipped from 2026-08-20 |
 | Lane drift | `vehicle/lane_drift.ogg` | ElevenLabs-generated directional lane drift beep |
 | Lane centered | `vehicle/lane_centered.ogg` | ElevenLabs-generated centered-lane confirmation chime |
 | Turn signal | `vehicle/turn_signal.ogg` | ElevenLabs-generated in-cab indicator clicks for exit and pull-over signaling |
@@ -245,6 +247,25 @@ not distributed in this repository.
 | Mi Troquita | `music/radio_tejano_mi_troquita.opus` | ElevenLabs Eleven Music-composed affectionate Tejano conjunto polka about a beloved truck, sung in Spanish, for the in-game radio (2026-08-14 station-identity batch) |
 | Luna de Laredo | `music/radio_tejano_luna_de_laredo.opus` | ElevenLabs Eleven Music-composed romantic border-moon Tejano ranchera ballad, sung in Spanish, for the in-game radio (2026-08-14 station-identity batch) |
 | Afterglow Avenue | `music/radio_synthwave_afterglow_avenue.opus` | ElevenLabs Eleven Music-composed dreamwave song with soft vocals about the last mile home for the in-game radio (2026-08-14 station-identity batch) |
+| Hands on the Wheel | `music/radio_gospel_hands_on_the_wheel.opus` | ElevenLabs Eleven Music (music_v2_5) trucker gospel shuffle of faith on the road, for the in-game radio (2026-09-11 song batch) |
+| Hallelujah Highway | `music/radio_gospel_hallelujah_highway.opus` | ElevenLabs Eleven Music (music_v2_5) hand-clapping up-tempo gospel celebration, for the in-game radio (2026-09-11 song batch) |
+| Old Church Bell | `music/radio_gospel_old_church_bell.opus` | ElevenLabs Eleven Music (music_v2_5) close-harmony gospel quartet remembering a country church, for the in-game radio (2026-09-11 song batch) |
+| Sunday Sunrise | `music/radio_gospel_sunday_sunrise.opus` | ElevenLabs Eleven Music (music_v2_5) instrumental organ-and-steel Sunday meditation, for the in-game radio (2026-09-11 song batch) |
+| Carry Me Home | `music/radio_gospel_carry_me_home.opus` | ElevenLabs Eleven Music (music_v2_5) slow spiritual with a deep soloist and choir, for the in-game radio (2026-09-11 song batch) |
+| Baila Conmigo | `music/radio_tejano_baila_conmigo.opus` | ElevenLabs Eleven Music (music_v2_5) dance-floor Tejano cumbia invitation, sung in Spanish, for the in-game radio (2026-09-11 song batch) |
+| Acordeón del Alma | `music/radio_tejano_acordeon_del_alma.opus` | ElevenLabs Eleven Music (music_v2_5) Tejano accordion showcase instrumental, for the in-game radio (2026-09-11 song batch) |
+| Polvo del Camino | `music/radio_tejano_polvo_del_camino.opus` | ElevenLabs Eleven Music (music_v2_5) road-dust conjunto tune for long hauls, sung in Spanish, for the in-game radio (2026-09-11 song batch) |
+| Corazón de Cromo | `music/radio_tejano_corazon_de_cromo.opus` | ElevenLabs Eleven Music (music_v2_5) modern Tejano pop song with a chrome heart, sung in Spanish, for the in-game radio (2026-09-11 song batch) |
+| Cumbia del Mercado | `music/radio_tejano_cumbia_del_mercado.opus` | ElevenLabs Eleven Music (music_v2_5) market-day cumbia instrumental, for the in-game radio (2026-09-11 song batch) |
+| Midnight Grid | `music/radio_synthwave_midnight_grid.opus` | ElevenLabs Eleven Music (music_v2_5) pulsing retrowave instrumental for empty city freeways, for the in-game radio (2026-09-11 song batch) |
+| Sodium Lights | `music/radio_synthwave_sodium_lights.opus` | ElevenLabs Eleven Music (music_v2_5) amber-lit synthwave nocturne of highway lamps, for the in-game radio (2026-09-11 song batch) |
+| Starlight Odometer | `music/radio_synthwave_starlight_odometer.opus` | ElevenLabs Eleven Music (music_v2_5) glittering night-drive arpeggio instrumental, for the in-game radio (2026-09-11 song batch) |
+| Neon Mirage | `music/radio_synthwave_neon_mirage.opus` | ElevenLabs Eleven Music (music_v2_5) desert-heat retrowave shimmer instrumental, for the in-game radio (2026-09-11 song batch) |
+| Taillight River | `music/radio_synthwave_taillight_river.opus` | ElevenLabs Eleven Music (music_v2_5) flowing red-light synthwave meditation for slow lanes, for the in-game radio (2026-09-11 song batch) |
+| Analog Heart | `music/radio_synthwave_analog_heart.opus` | ElevenLabs Eleven Music (music_v2_5) synthpop love song for machines that feel, for the in-game radio (2026-09-11 song batch) |
+| Desert Satellites | `music/radio_synthwave_desert_satellites.opus` | ElevenLabs Eleven Music (music_v2_5) wide-sky ambient synthwave finale, for the in-game radio (2026-09-11 song batch) |
+| Paper Cup Moon | `music/radio_night_paper_cup_moon.opus` | ElevenLabs Eleven Music (music_v2_5) quiet ballad of vending-machine coffee at midnight, for the Night Line (2026-09-11 song batch) |
+| Idle Hearts | `music/radio_night_idle_hearts.opus` | ElevenLabs Eleven Music (music_v2_5) slow duet for two trucks idling side by side, for the Night Line (2026-09-11 song batch) |
 
 ## Radio Hosts And Static
 

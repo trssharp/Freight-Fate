@@ -155,6 +155,14 @@ def test_asset_bytes_reads_loose_files_without_pack():
 def test_committed_pack_has_freight_fate_header():
     assert assets_pack.DEFAULT_PACK_PATH.exists()
     pack_bytes = assets_pack.DEFAULT_PACK_PATH.read_bytes()
+    # Repacked 2026-09-11 (traffic cues): the eleven pass and crossing cues
+    # added on 2026-08-20 (pickup, motorcycle, bus, tractor passes; car,
+    # pickup, box truck, semi, motorcycle, bus, tractor crossings) were
+    # regenerated through the ElevenLabs Sound Effects API and MERGED into the
+    # shipped pack, 162 -> 173 entries. The eleven were never in the pack
+    # before (the numpy stand-ins only ever lived in the loose tree), so the
+    # prior 162 are preserved byte for byte.
+    #
     # Repacked 2026-08-29 (the scale verdict tones): added the procedural
     # events/scale_green.ogg and events/scale_red.ogg cues, which the code and
     # the sound catalog both named while the pack carried neither -- and the
@@ -169,10 +177,10 @@ def test_committed_pack_has_freight_fate_header():
     #
     # Repacked 2026-08-14 (weigh-station warning earcon): added the procedural
     # events/weigh_station_warning.ogg cue, taking the pack 159 -> 160.
-    assert len(pack_bytes) == 7_788_924
+    assert len(pack_bytes) == 8_278_280
     assert pack_bytes.startswith(assets_pack.PACK_MAGIC)
     assert hashlib.sha256(pack_bytes).hexdigest() == (
-        "45f297c8c0562fb018674ce51e691d3cd93501793ce7b41d378bfc35b9d2cf99"
+        "33e35cab8258f5eccaf5553d698ffcfca24d65e986bd579f24579250a981bae6"
     )
 
 
@@ -187,18 +195,21 @@ def test_committed_pack_has_freight_fate_header():
 def test_committed_music_pack_has_freight_fate_header():
     assert assets_pack.DEFAULT_MUSIC_PACK_PATH.exists()
     pack_bytes = assets_pack.DEFAULT_MUSIC_PACK_PATH.read_bytes()
+    # Repacked 2026-09-11 for the gospel, tejano, synthwave and Night Line
+    # song batch (nineteen songs, see CHANGELOG Unreleased): 359 -> 378
+    # entries, merged into the prior pack rather than rebuilt.
+    #
     # Repacked 2026-08-30 for "Four Sources and the Truth" (a country song
-    # about trusting the forecast, see CHANGELOG Unreleased): 358 -> 359
-    # entries. Before that, 356 -> 358 on 2026-08-26 for "Dangerous Dan" and
-    # "Dial-up Summer".
+    # about trusting the forecast): 358 -> 359 entries. Before that,
+    # 356 -> 358 on 2026-08-26 for "Dangerous Dan" and "Dial-up Summer".
     #
     # Split out of sounds.pak on 2026-08-14 alongside the radio
     # station-identity batch: 356 entries, the music/ subtree plus the new
     # station jingles and songs.
-    assert len(pack_bytes) == 270_786_839
+    assert len(pack_bytes) == 309_673_046
     assert pack_bytes.startswith(assets_pack.PACK_MAGIC)
     assert hashlib.sha256(pack_bytes).hexdigest() == (
-        "7787d682c4c289f7c0f33bb1fc714fb54221e10086cc9415d87304fdeffadfb3"
+        "9b7c9123e8b7fc47168ada961cbacd1bdeca3fcc788e77537cc571a5b8187e4b"
     )
 
 

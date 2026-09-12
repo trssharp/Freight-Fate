@@ -1815,15 +1815,57 @@ repository root; Markdown links are relative to this document.
       snapshot, not a fact: stations come back, and a 5xx on sweep day is a
       bad afternoon rather than a closure. `--recheck-dead` re-probes only
       the casualties, which is cheap enough to be routine.
-- [ ] **Finish the station song batch after the ElevenLabs quota resets
-      (2026-09-06).** Gospel +5, tejano +5, synthwave +7, plus top-ups
-      (8-10 each) for country, classic rock, blues, and jazz, and 2-3 new
-      Night Line ballads. `tools/generate_radio.py --plan-songs` supports
-      capped waves via `--limit`. Three of the country top-ups arrived early
-      and by hand -- Dangerous Dan and Dial-up Summer on 2026-08-26, Four
-      Sources and the Truth on 2026-08-30, all owner renders rather than a
-      generated wave -- so the country pool is 3 down on its target and the
-      rest of the batch still waits on the quota.
+- [x] **Gospel, tejano, synthwave and the Night Line filled out -- landed
+      2026-09-11.** Nineteen songs on Eleven Music `music_v2_5` (gospel +5,
+      tejano +5, synthwave +7, Night Line +2), encoded to Opus from the
+      kept MP3 masters (`C:\Users\joshu\freight-fate-masters-backup-20260911`).
+      The nineteenth call of the run ended the month's credits, so the
+      third Night Line ballad (Dashboard Glow) and the top-ups below wait
+      for the next reset.
+- [ ] **Song top-ups still owed: country, classic rock, blues, jazz (8
+      each, planned in `radio_content_pools.py`) and Night Line's Dashboard
+      Glow.** `tools/generate_radio.py --plan-songs POOL --limit N` runs
+      capped waves; the resume check now recognises the shipped `.opus`
+      files, so a re-run never buys a song twice. Three of the country
+      top-ups arrived early and by hand -- Dangerous Dan and Dial-up Summer
+      on 2026-08-26, Four Sources and the Truth on 2026-08-30, owner
+      renders rather than a generated wave.
+- [ ] **Voice the second-wave station identity.** Written and wired
+      2026-09-11 but not yet generated: twenty more ads
+      (`radio_content_ads.py`, 38 in the rotation), two spoken liners per
+      station (`radio_content_liners.py`, `id_<station>_05/06`) and a third
+      sung jingle per station (`id_<station>_04`). Two things block the
+      run: the scoped ElevenLabs key has no `text_to_speech` permission
+      (sound generation and music work), and the month's credits are spent.
+      Once both clear: `--plan-ids` then `--plan-ads`, measure the clip
+      durations, add the rows to `radio_content.rs` `STATION_ID_ROWS` /
+      `AD_ROWS` / `AD_FORMAT_ROWS` (and the Python mirror), repack
+      `music.pak`. The break planner already draws two spots per stopset,
+      so the new rotation takes effect the moment the rows land.
+- [x] **Stopsets of two -- landed 2026-09-11.** `BREAK_PATTERN` is now
+      host, ID, ad+ad+ID, host, ID, ad+ID: three spots per twelve songs
+      where the first batch ran one, still light against real radio. Slot
+      kinds are pool names joined by underscores and every pool advances on
+      its own draw count, so adding a kind is a one-line change; a pool too
+      small for a two-spot set airs one spot rather than the same read
+      twice.
+- [x] **Every traffic pass and crossing cue is API audio now -- landed
+      2026-09-11.** All eleven cues added on 2026-08-20 (pickup, motorcycle,
+      bus and tractor passes; car, pickup, box truck, semi, motorcycle, bus
+      and tractor crossings) had shipped as the deterministic numpy
+      stand-ins, not only the six believed outstanding. Regenerated through
+      the Sound Effects API (`eleven_text_to_sound_v2`, named explicitly
+      now); the synths stay as `--synth-traffic`. The new `music.pak`
+      (378 entries, sha `9b7c9123…`) is built locally and pinned in
+      `build_release.py`; it still has to be uploaded to the private
+      download host before a release build can fetch it.
+- [x] **Generation tooling on current ElevenLabs models -- 2026-09-11.**
+      TTS on `eleven_v3` (stability 0.5, no style knob), music on
+      `music_v2_5` (`music_v1` is deprecated; there is no music v3),
+      sound effects naming `eleven_text_to_sound_v2`. `credit_usage`
+      tolerates a key without `user_read` and each response's
+      `character-cost` header is printed instead; Music responses carry no
+      such header, so a song run's cost is only visible on the dashboard.
 - [x] **The in-house stations run their own clock -- landed 2026-08-26
       (Marie, issue #158).** Every tune-in restarted a station's shuffled
       order at track one, second zero, so re-tuning always opened on the same
