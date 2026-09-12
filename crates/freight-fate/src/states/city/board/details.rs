@@ -43,7 +43,7 @@ pub fn describe_job(ctx: &GameContext, total: usize, job: &Job, index: Option<us
         load_weight_margin(p, job)
     );
     let distance = ctx.settings.distance_text(job.distance_mi, false);
-    job.describe(&DescribeOptions {
+    let text = job.describe(&DescribeOptions {
         index,
         total: index.map(|_| total),
         pay_label: pay_label(&p.business_status),
@@ -51,7 +51,28 @@ pub fn describe_job(ctx: &GameContext, total: usize, job: &Job, index: Option<us
         display_pay: Some(business.gross_pay),
         market_preview: &preview,
         distance_text: &distance,
-    })
+    });
+    // A load dispatch relayed from a nearby city: the deadhead comes first,
+    // and the driver hears so before the load itself.
+    let here = ctx.world.resolve_city_key(&p.current_city);
+    if ctx.world.resolve_city_key(&job.origin) == here {
+        return text;
+    }
+    let deadhead = ctx
+        .world
+        .supported_route(&here, &job.origin, None)
+        .ok()
+        .flatten()
+        .map(|route| ctx.settings.distance_text(route.miles(), false))
+        .unwrap_or_else(|| "a drive".to_string());
+    let waiting = format!(
+        "Load waiting in {}, {deadhead} deadhead first, paid at the empty-mile rate. ",
+        job.spoken_origin()
+    );
+    match index {
+        Some(_) => text.replacen(": ", &format!(": {waiting}"), 1),
+        None => format!("{waiting}{text}"),
+    }
 }
 
 const JOB_DETAIL_INTRO_HELP: &str =

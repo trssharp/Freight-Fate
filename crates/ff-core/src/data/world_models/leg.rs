@@ -420,6 +420,18 @@ impl Route {
         Route { cities, legs }
     }
 
+    /// This route continued by `next`, which starts where this one ends: a
+    /// corridor into a city, then that city's facility approach, as one
+    /// drive. The shared city is kept once.
+    pub fn then(&self, next: &Route) -> Route {
+        debug_assert_eq!(self.cities.last(), next.cities.first());
+        let mut cities = self.cities.clone();
+        cities.extend(next.cities.iter().skip(1).cloned());
+        let mut legs = self.legs.clone();
+        legs.extend(next.legs.iter().cloned());
+        Route::new(cities, legs)
+    }
+
     /// A route from owned legs (tests and local street chains).
     pub fn from_legs(cities: Vec<String>, legs: Vec<Leg>) -> Self {
         Route {

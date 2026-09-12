@@ -8,6 +8,7 @@
 
 mod account_achievements;
 mod audio_support;
+mod dispatch_relay;
 mod live_fuel_prices;
 mod live_weather_alerts;
 mod states_city_support;

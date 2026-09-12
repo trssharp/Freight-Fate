@@ -35,16 +35,16 @@ use ff_core::models::career_training::{
     is_company_training_profile, training_guidance, TrainingStage,
 };
 use ff_core::models::enforcement;
+use ff_core::models::jobs::relay::{relay_load, RelayRequest};
 use ff_core::models::jobs::{
-    board_offer_count, job_from_payload, job_payload, make_reposition_job, normalize_job_cities,
-    Job, JobBoard, OfferOptions,
+    board_offer_count, job_from_payload, job_payload, normalize_job_cities, Job, JobBoard,
+    OfferOptions,
 };
 use ff_core::models::profile::Profile;
 use ff_core::models::start_options::option_for_profile;
 use ff_core::music::crc32;
 use ff_core::playtest_levers::{forced_dispatch_destination, resolve_city_forgiving};
 use ff_core::pyfmt::{fmt_grouped, py_int};
-use ff_core::pyrandom::PyRandom;
 
 use crate::app::{GameContext, Say};
 use crate::states::base::{InputEvent, Key, Menu, MenuItem, SimpleMenuState};
@@ -136,15 +136,9 @@ pub(crate) fn sleeps_needed(drive_h: f64, first_shift_h: f64, shift_h: f64) -> i
 pub const BOBTAIL_RANGE_MI: f64 = 400.0;
 
 // Company drivers don't get to bobtail on a whim (that's the owner-operator
-// menu item above); instead dispatch occasionally sends them empty to a
-// nearby city where freight is thicker (ROADMAP: "Company drivers get
-// ASSIGNED repositions"). Roughly one board in eight-to-ten -- often enough
-// to matter, rare enough that it reads as an occasional dispatch call, not
-// the norm.
-pub const ASSIGNED_REPOSITION_BOARD_CHANCE: f64 = 1.0 / 9.0;
-// How many of the nearest reachable cities are even considered as reposition
-// destinations, before freight density narrows that down further.
-pub const ASSIGNED_REPOSITION_CANDIDATE_COUNT: usize = 3;
+// menu item above); instead dispatch relays them a load from a nearby city
+// when the board here is thin -- see `relay_load_for_board` and
+// `ff_core::models::jobs::relay` for the rule and its thresholds.
 
 // How long a manual "Save game" waits for its cloud backup result before
 // handing the attempt back to the background retry. Long enough for a normal
@@ -405,8 +399,8 @@ pub fn open_freight_market(ctx: &mut GameContext) -> Vec<Job> {
                     },
                 )
             };
-            let reposition = assigned_reposition_for_board(ctx, &board, &key);
-            if let Some(reposition) = reposition {
+            let relay = relay_load_for_board(ctx, &key, &fresh);
+            if let Some(relay) = relay {
                 if !fresh.is_empty() {
                     // Replaces a slot rather than adding one: the board still shows
                     // exactly as many entries as the player's level and trust earn.
@@ -414,8 +408,10 @@ pub fn open_freight_market(ctx: &mut GameContext) -> Vec<Job> {
                     // what a driver actually wanted -- and the list is re-sorted by
                     // distance the same way board.offers() leaves it.
                     let last = fresh.len() - 1;
-                    fresh[last] = reposition;
+                    fresh[last] = relay;
                     sort_by_distance(&mut fresh);
+                } else {
+                    fresh.push(relay);
                 }
             }
             lever_note = add_forced_board_job(ctx, &mut board, &mut fresh);
@@ -482,21 +478,18 @@ pub(crate) fn board_candidates(world: &World, city: &str) -> Vec<(String, f64, u
     computed
 }
 
-/// Occasionally slot a carrier-ASSIGNED reposition onto a company
-/// driver's board (ROADMAP: "Company drivers get ASSIGNED repositions").
+/// The load dispatch relays onto a company driver's board when the board
+/// here is thin (`ff_core::models::jobs::relay`): a load from one of the
+/// nearest freight towns, its deadhead paid at the empty-mile rate and
+/// counted in the deadline, offered as one assignment. None when the board
+/// here is good enough, for an owner-operator (their own "Bobtail to a
+/// nearby city" is how they reposition, on their own fuel), and for a brand
+/// new hire, whose first dispatch is always freight from this yard.
 ///
-/// Owner-operators already have the self-serve "Bobtail to a nearby city"
-/// menu item for repositioning on their own dime; this is dispatch doing it
-/// TO a company driver instead, so it only ever fires for company drivers.
-/// Seeded off the board's own cache key so the same board shows (or does
-/// not show) the same reposition every time it is reopened, exactly like
-/// the rest of the cached offers -- see dispatch_cache_key and
-/// ASSIGNED_REPOSITION_BOARD_CHANCE.
-pub fn assigned_reposition_for_board(
-    ctx: &GameContext,
-    _board: &JobBoard<'_>,
-    key: &Value,
-) -> Option<Job> {
+/// Seeded off the board's own cache key so the same board relays the same
+/// load every time it is reopened, exactly like the rest of the cached
+/// offers -- see dispatch_cache_key.
+pub fn relay_load_for_board(ctx: &GameContext, key: &Value, local: &[Job]) -> Option<Job> {
     let p = profile(ctx);
     let status = if p.business_status.is_empty() {
         COMPANY_DRIVER
@@ -507,63 +500,26 @@ pub fn assigned_reposition_for_board(
         return None;
     }
     if p.career.deliveries < 1 {
-        // A brand-new hire's first dispatch is freight, never a deadhead --
-        // no yard repositions a driver it has not yet put a load behind.
-        // This also keeps the new-career flow deterministic: the roll below
-        // hashes the market seed, so without this gate roughly one new
-        // career in nine started on a reposition instead of a pickup.
-        return None;
-    }
-    let seed = crc32(py_repr_sorted_items(key).as_bytes());
-    let mut rng = PyRandom::new_from_u64(u64::from(seed));
-    if rng.random() >= ASSIGNED_REPOSITION_BOARD_CHANCE {
+        // A brand-new hire's first dispatch is freight from this yard, never
+        // a deadhead -- no carrier repositions a driver it has not yet put a
+        // load behind, and every new-career flow stays deterministic.
         return None;
     }
     let world = ctx.world;
-    let mut candidates = board_candidates(world, &p.current_city);
-    candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-    let mut nearby: Vec<(String, f64, usize)> = candidates
-        .iter()
-        .filter(|c| c.1 <= BOBTAIL_RANGE_MI)
-        .cloned()
-        .collect();
-    if nearby.is_empty() {
-        // never strand a remote start: offer the nearest few
-        nearby = candidates
-            .iter()
-            .take(ASSIGNED_REPOSITION_CANDIDATE_COUNT)
-            .cloned()
-            .collect();
-    }
-    if nearby.is_empty() {
-        return None;
-    }
-    // Cheap proxy for "the board there would have more jobs": how many
-    // freight locations that city has, without actually generating a
-    // second board's worth of offers just to compare counts.
-    let freight_density = |city_key: &str| -> i64 {
-        world
-            .city(city_key)
-            .map(|c| c.locations.len() as i64)
-            .unwrap_or(0)
+    let seed = i64::from(crc32(py_repr_sorted_items(key).as_bytes()));
+    let mut nearby = board_candidates(world, &p.current_city);
+    nearby.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let endorsements: Vec<&str> = p.career.endorsements().into_iter().collect();
+    let request = RelayRequest {
+        here: &p.current_city,
+        endorsements: &endorsements,
+        level: p.career.level(),
+        market: Some(&p.market),
+        carrier_key: Some(&p.carrier_key),
+        direct_freight: p.business_status == INDEPENDENT_AUTHORITY,
+        seed,
     };
-    nearby.sort_by(|a, b| {
-        (-freight_density(&a.0))
-            .cmp(&-freight_density(&b.0))
-            .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-    });
-    let thickest: Vec<(String, f64, usize)> = nearby
-        .into_iter()
-        .take(ASSIGNED_REPOSITION_CANDIDATE_COUNT)
-        .collect();
-    let destination = rng.choice(&thickest).0.clone();
-    make_reposition_job(
-        world,
-        &p.current_city,
-        &destination,
-        true,
-        Some(&p.carrier_key),
-    )
+    relay_load(world, &request, local, &nearby).map(|relay| relay.job)
 }
 
 /// FREIGHT_FATE_FORCE_DEST playtest lever: guarantee one load to the

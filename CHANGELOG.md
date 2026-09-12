@@ -28,6 +28,18 @@
   town it sits near. On the road the cab reads a warning out as you drive
   into it, with the gusts when the warning gives them, and a winter warning
   posts the chain law before the first flake.
+- **Dispatch relays a load instead of sending you empty on a dice roll.**
+  When the board in your city is thin, fewer than three loads you can take,
+  pay well under what the next freight town is offering, or a town with
+  half the freight of a market a day's drive away, dispatch looks at the
+  boards of the nearest towns and assigns the load that pays best for the
+  hours it takes, deadhead included. You hear it as one assignment:
+  "Load waiting in Omaha, 120 miles deadhead first, paid at the empty-mile
+  rate", then the load itself. The deadhead and the shipper's own approach
+  are one drive that opens the pickup on arrival, its pay is in the
+  settlement and its hours in the deadline, and a save on the way resumes
+  where you were. A rich board relays nothing. The old empty repositions
+  that appeared one board in nine, wherever you were, are gone.
 - **Real diesel prices.** A new Settings, World row, Fuel prices, puts this
   week's national average diesel price from the federal weekly survey at
   every pump, with each region's usual difference on top, in place of the

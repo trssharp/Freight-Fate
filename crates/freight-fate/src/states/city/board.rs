@@ -537,6 +537,16 @@ impl JobBoardState {
         }
         let mut queue = fresh;
         queue.extend(reoffered);
+        // A load dispatch relayed from a nearby city IS the assignment: the
+        // board here was thin, which is the only reason it is on it.
+        let here = ctx.world.resolve_city_key(&profile(ctx).current_city);
+        if let Some(pos) = queue.iter().position(|&index| {
+            let job = &self.jobs[index];
+            !job.bobtail && ctx.world.resolve_city_key(&job.origin) != here
+        }) {
+            let index = queue.remove(pos);
+            queue.insert(0, index);
+        }
         let forced = forced_dispatch_destination();
         if !forced.is_empty() && !queue.is_empty() {
             // Playtest lever: dispatch assigns the forced-destination load
@@ -605,10 +615,26 @@ impl JobBoardState {
         let deadhead_h = if job_origin_is_this_yard(ctx, job, &home_terminal(ctx).name) {
             0.0
         } else {
-            ctx.world
-                .facility_approach_route(&job.origin, &job.origin_location)
-                .map(|approach| route_drive_hours(Some(&approach), 0.0, Some(ctx.world)))
-                .unwrap_or(0.0)
+            // A load relayed from a nearby city adds the corridor to that
+            // city ahead of the shipper's own approach.
+            let here = ctx.world.resolve_city_key(&p.current_city);
+            let origin = ctx.world.resolve_city_key(&job.origin);
+            let corridor_h = if origin != here {
+                ctx.world
+                    .supported_route(&here, &origin, None)
+                    .ok()
+                    .flatten()
+                    .map(|corridor| route_drive_hours(Some(&corridor), 0.0, Some(ctx.world)))
+                    .unwrap_or(0.0)
+            } else {
+                0.0
+            };
+            corridor_h
+                + ctx
+                    .world
+                    .facility_approach_route(&job.origin, &job.origin_location)
+                    .map(|approach| route_drive_hours(Some(&approach), 0.0, Some(ctx.world)))
+                    .unwrap_or(0.0)
         };
         let drive_h = deadhead_h + route_drive_hours(Some(&route), 0.0, Some(ctx.world));
         let shift_h = drive_limit / 60.0;
@@ -711,6 +737,14 @@ impl JobBoardState {
             self.accept_reposition(ctx, index);
             return;
         }
+        // A load dispatch relayed from a nearby city: the deadhead there and
+        // the local approach to its shipper are one drive, so the pickup
+        // opens on arrival exactly as a same-city deadhead's does.
+        let here = ctx.world.resolve_city_key(&profile(ctx).current_city);
+        if ctx.world.resolve_city_key(&job.origin) != here {
+            self.accept_relay(ctx, index, job, &here);
+            return;
+        }
         let route = ctx
             .world
             .facility_approach_route(&job.origin, &job.origin_location);
@@ -760,6 +794,53 @@ impl JobBoardState {
         // first_dispatch is retired as an award (folded into "first_day" at
         // pickup completion, see city_pickup.py); the catalog entry and id
         // stay so the cloud validator's allow-list never sees a removed id.
+    }
+
+    /// Accept a load dispatch relayed from a nearby city (`jobs::relay`):
+    /// the corridor to that city and its shipper's own approach, joined as
+    /// one pickup drive, so the deadhead is driven, paid and timed as part
+    /// of the assignment and the pickup opens on arrival.
+    fn accept_relay(&mut self, ctx: &mut GameContext, index: usize, job: Job, here: &str) {
+        let origin = ctx.world.resolve_city_key(&job.origin);
+        let corridor = ctx
+            .world
+            .supported_route(here, &origin, None)
+            .ok()
+            .flatten();
+        let Some(corridor) = corridor else {
+            self.drop_dead_offer(ctx, index);
+            ctx.say("That load's city is no longer on the network. Dispatch pulled the offer.");
+            return;
+        };
+        // A shipper with no baked approach is reached at the city itself.
+        let route = match ctx
+            .world
+            .facility_approach_route(&origin, &job.origin_location)
+        {
+            Ok(approach) => corridor.then(&approach),
+            Err(_) => corridor.clone(),
+        };
+        let equipment_note = slip_seat_note(ctx, &job);
+        profile_mut(ctx).dispatch_board_cache = None;
+        let line = format!(
+            "Dispatch accepted.{equipment_note} Load waiting at {} in {}: deadhead {} on {} \
+             first, then the pickup.",
+            job.origin_facility_text(),
+            job.spoken_origin(),
+            ctx.settings.distance_text(corridor.miles(), true),
+            corridor.highways().first().cloned().unwrap_or_default(),
+        );
+        ctx.mark_meaningful_play(MeaningfulPlayReason::JobAccepted);
+        warm_route_feeds(ctx, &job.origin, &job.destination);
+        launch_driving(
+            ctx,
+            DrivingLaunch::new(
+                job,
+                route,
+                DRIVE_PHASE_PICKUP,
+                LaunchAnnouncement::Line(line),
+            ),
+        );
     }
 
     /// Accept a load staged at the home yard: no deadhead, the shipping

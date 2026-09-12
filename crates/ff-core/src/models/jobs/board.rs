@@ -114,6 +114,20 @@ impl<'w> JobBoard<'w> {
         Self::new(world, Some(seed), None)
     }
 
+    /// How many distinct places a driver at `level` can be sent to from
+    /// `city`: the reachable cities within the level's range and past the
+    /// across-town minimum. The board's own measure of how much choice a
+    /// town's freight offers; a town with one or two is a thin market
+    /// however many rows the board fills (see `relay`).
+    pub fn destination_choices(&self, city: &str, level: i64) -> usize {
+        let city = self.world.resolve_city_key(city);
+        let cap = Self::distance_cap(level);
+        self.candidates(&city)
+            .iter()
+            .filter(|c| c.1 >= MIN_JOB_DISTANCE_MI && c.1 <= cap)
+            .count()
+    }
+
     pub fn distance_cap(level: i64) -> f64 {
         if let Some((_, cap)) = LEVEL_DISTANCE_CAPS.iter().find(|(l, _)| *l == level) {
             return *cap;
@@ -375,7 +389,7 @@ impl<'w> JobBoard<'w> {
     }
 
     /// `(destination, route miles, route leg count)` for every other city.
-    fn candidates(&self, city: &str) -> Vec<Candidate> {
+    pub(crate) fn candidates(&self, city: &str) -> Vec<Candidate> {
         let world_id = self.world as *const World as usize;
         {
             let cache = CANDIDATES_CACHE.lock();

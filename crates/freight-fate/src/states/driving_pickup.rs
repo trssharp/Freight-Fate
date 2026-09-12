@@ -142,6 +142,12 @@ impl DrivingState {
         let trip_minutes = self.trip.game_minutes;
         {
             let p = profile_mut_of(ctx);
+            // A relayed load's deadhead ended in the shipper's city: the
+            // truck is parked there now, and the board, the logbook and the
+            // next dispatch all read the city off the profile.
+            if p.current_city != self.job.origin {
+                p.current_city = self.job.origin.clone();
+            }
             // Store the whole record, not just fuel and damage: this line also
             // accrues brake and engine wear, which the flat names do not carry.
             p.store_truck_condition(&self.trip.truck);

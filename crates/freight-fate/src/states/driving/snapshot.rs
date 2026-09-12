@@ -152,7 +152,15 @@ impl DrivingState {
             "delivery"
         };
         let route_kind = if self.phase == DRIVE_PHASE_PICKUP {
-            "facility_approach"
+            // A relayed load's deadhead: a corridor into the shipper's city
+            // with its approach on the end. A plain approach names its own
+            // city and no other, however many street legs it has.
+            let first = self.route.cities.first();
+            if self.route.cities.iter().any(|city| Some(city) != first) {
+                "deadhead_approach"
+            } else {
+                "facility_approach"
+            }
         } else {
             "corridor_itinerary"
         };
@@ -299,7 +307,23 @@ impl DrivingState {
                 .get("origin_location")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            ctx.world.facility_approach_route(origin, location).ok()?
+            let approach = ctx.world.facility_approach_route(origin, location).ok();
+            if s(data, "route_kind") == "deadhead_approach" {
+                // A relayed load: the corridor the save names, then the
+                // shipper's approach rebuilt fresh, joined as it was driven.
+                // The approach's own duplicated end city comes off first.
+                let mut cities = strings(data, "route_cities");
+                while cities.len() > 2 && cities.last() == cities.get(cities.len() - 2) {
+                    cities.pop();
+                }
+                let corridor = ctx.world.route_from_cities(&cities)?;
+                match approach {
+                    Some(approach) => corridor.then(&approach),
+                    None => corridor,
+                }
+            } else {
+                approach?
+            }
         } else {
             let cities = strings(data, "route_cities");
             ctx.world.route_from_cities(&cities)?
