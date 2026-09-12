@@ -90,6 +90,9 @@ pub enum Command {
     Release {
         key: Key,
     },
+    /// Put the sandbox career in any situation and reopen the terminal on
+    /// it (`playtest::scenario`). Scenario staging, not play.
+    Scenario(Box<crate::playtest::scenario::Scenario>),
     Wait {
         seconds: f64,
     },
@@ -659,6 +662,13 @@ impl AgentPolicy {
                             .stage_road_hit(&hit, &opts)
                             .map(|text| format!("({found} match(es), took {picked}) {text}")),
                     );
+                }
+                Command::Scenario(scenario) => {
+                    // A new situation: whatever the agent was holding belongs
+                    // to the old screen, the same as a staged drive.
+                    self.held.clear();
+                    self.timed_hold = None;
+                    let _ = reply.send(input.stage_scenario(&scenario));
                 }
                 Command::OperatorKeys { live } => {
                     let _ = reply.send(Ok(input.set_operator_keys(live)));

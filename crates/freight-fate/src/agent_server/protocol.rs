@@ -206,6 +206,40 @@ fn tools_list() -> Value {
             &["feature"],
         ),
         tool(
+            "scenario",
+            "Put the sandbox career in any situation and reopen the terminal on it. \
+             Every field is optional: city (any world city, the career moves there \
+             with no miles driven), level (1 to 30), deliveries, money, reputation, \
+             business (company, leased or independent), endorsements (a list of \
+             credential keys bought outright, replacing what was held), hour (local \
+             clock 0 to 24, moved forward to), fuel_pct and damage_pct (0 to 100), \
+             rested (true takes a full sleep), clear_load (true drops a load in \
+             progress first), market_seed and board_seed (the dispatch board rolls \
+             from them), settings (an object of setting name to value, for this \
+             session), and name (the career created when none is loaded; default \
+             Playtest). Nothing is refused for being unreasonable: this is the \
+             audited sandbox. Listen afterwards for the terminal.",
+            json!({
+                "name": {"type": "string"},
+                "city": {"type": "string"},
+                "level": {"type": "integer"},
+                "deliveries": {"type": "integer"},
+                "money": {"type": "number"},
+                "reputation": {"type": "number"},
+                "business": {"type": "string", "enum": ["company", "leased", "independent"]},
+                "endorsements": {"type": "array", "items": {"type": "string"}},
+                "hour": {"type": "number"},
+                "fuel_pct": {"type": "number"},
+                "damage_pct": {"type": "number"},
+                "rested": {"type": "boolean"},
+                "clear_load": {"type": "boolean"},
+                "market_seed": {"type": "integer"},
+                "board_seed": {"type": "integer"},
+                "settings": {"type": "object"},
+            }),
+            &[],
+        ),
+        tool(
             "operator_keys",
             "Hand the keyboard to the human at the computer, or take it back. With live \
              true the game window comes up and their keys reach the game, so they can \
@@ -470,6 +504,8 @@ pub fn build_command(name: &str, args: &Map<String, Value>) -> Result<Command, S
                 opts: Box::new(opts),
             })
         }
+        "scenario" => crate::playtest::scenario::Scenario::from_json(args)
+            .map(|scenario| Command::Scenario(Box::new(scenario))),
         "operator_keys" => match args.get("live").and_then(Value::as_bool) {
             Some(live) => Ok(Command::OperatorKeys { live }),
             None => Err("operator_keys needs live: true or false".to_string()),

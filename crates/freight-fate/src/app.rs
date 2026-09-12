@@ -243,6 +243,54 @@ impl PlayerInputFrame<'_> {
         Ok(staged_road_handoff(&description, start_mi))
     }
 
+    /// Put the sandbox career in the situation asked for and reopen the
+    /// terminal on it, whatever screen was up. Scenario staging like
+    /// `stage_road_hit`: it swaps the whole screen stack for a fresh
+    /// terminal, so the board, garage and clock read the new career.
+    pub fn stage_scenario(
+        &mut self,
+        scenario: &crate::playtest::scenario::Scenario,
+    ) -> Result<String, String> {
+        use crate::states::city::CityMenuState;
+        let notes = crate::playtest::scenario::apply(&mut self.app.ctx, scenario)?;
+        // Down to the title screen, never past it: an empty stack is how the
+        // loop knows the game is over, and the first live scenario quit the
+        // game on the frame it was staged (2026-09-12). The terminal then
+        // sits on the title screen exactly as a normal continue leaves it.
+        while self.app.ctx.stack_len() > 1 {
+            self.app.ctx.pop_state();
+            self.app.ctx.run_deferred();
+        }
+        let city = CityMenuState::new(&self.app.ctx, true);
+        self.app.push_state(city);
+        self.app.ctx.run_deferred();
+        let profile = self
+            .app
+            .ctx
+            .profile
+            .as_ref()
+            .expect("apply ensured a career");
+        let where_now = self
+            .app
+            .ctx
+            .world
+            .spoken_city(&profile.current_city, Some(true));
+        let mut text = format!(
+            "Scenario staged: {} at the {where_now} terminal, level {}, {} deliveries, {} dollars, {}.",
+            profile.name,
+            profile.career.level(),
+            profile.career.deliveries,
+            ff_core::pyfmt::fmt_grouped(profile.money, 0),
+            profile.business_status,
+        );
+        if !notes.is_empty() {
+            text.push(' ');
+            text.push_str(&notes.join(" "));
+        }
+        text.push_str(" The terminal menu is open; listen for it.");
+        Ok(text)
+    }
+
     /// Keep a policy-held key held, without re-dispatching a key event.
     ///
     /// The focus-lost handler wipes the held-key store as a safety measure
@@ -262,6 +310,14 @@ impl PlayerInputFrame<'_> {
     /// for the agent server's tests, not a control.
     pub fn key_reads_pressed(&self, key: Key) -> bool {
         self.app.ctx.input.is_pressed(key)
+    }
+
+    /// How many screens are stacked, and whether the game still means to
+    /// run. An inspector for the agent server's tests: staging must leave
+    /// the title screen under the terminal, or the loop reads the empty
+    /// stack as the game being over.
+    pub fn screen_depth(&self) -> (usize, bool) {
+        (self.app.ctx.stack_len(), self.app.ctx.running)
     }
 }
 
