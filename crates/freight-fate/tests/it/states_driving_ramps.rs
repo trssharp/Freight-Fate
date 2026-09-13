@@ -602,26 +602,29 @@ fn test_stopped_short_of_the_light_gets_creep_guidance() {
 }
 
 #[test]
-fn test_yellow_and_green_wording_track_distance_to_the_bar() {
+fn test_light_change_wording_is_short_at_any_distance() {
     let mut app = TestApp::new();
     let mut d = a_drive(&mut app);
-    // Short of the bar, moving: yellow says stop then creep up on the red.
+    // Short of the bar, moving: announce only the color.
     on_ramp(&mut d, "signal", false, 20.0);
     d.ramp_mi = Some(RAMP_ACCESS_MI + 0.15);
     app.clear_speech();
     d.update_ramp_light(&mut app.ctx, RAMP_LIGHT_GREEN_S + 0.5); // into yellow
     assert!(
-        said_any(&app, "Red by the time you reach it"),
+        spoken(&app).iter().any(|line| line == "Light yellow."),
         "{:?}",
         spoken(&app)
     );
 
-    // At the bar: yellow says so at the bar.
-    app.clear_speech();
+    // At the bar: use a fresh session to avoid duplicate-speech suppression.
+    drop(d);
+    drop(app);
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
     on_ramp(&mut d, "signal", false, 20.0);
     d.update_ramp_light(&mut app.ctx, RAMP_LIGHT_GREEN_S + 0.5);
     assert!(
-        said_any(&app, "turns yellow at the bar"),
+        spoken(&app).iter().any(|line| line == "Light yellow."),
         "{:?}",
         spoken(&app)
     );
@@ -636,15 +639,30 @@ fn test_every_light_change_is_spoken_on_the_approach() {
     on_ramp(&mut d, "signal", true, 10.0);
     d.ramp_mi = Some(RAMP_ACCESS_MI + 0.3); // still descending the ramp
     app.clear_speech();
+    d.announce_ramp_terminal(&mut app.ctx);
+    assert_eq!(spoken(&app), vec!["Light red."]);
+    app.clear_speech();
 
     let cycle = RAMP_LIGHT_RED_S + RAMP_LIGHT_GREEN_S + RAMP_LIGHT_YELLOW_S;
     for _ in 0..((cycle * 10.0) as i32 + 5) {
         d.update_ramp_light(&mut app.ctx, 0.1);
     }
 
-    assert!(said_any(&app, "turns green"), "{:?}", spoken(&app));
-    assert!(said_any(&app, "turns yellow"), "{:?}", spoken(&app));
-    assert!(said_any(&app, "turns red"), "{:?}", spoken(&app));
+    assert!(
+        spoken(&app).iter().any(|line| line == "Light green."),
+        "{:?}",
+        spoken(&app)
+    );
+    assert!(
+        spoken(&app).iter().any(|line| line == "Light yellow."),
+        "{:?}",
+        spoken(&app)
+    );
+    assert!(
+        spoken(&app).iter().any(|line| line == "Light red."),
+        "{:?}",
+        spoken(&app)
+    );
 }
 
 #[test]
@@ -694,7 +712,7 @@ fn test_rolling_countdown_speaks_each_milestone_once() {
 
     let bar_calls: Vec<String> = spoken(&app)
         .into_iter()
-        .filter(|line| line.contains("to the bar"))
+        .filter(|line| line.ends_with(" feet."))
         .collect();
     // Only the calls the bar's own tick cannot make: inside its range the
     // tick rate already carries the distance, so speaking it there was the
@@ -702,10 +720,10 @@ fn test_rolling_countdown_speaks_each_milestone_once() {
     let expected = d.ramp_bar_milestones(&app.ctx);
     assert!(expected.len() < RAMP_GAP_MILESTONES_FT.len());
     assert_eq!(bar_calls.len(), expected.len(), "{bar_calls:?}");
-    assert_eq!(bar_calls[0], "1000 feet to the bar.");
+    assert_eq!(bar_calls[0], "1000 feet.");
     assert_eq!(
         bar_calls[bar_calls.len() - 1],
-        format!("{} feet to the bar.", expected[expected.len() - 1])
+        format!("{} feet.", expected[expected.len() - 1])
     );
 
     // Stopped: the countdown yields to the stopped-driver guidance.
@@ -739,13 +757,13 @@ fn test_stop_sign_bar_has_position() {
     }
     let bar_calls: Vec<String> = spoken(&app)
         .into_iter()
-        .filter(|line| line.contains("to the bar"))
+        .filter(|line| line.ends_with(" feet."))
         .collect();
     // The tick covers the near calls now; see the countdown test above.
     let expected = d.ramp_bar_milestones(&app.ctx);
     assert!(expected.len() < RAMP_GAP_MILESTONES_FT.len());
     assert_eq!(bar_calls.len(), expected.len(), "{bar_calls:?}");
-    assert_eq!(bar_calls[0], "1000 feet to the bar.");
+    assert_eq!(bar_calls[0], "1000 feet.");
 
     // Parking-sensor beeps run for the sign too (outside the solid zone).
     log.borrow_mut().played.clear();
@@ -1034,11 +1052,8 @@ fn test_canceling_the_plan_gives_the_road_back() {
     //
     // The clock drops out of compression while the truck is approaching an
     // exit it has signalled for, so the approach is driven in real time and
-    // the braking is winnable. The stop itself is deliberately kept after a
-    // cancel, so passing it can say the exit went by unused -- but that made
-    // a canceled signal read as a live approach, and the road stayed in real
-    // time until the exit was behind. Canceling means staying on the highway,
-    // and the highway gets its pace back at once.
+    // the braking is winnable. Canceling clears both the active stop and its
+    // approach immediately, so the highway gets its pace back at once.
     let mut app = TestApp::new();
     let mut d = a_drive(&mut app);
     let mut stop = a_stop(d.trip.position_mi + 4.0);
@@ -1055,11 +1070,8 @@ fn test_canceling_the_plan_gives_the_road_back() {
     // Second press: the plan is off, and the exit is still ahead.
     d.toggle_exit_signal(&mut app.ctx);
     assert!(!d.exit_signal_on);
-    assert_eq!(
-        d.exit_stop.as_ref().map(|s| s.key()),
-        Some(stop.key()),
-        "the stop is kept so passing it can say so"
-    );
+    assert!(d.exit_stop.is_none());
+    assert!(d.trip.exit_approach_mi.is_none());
     d.update_exit(&mut app.ctx, 0.0, 0.0);
     assert!(d.trip.exit_approach_mi.is_none());
 }
@@ -1106,7 +1118,11 @@ fn test_the_ramp_coaching_outranks_chatter() {
     d.trip.truck.throttle = 0.5;
     d.update_ramp_terminal_assist(&mut app.ctx);
 
-    assert!(said_any(&app, "turns red"), "{:?}", spoken(&app));
+    assert!(
+        spoken(&app).iter().any(|line| line == "Light red."),
+        "{:?}",
+        spoken(&app)
+    );
     assert!(said_any(&app, "assistance braking"), "{:?}", spoken(&app));
 }
 

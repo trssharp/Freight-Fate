@@ -38,6 +38,15 @@ bookmarks usable.
 
 ## 1.9 in flight (`feat/career-1.9`)
 
+- [x] Keep traffic light approaches and changes brief: Light red, Light yellow,
+      Light green. Shorten the bar countdown to the distance alone.
+
+- [x] Clear a canceled exit's lane watcher immediately and prevent automatic
+      destination detection from restoring it without another signal.
+
+- [x] Keep the X exit blinker repeating on the right until ramp entry,
+      cancellation, or a missed exit, independently of lane readiness.
+
 - [ ] Validate the Windows portable snapshot on a clean Windows installation
       without a separately installed Visual C++ redistributable; the build
       runner's smoke test alone cannot establish this.

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Changed
+
+- **Traffic light approaches and changes use shorter announcements.** Each says only
+  "Light red," "Light yellow," or "Light green."
+  Distance calls say "1000 feet" and "500 feet" without "to the bar."
+
+- **Canceling an exit ends its lane watcher immediately.** You hear only
+  "Signal canceled." The exit countdown and later highway confirmation stop,
+  and the destination watcher stays off unless you signal for that exit again.
+
+- **R skips the "Route status" introduction near facilities.** Location,
+  distance, and arrival information are still read out.
+
+- **The exit signal keeps blinking until you take the ramp.** X starts steady
+  blinker clicks on the right instead of a beep. The clicks continue after
+  the exit lane is set, including with lane keeping or the lane locator on,
+  and stop when you take, cancel, or miss the exit. Pausing silences them;
+  resuming restores them while the exit is armed.
+
 ### Added
 
 - **Dispatch checks the state construction reports before choosing your
