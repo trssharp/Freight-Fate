@@ -117,6 +117,22 @@ fn test_the_seeded_settings_have_every_publishing_switch_off() {
     for key in sandbox::OFFLINE_SETTINGS {
         assert_eq!(settings.get(key), Some(&Value::Bool(false)), "{key}");
     }
+    // The live-data feeds carry no identity and are what a sandbox drive is
+    // there to hear, so they are on whatever the real settings said, and a
+    // later prepare puts them back on if a session turned one off.
+    for key in sandbox::LIVE_SETTINGS {
+        assert_eq!(settings.get(key), Some(&Value::Bool(true)), "{key}");
+    }
+    let mut flipped = settings.clone();
+    flipped.insert("real_traffic".to_string(), Value::Bool(false));
+    std::fs::write(
+        sandbox.join("settings.json"),
+        serde_json::to_string_pretty(&Value::Object(flipped)).unwrap(),
+    )
+    .unwrap();
+    sandbox::prepare(&sandbox, false, true, &source).unwrap();
+    let settings = read_settings(&sandbox.join("settings.json"));
+    assert_eq!(settings.get("real_traffic"), Some(&Value::Bool(true)));
     // Everything else is copied through, because the point of seeding real
     // settings is that the drive reproduces what a player would get.
     assert_eq!(

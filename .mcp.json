@@ -2,7 +2,15 @@
   "mcpServers": {
     "freight-fate": {
       "command": "cargo",
-      "args": ["run", "--release", "-p", "freight-fate", "--", "--agent-server"],
+      "args": [
+        "run",
+        "--release",
+        "-p",
+        "freight-fate",
+        "--",
+        "--agent-server",
+        "--operator-keys"
+      ],
       "env": {}
     }
   }

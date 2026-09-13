@@ -515,11 +515,23 @@ impl RestStopState {
                             .to_string()
                     } else {
                         let closes = clock_text((d.trip.local_hour() + duty_left_h) % 24.0);
-                        format!(
-                            "This sleep did NOT reset your hours. Your duty window closes in {} \
-                             hours, at {closes}. ",
-                            fmt_f(duty_left_h, 1)
-                        )
+                        if minutes >= hos::SPLIT_LONG_MIN {
+                            // The long half of a split stops the duty window
+                            // while it runs (FMCSA 395.1(g)(1)(iii)(B)), so
+                            // the driver wakes with the hours they went to
+                            // bed with, and is told so.
+                            format!(
+                                "This sleep did NOT reset your hours, but your duty window \
+                                 paused while you slept. It closes in {} hours, at {closes}. ",
+                                fmt_f(duty_left_h, 1)
+                            )
+                        } else {
+                            format!(
+                                "This sleep did NOT reset your hours. Your duty window closes \
+                                 in {} hours, at {closes}. ",
+                                fmt_f(duty_left_h, 1)
+                            )
+                        }
                     };
                     format!("{window}{pending} ")
                 }

@@ -60,6 +60,21 @@ const fn wzdx(base_url: &'static str, name: &'static str) -> StateApi {
     }
 }
 
+/// A WZDx work-zone feed published at a full URL of its own, as the FHWA
+/// WZDx Feed Registry lists them (data.transportation.gov, dataset
+/// 69qe-yiui). Both fetches read the one document; incidents do not appear.
+const fn wzdx_feed(url: &'static str, name: &'static str) -> StateApi {
+    StateApi {
+        base_url: Some(url),
+        events_endpoint: Some(""),
+        construction_endpoint: Some(""),
+        bounds: None,
+        name,
+        parser: "wzdx",
+        construction_parser: None,
+    }
+}
+
 const fn cars(
     base_url: &'static str,
     events: &'static str,
@@ -191,17 +206,147 @@ pub static STATE_APIS: &[(&str, StateApi)] = &[
     // v4.2 feed at /api/wzdx (found 2026-08-09), so Wisconsin is back off
     // the no_api bench.
     ("wisconsin", wzdx("https://511wi.gov", "Wisconsin 511WI")),
+    // ── FHWA WZDx Feed Registry (swept 2026-09-12) ───────────────────────
+    // data.transportation.gov's Work Zone Data Exchange Feed Registry lists
+    // every state DOT work-zone feed with a "needs API key" flag. Each URL
+    // below was fetched keyless that day and run through this crate's WZDx
+    // parser: every feature carried an id and a point, and the counts are
+    // what the feed held at the time. Registry rows that need a key
+    // (Colorado, Ohio, Oregon, Texas, Virginia, Michigan, Illinois) stay
+    // benched; Oklahoma's row is keyless only because the token is written
+    // into the public URL, which is still a key, so it stays benched too.
+    // New Mexico's feed (ai.blyncsy.io) answered 503 on every try.
+    // 1,047 zones, WZDx 4.0.
+    (
+        "iowa",
+        wzdx_feed(
+            "https://iowa-atms.cloud-q-free.com/api/rest/dataprism/wzdx/wzdxfeed",
+            "Iowa DOT WZDx",
+        ),
+    ),
+    // 471 zones, WZDx 4.0, from the CARS platform's own WZDx endpoint; 63
+    // full closures the day of the sweep.
+    (
+        "kansas",
+        wzdx_feed(
+            "https://ks.carsprogram.org/carsapi_v1/api/wzdx",
+            "Kansas DOT WZDx",
+        ),
+    ),
+    // 293 zones, WZDx 4.1, interstates named the way the world names them.
+    (
+        "kentucky",
+        wzdx_feed(
+            "https://storage.googleapis.com/kytc-its-2020-openrecords/public/feeds/WZDx/kytc_wzdx_v4.1.geojson",
+            "Kentucky Transportation Cabinet WZDx",
+        ),
+    ),
+    // 57 zones, WZDx 4.1, via RITIS.
+    (
+        "maryland",
+        wzdx_feed(
+            "https://filter.ritis.org/wzdx_v4.1/mdot.geojson",
+            "Maryland MDOT WZDx",
+        ),
+    ),
+    // 608 zones, WZDx 4.1, published as plain JSON rather than GeoJSON but
+    // the same FeatureCollection inside.
+    (
+        "missouri",
+        wzdx_feed(
+            "https://traveler.modot.org/timconfig/feed/desktop/mo_wzdx.json",
+            "Missouri DOT WZDx",
+        ),
+    ),
+    // 586 zones, WZDx 4.2. State routes are bare numbers ("522"), which the
+    // road-name match will not pair with "WA-522"; interstates still land
+    // by position.
+    (
+        "washington",
+        wzdx_feed(
+            "https://wzdx.wsdot.wa.gov/api/v4/WorkZoneFeed",
+            "Washington WSDOT WZDx",
+        ),
+    ),
+    // 571 zones, WZDx 4.1, from NJIT's Smart Work Zones project rather than
+    // 511nj.org (whose WAF still answers 403). The body arrives JSON-encoded
+    // twice; the parser unwraps it.
+    (
+        "new jersey",
+        wzdx_feed(
+            "https://smartworkzones.njit.edu/nj/wzdx",
+            "New Jersey NJIT Smart Work Zones WZDx",
+        ),
+    ),
+    // 130 zones, WZDx 4.2.
+    (
+        "mississippi",
+        wzdx_feed(
+            "https://api.mdottraffic.com/prod/v3/data/wzdx",
+            "Mississippi MDOT WZDx",
+        ),
+    ),
+    // 103 zones, WZDx 4.0; routes are bare numbers with a direction ("29N").
+    (
+        "north dakota",
+        wzdx_feed(
+            "https://travelfiles.dot.nd.gov/geojson_nc/wzdx_geojson.json",
+            "North Dakota DOT WZDx",
+        ),
+    ),
+    // 15 and 6 zones, WZDx 4.1, both from the e-dot platform.
+    (
+        "delaware",
+        wzdx_feed(
+            "https://wzdx.e-dot.com/del_dot_feed_wzdx_v4.1.geojson",
+            "Delaware DOT WZDx",
+        ),
+    ),
+    (
+        "louisiana",
+        wzdx_feed(
+            "https://wzdx.e-dot.com/la_dot_d_feed_wzdx_v4.1.geojson",
+            "Louisiana DOTD WZDx",
+        ),
+    ),
+    // One shared New England Compass feed for three states, 276 zones,
+    // WZDx 4.2. Each state fetches the same document; the route filter
+    // keeps only what lies along the road being driven.
+    (
+        "new hampshire",
+        wzdx_feed(
+            "https://api.dx.ne-compass.com/wzdx-latest/",
+            "New England Compass WZDx (New Hampshire)",
+        ),
+    ),
+    (
+        "vermont",
+        wzdx_feed(
+            "https://api.dx.ne-compass.com/wzdx-latest/",
+            "New England Compass WZDx (Vermont)",
+        ),
+    ),
+    (
+        "maine",
+        wzdx_feed(
+            "https://api.dx.ne-compass.com/wzdx-latest/",
+            "New England Compass WZDx (Maine)",
+        ),
+    ),
+    // The CARS platform's WZDx endpoint answers with a valid, empty v4.0
+    // feed (zero zones on 2026-09-12); listed so the day it fills, it works.
+    (
+        "massachusetts",
+        wzdx_feed(
+            "https://ma.carsprogram.org/carsapi_v1/api/wzdx",
+            "Massachusetts CARS WZDx",
+        ),
+    ),
     // ── Dead APIs (live-swept 2026-08-09; fallback to simulated data) ────
     // california: 511.ca.gov no longer resolves in DNS; no statewide feed found.
     ("california", no_api("California Caltrans 511")),
-    // maryland: roads.maryland.gov 404s on /api/events and /api/wzdx.
-    ("maryland", no_api("Maryland CHART")),
     // michigan: michigan.gov/mdot answers 403 on every API-looking path.
     ("michigan", no_api("Michigan MDOT")),
-    // missouri: gatewayguide.com 404s on /api/events and /api/wzdx.
-    ("missouri", no_api("Missouri Gateway Guide")),
-    // new jersey: 511nj.org fronts a WAF that answers 403 Access Denied.
-    ("new jersey", no_api("New Jersey 511NJ")),
     // oregon: tripcheck.com serves HTML for every path incl. the old
     // /WZDx_v4.json; TripCheck's real API requires a registered key.
     ("oregon", no_api("Oregon TripCheck")),
@@ -213,33 +358,22 @@ pub static STATE_APIS: &[(&str, StateApi)] = &[
     // virginia: 511virginia.org redirects to the 511.vdot.virginia.gov SPA;
     // no public JSON endpoint found.
     ("virginia", no_api("Virginia 511")),
-    // washington: wsdot.wa.gov's traveler API requires a registered access
-    // code on every call.
-    ("washington", no_api("Washington WSDOT")),
     // ── No known public 511 API (fallback to simulated data) ─────────────
     ("alabama", no_api("Alabama")),
     ("alaska", no_api("Alaska")),
     ("arkansas", no_api("Arkansas")),
-    ("delaware", no_api("Delaware")),
     ("hawaii", no_api("Hawaii")),
     ("illinois", no_api("Illinois")),
-    ("iowa", no_api("Iowa")),
-    ("kansas", no_api("Kansas")),
-    ("kentucky", no_api("Kentucky")),
-    ("louisiana", no_api("Louisiana")),
-    ("maine", no_api("Maine")),
-    ("massachusetts", no_api("Massachusetts")),
-    ("mississippi", no_api("Mississippi")),
     ("montana", no_api("Montana")),
     ("nebraska", no_api("Nebraska")),
-    ("new hampshire", no_api("New Hampshire")),
+    // new mexico: the registry's ai.blyncsy.io feed answered 503 (2026-09-12).
     ("new mexico", no_api("New Mexico")),
-    ("north dakota", no_api("North Dakota")),
+    // oklahoma: oktraffic.org's WZDx feed wants an access token in the URL;
+    // the registry publishes one, but a key in a URL is still a key.
     ("oklahoma", no_api("Oklahoma")),
     ("rhode island", no_api("Rhode Island")),
     ("south carolina", no_api("South Carolina")),
     ("south dakota", no_api("South Dakota")),
-    ("vermont", no_api("Vermont")),
     ("west virginia", no_api("West Virginia")),
     ("wyoming", no_api("Wyoming")),
     // DC is not a state but is a distinct region on the map

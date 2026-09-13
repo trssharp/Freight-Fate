@@ -1,7 +1,12 @@
 //! Working the pedals for a ramp terminal, and crossing it: honour the light
 //! or the sign, or pay for it.
 
-use ff_core::speech_pacing::SpeechCategory;
+use ff_core::models::enforcement::{
+    career_citations, citation_fine, construction_zone_fine_clause, RED_LIGHT_FINE, STOP_SIGN_FINE,
+};
+use ff_core::pyfmt::fmt_grouped;
+use ff_core::pyrandom::PyRandom;
+use ff_core::speech_pacing::{EventPriority, SpeechCategory};
 
 use crate::app::{GameContext, SayEvent};
 use crate::states::driving::DrivingState;
@@ -281,20 +286,22 @@ impl DrivingState {
             if speed > STOP_ROLL_CLIP_MPH {
                 match met {
                     CrossMeeting::Hit => {
+                        let severity = Self::cross_hit_severity(RED_RUN_DAMAGE, vehicle.as_ref());
+                        let hit = Self::cross_hit_clause(vehicle.as_ref());
                         ctx.audio.play_with(&cue, 1.0, pan);
                         ctx.audio.play("vehicle/collision");
-                        ctx.controller.rumble.impact(RED_RUN_DAMAGE);
+                        ctx.controller.rumble.impact(severity);
                         // A driver already hard on the brakes, carried through
                         // by the load, did not make a preventable mistake. The
                         // violation still stands; the discipline does not.
                         let preventable = !self.trip.truck.pushed_through_by_surge();
-                        self.trip.truck.apply_collision(RED_RUN_DAMAGE, preventable);
+                        self.trip.truck.apply_collision(severity, preventable);
                         let damage = self.trip.truck.damage_pct;
                         self.say_safety_interrupt(
                             ctx,
                             &format!(
-                                "You ran the red light at the ramp end and cross traffic clipped \
-                                 the trailer! Total damage {damage:.0} percent."
+                                "You ran the red light at the ramp end and {hit}! Total damage \
+                                 {damage:.0} percent."
                             ),
                         );
                     }
@@ -325,6 +332,7 @@ impl DrivingState {
                     "You crept through the red light. Cross traffic leans on the horn.",
                 );
             }
+            self.cite_signal_run(ctx, "the red light", RED_LIGHT_FINE);
             return;
         }
         self.ramp_terminal_done = true;
@@ -395,19 +403,19 @@ impl DrivingState {
         if speed > STOP_ROLL_CLIP_MPH {
             match met {
                 CrossMeeting::Hit => {
+                    let severity = Self::cross_hit_severity(STOP_ROLL_DAMAGE, vehicle.as_ref());
+                    let hit = Self::cross_hit_clause(vehicle.as_ref());
                     ctx.audio.play_with(&cue, 1.0, pan);
                     ctx.audio.play("vehicle/collision");
-                    ctx.controller.rumble.impact(STOP_ROLL_DAMAGE);
+                    ctx.controller.rumble.impact(severity);
                     let preventable = !self.trip.truck.pushed_through_by_surge();
-                    self.trip
-                        .truck
-                        .apply_collision(STOP_ROLL_DAMAGE, preventable);
+                    self.trip.truck.apply_collision(severity, preventable);
                     let damage = self.trip.truck.damage_pct;
                     self.say_safety_interrupt(
                         ctx,
                         &format!(
-                            "You blew the stop sign at the ramp end and clipped cross traffic! \
-                             Total damage {damage:.0} percent."
+                            "You blew the stop sign at the ramp end and {hit}! Total damage \
+                             {damage:.0} percent."
                         ),
                     );
                 }
@@ -438,6 +446,59 @@ impl DrivingState {
                 "You rolled the stop sign at the ramp end. Cross traffic leans on the horn.",
             );
         }
+        self.cite_signal_run(ctx, "the stop sign", STOP_SIGN_FINE);
+    }
+
+    /// Running the ramp-end light or sign risks a citation on the same rails
+    /// as the chain-law checkpoint: one flat, seeded roll for whether anyone
+    /// was watching the crossroad, then the career's own repeat scaling and
+    /// the work-zone doubling. What the crossing met is decided separately
+    /// by the cross bubble, so a blown light can cost the trailer, the fine,
+    /// both, or nothing -- dice, not a fixed price (owner playtest
+    /// 2026-07-15: "ALWAYS clips cross traffic and never draws a citation").
+    ///
+    /// Money rides ROUTE's never-dropped queue, like every other citation:
+    /// the collision line that may precede it is an interrupt, and a busy
+    /// stretch must not age the figure out.
+    fn cite_signal_run(&mut self, ctx: &mut GameContext, offense: &str, base_fine: f64) {
+        if ctx.profile.is_none() || self.enforcement_bypassed(ctx) {
+            return;
+        }
+        let at_mi = self
+            .ramp_stop
+            .as_ref()
+            .map_or(self.trip.position_mi, |stop| stop.at_mi);
+        let mut rng = PyRandom::new_from_str(&format!("{}:signal-run:{at_mi:.1}", self.trip_seed));
+        if rng.random() >= SIGNAL_RUN_CATCH_CHANCE {
+            return;
+        }
+        let zone = self.trip.in_construction_zone();
+        let fine = citation_fine(base_fine, career_citations(profile_of(ctx)), zone, None);
+        let money = {
+            let p = profile_mut_of(ctx);
+            p.money -= fine;
+            p.money
+        };
+        self.ticket_fines_paid += fine;
+        let saw_it = match self.trip.active_post_at(self.trip.position_mi) {
+            Some(post) => format!("A trooper working this {} saw it", post.reason()),
+            None => "A patrol car sitting at the crossroad saw it".to_string(),
+        };
+        // Not a serious violation under 49 CFR 383.51 Table 2: the citation
+        // goes on the record and scales the next fine, nothing more.
+        self.log_enforcement(ctx, fine, false, false);
+        ctx.audio.play("ui/error");
+        ctx.say_event_with(
+            format!(
+                "{saw_it}. Running {offense} is a citation, {} dollars.{} You have {} dollars.",
+                fmt_grouped(fine, 0),
+                construction_zone_fine_clause(zone),
+                fmt_grouped(money, 0)
+            ),
+            SayEvent::queued()
+                .priority(EventPriority::Route)
+                .category(SpeechCategory::Money),
+        );
     }
 
     /// The yield rule, straight from the sign: a gap taken at roll speed is
@@ -488,19 +549,22 @@ impl DrivingState {
         };
         let cue = Self::cross_vehicle_sound(vehicle.as_ref());
         if met == CrossMeeting::Hit {
+            let severity = Self::cross_hit_severity(STOP_ROLL_DAMAGE, vehicle.as_ref());
+            // "into cross traffic and cross traffic clipped" reads twice; the
+            // yield line already names what was rolled into.
+            let hit = Self::cross_hit_clause(vehicle.as_ref())
+                .replace("cross traffic clipped", "it clipped");
             ctx.audio.play_with(&cue, 1.0, pan);
             ctx.audio.play("vehicle/collision");
-            ctx.controller.rumble.impact(STOP_ROLL_DAMAGE);
+            ctx.controller.rumble.impact(severity);
             let preventable = !self.trip.truck.pushed_through_by_surge();
-            self.trip
-                .truck
-                .apply_collision(STOP_ROLL_DAMAGE, preventable);
+            self.trip.truck.apply_collision(severity, preventable);
             let damage = self.trip.truck.damage_pct;
             self.say_safety_interrupt(
                 ctx,
                 &format!(
-                    "You rolled the {noun} into cross traffic and it clipped the trailer! Total \
-                     damage {damage:.0} percent."
+                    "You rolled the {noun} into cross traffic and {hit}! Total damage \
+                     {damage:.0} percent."
                 ),
             );
         } else if met == CrossMeeting::Near {

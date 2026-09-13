@@ -77,11 +77,14 @@ These items are part of the release-gate sweep:
 
 - [ ] Lane centering assist is a settings promise with no feature:
       implement or retire before 1.9 ships (owner decision).
-- [ ] Signal running always clips cross traffic and never draws a
-      citation -- backwards both ways.
+- [x] Signal running is dice and tickets (2026-09-12): the crossroad's
+      seeded traffic decides whether a blown red or stop sign meets nothing,
+      a horn, a clip or a heavy broadside, and a flat seeded roll draws the
+      red-light or stop-sign citation on the chain-law checkpoint rails.
 - [ ] The 2026-08-13 Dropbox tester findings are still untriaged.
-- [ ] Cruise destination-lane selection still brakes for the lane the
-      truck is leaving on held-wheel drift.
+- [x] Cruise switches its traffic focus on the actual held-wheel lane
+      crossing, keeping the origin lane until then and protecting traffic in
+      the lane entered.
 - [x] Braking estimates share the live brake-force calculation. Generic
       hazard warnings retain service-braking and reaction time; emergency
       braking has its own stopping estimate.
@@ -104,7 +107,10 @@ These items are part of the release-gate sweep:
       audit -- cannot ship in a public build (separate from the
       resolved Splice matter; owner may already know better).
 - [ ] Colorado's live traffic and construction are dead (CARS GraphQL
-      retired).
+      retired; COtrip's WZDx feed wants a registered key, as do Ohio,
+      Oregon, Texas, Virginia, Michigan and Illinois). The 2026-09-12 FHWA
+      registry sweep put every keyless statewide feed in: 29 states carry
+      live construction now, 15 of them new that day.
 
 #### Owner decisions
 
@@ -137,13 +143,65 @@ its status or release decision.
       a short drive and stop, and returned status and HOS readouts without
       speech errors. The earlier initialization failure reproduced in the
       restricted shell without the agent server.
+- [x] The long half of a sleeper split (7 or more berth hours) pauses the
+      14-hour window while it runs, as 49 CFR 395.1(g)(1)(iii)(B) excludes
+      qualifying rest from the window; the short half counts until the pair
+      is credited. Tester report 2026-09-11: 7 duty hours plus an 8-hour
+      berth rest woke to a closed window.
+- [x] `--agent-server --operator-keys` keeps the window up and lets the
+      owner's keyboard reach the game, to drive alongside the agent; the
+      repo's `.mcp.json` passes it. Without the switch the keys are still
+      dropped at the door.
 - [ ] Complete the owner's listening pass and longer gameplay verification
       of wear thresholds and interrupted warnings. Captured live readouts and
       successful native calls do not establish what the owner heard.
-- [ ] Stabilize the curve-assistance test's empty-road fixture. It clears
-      current vehicles but leaves random traffic replenishment enabled. One
-      full run reported cargo damage; focused and full reruns passed. Disable
-      replenishment in that fixture before treating the road as empty.
+- [x] Stabilized the curve-assistance test's empty-road fixture. It clears
+      current vehicles and disables random traffic replenishment before the
+      bend cases run. One full run reported cargo damage; focused and full
+      reruns passed.
+- [x] The clock key's arrival estimate on the departure streets adds the
+      parked highway run at its route pace, and the speed readout names a
+      lead vehicle that is setting the speed keeper's number (agent drive,
+      Dallas to Sherman with every assist on, 2026-09-11).
+- [x] Facility stopping assistance is a preset field again (owner ruling
+      2026-09-11): Realistic off, Balanced and All assists on, hand changes
+      read as Custom. The 2026-08-31 rest-stop merge had left it outside the
+      presets while the manual promised Balanced stops at the destination.
+- [x] The S key names mainline bends only (2026-09-12). It used to add a
+      connector arc's advisory ("The bend here advises 40") at a
+      highway-to-highway interchange, though connector arcs are excluded
+      from the curve call, the curve servo and the cargo model by design,
+      so the driver was told about a bend no assist acts on (I-30 to I-35
+      at Fort Worth). D still answers with the connector's safe speed.
+
+### September 12 live data and dispatch
+
+- [x] Dispatch reads the state 511 construction reports onto each route
+      option at the pickup departure, takes the next route when the road is
+      closed or the delay outweighs the extra miles, and says why. Fifteen
+      more states' feeds came in from the FHWA WZDx registry, all keyless;
+      29 states carry live construction.
+- [x] National Weather Service warnings ride the real weather toggle:
+      dispatch plans around a blizzard, ice storm, hurricane or tornado
+      warning, prices a winter storm, high wind, flash flood or dense fog
+      warning into the route, and only mentions a thunderstorm; the cab reads
+      a warning out as the truck drives into it, and a winter warning posts
+      the chain law before the first flake. Driven live out of Pittsburgh.
+- [x] Convenience stations the map had typed as travel centers with only
+      assumed truck parking read as bobtail-only at load: no announcement,
+      no exit signal, no rest stop with a trailer on. 242 stops, nine in ten
+      kept; the sleep-gap corridors held.
+- [x] The pumps charge this week's federal survey diesel price with each
+      region's usual spread on top, on by default; Settings, World, Fuel
+      prices switches back to simulated.
+- [x] Company drivers get a load RELAYED from a nearby freight town when the
+      board here is thin (few loads, poor pay, or half the freight of a market
+      in range), deadhead paid and timed as part of the assignment, driven as
+      one pickup drive that resumes from a save. The one-in-nine empty
+      reposition is gone. Home-time relays wait for the 1.10 home terminal.
+- [x] The agent server's `scenario` tool stages the sandbox career in any
+      situation; the sandbox turns every live feed on. Driven live: Tonopah,
+      relayed Las Vegas load assigned and accepted.
 
 ## 1.10 planned -- the working week and home
 

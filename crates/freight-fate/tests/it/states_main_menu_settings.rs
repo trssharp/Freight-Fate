@@ -199,6 +199,7 @@ fn gameplay_subcategory_rows(category: &str) -> &'static [&'static str] {
         "world" => &[
             "Weather source",
             "Traffic source",
+            "Fuel prices",
             "Parking source",
             "Live weather controls calendar",
             "Back",
@@ -711,13 +712,22 @@ fn test_one_facility_stopping_assist_row_controls_every_facility_stop() {
         .iter()
         .any(|(label, _)| label.starts_with("Planned rest-stop stopping assistance")));
 
-    for preset in ["realistic", "balanced", "all"] {
+    // A preset field again (owner, 2026-09-11): Realistic leaves the truck
+    // to stop itself, Balanced and All assists stop at the gate for you. A
+    // fresh install on Balanced used to coast past its own pickup.
+    for (preset, expected) in [("realistic", false), ("balanced", true), ("all", true)] {
         app.ctx.settings.apply_driving_assistance_preset(preset);
-        assert!(
-            app.ctx.settings.destination_approach_assist,
-            "{preset} changed the independent facility stopping assist"
+        assert_eq!(
+            app.ctx.settings.destination_approach_assist, expected,
+            "{preset} facility stopping assist"
         );
     }
+    // And toggling it by hand reads as Custom, like any other preset field.
+    app.ctx.settings.apply_driving_assistance_preset("balanced");
+    move_to::<Cat>(&mut app, "Facility stopping assistance");
+    key(&mut app, Key::Return);
+    assert!(!app.ctx.settings.destination_approach_assist);
+    assert_eq!(app.ctx.settings.driving_assistance_preset, "custom");
 }
 
 #[test]

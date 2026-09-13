@@ -136,6 +136,13 @@ impl SdlShell {
         self.canvas.window_mut().minimize();
     }
 
+    /// Bring a minimized window back and ask for focus, so the operator's
+    /// keyboard lands in the game again.
+    pub fn restore(&mut self) {
+        self.canvas.window_mut().restore();
+        self.canvas.window_mut().raise();
+    }
+
     /// Hand desktop focus back immediately and finish SDL at process exit.
     pub fn shutdown_for_process_exit(self) {
         #[cfg(target_os = "windows")]

@@ -26,9 +26,8 @@ use freight_fate::app::testing::TestApp;
 use freight_fate::states::base::{Key, Menu};
 use freight_fate::states::career_setback::CareerSetbackNoticeState;
 use freight_fate::states::city::{
-    assigned_reposition_for_board, dispatch_cache_key, open_freight_market, CityMenuState,
-    JobBoardState, JobDetailState, PayDebtState, RouteSelectState, TruckStatusState,
-    JOB_BOARD_INTRO_HELP,
+    dispatch_cache_key, open_freight_market, relay_load_for_board, CityMenuState, JobBoardState,
+    JobDetailState, PayDebtState, RouteSelectState, TruckStatusState, JOB_BOARD_INTRO_HELP,
 };
 use freight_fate::states::driving::DrivingState;
 use freight_fate::states::driving_pause_states::{
@@ -767,28 +766,29 @@ fn test_own_authority_owned_trailer_row_shows_direct_market_fit() {
 
 // -- tests/test_assigned_reposition.py ------------------------------------------------
 
-/// Walk seeded profiles/cities until the board's own deterministic roll
-/// turns up a reposition, mirroring how tests elsewhere search seeds for a
-/// property instead of hand-picking one fragile value.
-fn find_reposition(
+/// Walk seeded profiles/cities with an EMPTY local board -- the thinnest a
+/// board can be -- until dispatch relays a load, mirroring how tests
+/// elsewhere search seeds for a property instead of hand-picking one
+/// fragile value. `local` is what the board here is taken to hold.
+fn find_relay(
     app: &mut TestApp,
     owner_operator: bool,
     trials: usize,
+    local: &[Job],
 ) -> Option<(Profile, Job)> {
     let cities: Vec<String> = app.ctx.world.cities.keys().cloned().collect();
     for i in 0..trials {
         let mut p = Profile::named_in(&format!("Seed{i}"), &cities[i % cities.len()]);
         p.market.seed = i as i64;
         // One run behind them: a brand-new hire's FIRST dispatch is always
-        // freight (see the deliveries gate in assigned_reposition_for_board).
+        // freight (see the deliveries gate in relay_load_for_board).
         p.career.deliveries = 1;
         if owner_operator {
             p.business_status = LEASED_OWNER_OPERATOR.to_string();
         }
         app.ctx.profile = Some(p.clone());
         let key = dispatch_cache_key(&p);
-        let board = JobBoard::new(app.ctx.world, None, None);
-        if let Some(job) = assigned_reposition_for_board(&app.ctx, &board, &key) {
+        if let Some(job) = relay_load_for_board(&app.ctx, &key, local) {
             return Some((p, job));
         }
     }
@@ -796,65 +796,74 @@ fn find_reposition(
 }
 
 #[test]
-fn test_assigned_reposition_shows_for_company_driver_never_for_owner_operator() {
+fn test_a_thin_board_relays_a_load_for_a_company_driver_never_an_owner_operator() {
     let mut app = TestApp::new();
-    let (p, job) = find_reposition(&mut app, false, 600)
-        .expect("no seeded board produced a reposition in the trial budget");
-    assert!(job.bobtail && job.assigned);
-    assert_ne!(job.destination, job.origin);
-    assert!(app
-        .ctx
-        .world
+    let (p, job) = find_relay(&mut app, false, 60, &[])
+        .expect("no seeded empty board produced a relay in the trial budget");
+    // A real load with a pickup in another city, not an empty run.
+    assert!(!job.bobtail && !job.assigned);
+    let world = app.ctx.world;
+    let here = world.resolve_city_key(&p.current_city);
+    assert_ne!(world.resolve_city_key(&job.origin), here);
+    assert!(world
+        .supported_route(&here, &job.origin, None)
+        .unwrap()
+        .is_some());
+    assert!(world
         .supported_route(&job.origin, &job.destination, None)
         .unwrap()
         .is_some());
-    // Pays something, but strictly less than the loaded per-mile floor.
-    let plan = pay_plan_for_key(Some(&p.carrier_key));
-    assert!(job.pay > 0.0 && job.pay < job.distance_mi * plan.min_per_mile);
+    assert!(job.pay > 0.0 && job.weight_tons > 0.0);
 
     // The same search never turns one up for an owner-operator: the
-    // gate is unconditional, not just an unlucky roll.
-    assert!(find_reposition(&mut app, true, 600).is_none());
+    // gate is unconditional, not a thin board they happened to miss.
+    assert!(find_relay(&mut app, true, 60, &[]).is_none());
 }
 
 #[test]
-fn test_a_new_hires_first_dispatch_is_never_a_reposition() {
-    // Before the first delivery the roll never runs: every new career's
-    // first assignment is freight, deterministically -- the roll hashes the
-    // random market seed, so without the gate one new career in nine started
-    // on a deadhead and every new-career test flow flaked with it.
+fn test_a_new_hires_first_dispatch_is_never_a_relay() {
+    // Before the first delivery dispatch never relays, even off an empty
+    // board: every new career's first assignment is freight from this yard,
+    // deterministically, so no new-career flow starts on a deadhead.
     let mut app = TestApp::new();
     let cities: Vec<String> = app.ctx.world.cities.keys().cloned().collect();
-    for i in 0..200 {
+    for i in 0..60 {
         let mut p = Profile::named_in(&format!("Fresh{i}"), &cities[i % cities.len()]);
         p.market.seed = i as i64;
         assert_eq!(p.career.deliveries, 0);
         let key = dispatch_cache_key(&p);
         app.ctx.profile = Some(p);
-        let board = JobBoard::new(app.ctx.world, None, None);
         assert!(
-            assigned_reposition_for_board(&app.ctx, &board, &key).is_none(),
-            "seed {i}: a first dispatch offered a reposition"
+            relay_load_for_board(&app.ctx, &key, &[]).is_none(),
+            "seed {i}: a first dispatch relayed a load"
         );
     }
 }
 
 #[test]
-fn test_assigned_reposition_replaces_a_board_slot_for_company_driver() {
-    // The reposition takes an ordinary offer's place rather than adding a
-    // ninth entry, so the board still shows exactly as many jobs as the
-    // player's level and trust earn -- the same invariant a stale board
-    // rebuild relies on (see test_stale_dispatch_board.py).
+fn test_a_relayed_load_replaces_a_board_slot_and_leads_the_assignment() {
+    // The relay takes an ordinary offer's place rather than adding a ninth
+    // entry, so the board still shows exactly as many jobs as the player's
+    // level and trust earn -- the same invariant a stale board rebuild relies
+    // on (see test_stale_dispatch_board.py). And since the board here was
+    // thin, the relayed load is the one dispatch assigns.
+    // Tonopah, Nevada: a five-shipper desert town with Reno and Las Vegas
+    // in range, one of the fifty-two towns the map's freight marks as thin
+    // (see ff_core::models::jobs::relay::THIN_MARKET_RATIO).
     let mut app = TestApp::new();
-    let (p, _job) = find_reposition(&mut app, false, 600).expect("a seeded reposition");
+    let mut p = Profile::named_in("Relay Tonopah", "Tonopah");
+    p.market.seed = 11;
+    p.career.deliveries = 1;
     app.ctx.profile = Some(p.clone());
     open_freight_market(&mut app.ctx);
     app.ctx.run_deferred();
-
-    assert!(with_state::<JobBoardState, _>(&app, |b, _| b
-        .jobs
-        .iter()
-        .any(|j| j.bobtail && j.assigned)));
+    let here = app.ctx.world.resolve_city_key(&p.current_city);
+    let relayed = with_state::<JobBoardState, _>(&app, |b, ctx| {
+        b.jobs
+            .iter()
+            .any(|j| !j.bobtail && ctx.world.resolve_city_key(&j.origin) != here)
+    });
+    assert!(relayed, "Tonopah's board carries a relayed load");
     let expected = enforcement::board_offers_for_reputation(
         board_offer_count(p.career.level()) as i64,
         p.career.reputation,
@@ -862,6 +871,14 @@ fn test_assigned_reposition_replaces_a_board_slot_for_company_driver() {
     assert_eq!(
         with_state::<JobBoardState, _>(&app, |b, _| b.jobs.len()),
         expected
+    );
+    let here = app.ctx.world.resolve_city_key(&p.current_city);
+    let assigned_origin =
+        with_state::<JobBoardState, _>(&app, |b, _| b.assigned_job().origin.clone());
+    assert_ne!(
+        app.ctx.world.resolve_city_key(&assigned_origin),
+        here,
+        "the relayed load leads the assignment queue"
     );
 }
 

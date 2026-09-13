@@ -34,6 +34,7 @@ pub mod menu;
 pub mod observer;
 pub mod road;
 pub mod sandbox;
+pub mod scenario;
 
 pub use breaker::{run_scenario, scenario_names, scenarios, Outcome, Rig, RigOptions, Verdict};
 pub use harness::{key_event, PlaytestHarness, PlaytestResult, RouteSetup, StartDelivery};

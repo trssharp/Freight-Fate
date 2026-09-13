@@ -4,6 +4,66 @@
 
 ### Added
 
+- **Dispatch checks the state construction reports before choosing your
+  route.** With real traffic on, dispatch reads each route option for the
+  construction the state reports, tells you what is on the way and about
+  how many minutes it costs, and takes the next route when the road is
+  closed or the delay outweighs the extra miles. Drivers who plan their
+  own route hear the same reports on each option. Twenty-nine states
+  publish these reports without a key today, and the game reads every
+  one of them. Elsewhere nothing changes.
+- **Real construction reports now cover fifteen more states.** Iowa,
+  Kansas, Kentucky, Maryland, Missouri, Washington, New Jersey,
+  Mississippi, North Dakota, Delaware, Louisiana, New Hampshire, Vermont,
+  Maine and Massachusetts join the states whose live work zones appear on
+  your route when real traffic is on, replacing the made-up roadwork on
+  those stretches.
+- **Weather warnings from the National Weather Service reach dispatch and
+  the cab.** With real weather on, dispatch reads the Service's active
+  warnings along each route option: a
+  blizzard, ice storm, hurricane or tornado warning sends the load the other
+  way when there is one, a winter storm, high wind, flash flood or dense fog
+  warning counts its slower miles against the route, and a thunderstorm is
+  mentioned and nothing more. The departure line names each warning and the
+  town it sits near. On the road the cab reads a warning out as you drive
+  into it, with the gusts when the warning gives them, and a winter warning
+  posts the chain law before the first flake.
+- **Dispatch relays a load instead of sending you empty on a dice roll.**
+  When the board in your city is thin, fewer than three loads you can take,
+  pay well under what the next freight town is offering, or a town with
+  half the freight of a market a day's drive away, dispatch looks at the
+  boards of the nearest towns and assigns the load that pays best for the
+  hours it takes, deadhead included. You hear it as one assignment:
+  "Load waiting in Omaha, 120 miles deadhead first, paid at the empty-mile
+  rate", then the load itself. The deadhead and the shipper's own approach
+  are one drive that opens the pickup on arrival, its pay is in the
+  settlement and its hours in the deadline, and a save on the way resumes
+  where you were. A rich board relays nothing. The old empty repositions
+  that appeared one board in nine, wherever you were, are gone.
+- **Real diesel prices.** The pumps now charge this week's national average
+  diesel price from the federal weekly survey, with each region's usual
+  difference on top, in place of the price the game drew for the session.
+  On by default; a new Settings, World row, Fuel prices, switches back to
+  the simulated price. The garage line says when the price is this week's.
+
+- **Nineteen new songs on the in-house stations.** Glory Road, Puro Tejano
+  and Neon Drive each have a full eight-song rotation now, and the Night
+  Line has two more slow ballads. Until now those three stations repeated
+  one to three songs.
+
+- **Passing and crossing traffic sounds like the vehicle it is.** A pickup,
+  a motorcycle, a bus or a farm tractor going by, and every vehicle
+  crossing in front of you at a ramp end, now plays a recorded-style cue
+  instead of the stand-in tone the game shipped with in August. The cues
+  still pan to the side the vehicle is on.
+
+### Changed
+
+- **Station breaks run more like radio.** Every twelve songs a station now
+  airs two host breaks, four station IDs and three commercials, with the
+  commercials in stopsets of two and one, each followed by the station
+  naming itself. Before, the same stretch carried one commercial.
+
 - **Steering and assisted lane changes use the mechanical blinker sound.** The
   automatic position cue and full-assist lane-change signals wait for each
   recording to finish before repeating. Their panning, the I-key lane locator,
@@ -562,7 +622,30 @@
   how you know you are far enough over, with nothing spoken. The I key still
   turns the same tock on and off whenever you want it.
 
+### Fixed
+
+- **Running the light or the sign at a ramp end is a gamble now, and it can
+  cost you a ticket.** Before, blowing the red or the stop sign always clipped
+  cross traffic and never drew a citation. Now the crossroad decides: some
+  days nobody is crossing, some days a car leans on the horn, and some days a
+  semi hits the trailer broadside, which costs far more than a clip. Whatever
+  you meet, a patrol car sitting at the crossroad sees it about a third of the
+  time and writes you up, about 490 dollars for the red light and 240 for the
+  stop sign, more with citations on your record or in a work zone.
+- **The S key no longer names a bend the truck is not being asked to slow
+  for.** Inside a highway-to-highway connector it used to add "The bend here
+  advises 40" to the posted limit, though nothing in the cab acts on that
+  number. The readout now names mainline bends only; the D key still gives the
+  safe speed through the connector.
+
 ### Changed
+
+- **Balanced and All assists now stop the truck at the facility for you.**
+  Facility stopping assistance is part of the driving assistance presets
+  again: Realistic leaves it off, Balanced and All assists turn it on, and
+  changing it by hand reads as Custom. A fresh install on Balanced used to
+  coast past its own pickup unless you braked. A saved choice made before
+  presets existed is kept as it was.
 
 - **Fuel counts toward your truck's weight.** Burning diesel makes the truck
   lighter, and refueling adds the weight back. Load offers and fuel menus tell
@@ -1279,6 +1362,48 @@
   The status readout still has the words if you ask for it.
 
 ### Fixed
+
+- **Convenience stores stop posing as truck stops.** A Circle K, QuikTrip or
+  Speedway the map had typed as a travel center with only assumed truck
+  parking now reads as the car-scale station it is: with a trailer on it is
+  not announced, cannot be signalled for, and does not count as a rest stop.
+  Bobtailing, it is still there for fuel. Truck-stop chains, and any stop
+  with confirmed truck parking, a scale, showers, or a truck-stop name, are
+  unchanged.
+- **Cruise stops slowing for a car you have left behind once you cross the
+  lane line.** Holding the wheel toward an open lane keeps following a slower
+  vehicle in your current lane until the truck crosses over. On that crossing,
+  cruise lets that vehicle go and watches the lane you entered instead. The
+  lane-change confirmation and occupied-lane collision warning are unchanged.
+
+- **The dispatch board warns about a load that only just fits your hours.**
+  The hours warning before you accept a load now counts the drive to the
+  pickup as well as the loaded route, and wants half an hour of duty window
+  to spare. A 5-hour job accepted with 4 hours 17 minutes of window used to
+  pass in silence, and the drive ended in a forced 10-hour sleep 5 hours past
+  the deadline. You still hear the warning once and can press Enter again to
+  take the load anyway.
+
+- **The clock key counts the whole run while you are still on the streets
+  out of the pickup.** Before the on-ramp it estimated arrival from the two
+  miles of city streets alone, so a 123-mile run read as "arrival in 0.1
+  hours". It now adds the highway at its route pace and judges the
+  on-schedule verdict against the whole run.
+
+- **The speed readout says when a slow car is setting the speed keeper's
+  number.** A car doing 51 ahead of you in a 58 zone kept the truck at 51,
+  and Space answered "speed keeper holding 58" every time. It now says
+  "holding 51 for the traffic ahead, set 58", the same shape adaptive
+  cruise already uses.
+
+- **A long sleeper-berth rest no longer runs your duty window down while you
+  sleep.** Seven or more hours in the berth, the long half of an 8 and 2 or
+  7 and 3 split, now stops the 14-hour window for as long as you sleep, the
+  way an ELD does. You wake with the same window you went to bed with, and
+  the wake-up line says the window paused and when it closes. Before, seven
+  hours of duty followed by an 8-hour sleep left you out of hours on waking,
+  with the split still owed. The shorter half of a split still counts until
+  the pair is complete.
 
 - **A voice that cannot start no longer prevents speech fallback.** The game
   skips failed voices and tries the next available one instead of selecting

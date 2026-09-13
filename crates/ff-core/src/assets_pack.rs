@@ -945,16 +945,21 @@ mod tests {
         // procedural events/weigh_station_warning.ogg cue (owner ruling --
         // the scale gets its own earcon instead of reusing the shared
         // inspection cue), taking the pack from 159 entries to 160.
-        assert_eq!(pack_bytes.len(), 7_788_924);
+        //
+        // Repacked 2026-09-11 (traffic cues): the eleven pass and crossing
+        // cues from 2026-08-20 regenerated through the ElevenLabs Sound
+        // Effects API and merged in, 162 -> 173 entries, the prior 162 kept
+        // byte for byte.
+        assert_eq!(pack_bytes.len(), 8_278_280);
         assert!(pack_bytes.starts_with(PACK_MAGIC));
         use sha2::{Digest, Sha256};
         let digest = hex::encode(Sha256::digest(&pack_bytes));
         assert_eq!(
             digest,
-            "45f297c8c0562fb018674ce51e691d3cd93501793ce7b41d378bfc35b9d2cf99"
+            "33e35cab8258f5eccaf5553d698ffcfca24d65e986bd579f24579250a981bae6"
         );
         let pack = SoundPack::open(&path).unwrap();
-        assert_eq!(pack.names().len(), 162);
+        assert_eq!(pack.names().len(), 173);
     }
 
     #[test]
@@ -967,10 +972,12 @@ mod tests {
         // station-identity batch: 356 entries, the music/ subtree plus the new
         // station jingles and songs. 358 since 2026-08-26 (Dangerous Dan,
         // Dial-up Summer); 359 since 2026-08-30, when Four Sources and the
-        // Truth joined the country pool. Only the size and header are checked
-        // here: hashing 271 MB is the Python suite's job, once.
+        // Truth joined the country pool; 378 since 2026-09-11 (the gospel,
+        // tejano, synthwave and Night Line song batch). Only the size and
+        // header are checked here: hashing 310 MB is the Python suite's job,
+        // once.
         let len = std::fs::metadata(&path).unwrap().len();
-        assert_eq!(len, 270_786_839);
+        assert_eq!(len, 309_673_046);
         let mut head = [0u8; 6];
         std::fs::File::open(&path)
             .unwrap()

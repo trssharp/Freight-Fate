@@ -201,7 +201,7 @@ impl SettingsCategoryState {
         }
         if matches!(
             field,
-            "curve_callouts" | "destination_approach_assist" | "predictive_cruise" | "speed_keeper"
+            "curve_callouts" | "predictive_cruise" | "speed_keeper"
         ) {
             // Input-accessibility aids and information layers, not realism
             // choices: they live outside the presets, so toggling one never
@@ -209,9 +209,6 @@ impl SettingsCategoryState {
             let s = &mut ctx.settings;
             match field {
                 "curve_callouts" => s.curve_callouts = !s.curve_callouts,
-                "destination_approach_assist" => {
-                    s.destination_approach_assist = !s.destination_approach_assist
-                }
                 "predictive_cruise" => s.predictive_cruise = !s.predictive_cruise,
                 _ => s.speed_keeper = !s.speed_keeper,
             }
@@ -539,6 +536,15 @@ impl SettingsCategoryState {
     pub(super) fn toggle_real_traffic(&mut self, ctx: &mut GameContext, _d: i64) {
         ctx.settings.real_traffic = !ctx.settings.real_traffic;
         save_settings(&ctx.settings);
+        self.announce(ctx);
+    }
+
+    pub(super) fn toggle_real_fuel_prices(&mut self, ctx: &mut GameContext, _d: i64) {
+        ctx.settings.real_fuel_prices = !ctx.settings.real_fuel_prices;
+        save_settings(&ctx.settings);
+        // Ask for this week's price straight away so the garage line has it
+        // by the time the player gets there.
+        ctx.sync_fuel_prices();
         self.announce(ctx);
     }
 

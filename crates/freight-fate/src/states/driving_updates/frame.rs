@@ -161,6 +161,7 @@ impl DrivingState {
             }
         }
         self.sync_weather_source(ctx);
+        self.sync_weather_alerts(ctx);
         let ramp = dt * 2.2;
         self.brake_lockout_cue_timer = (self.brake_lockout_cue_timer - dt).max(0.0);
         // Controller triggers/clutch are analog held positions blended in below;
@@ -423,6 +424,13 @@ impl DrivingState {
         let clutch_disengaged =
             self.trip.truck.transmission.clutch > 0.5 || self.trip.truck.transmission.shifting();
         self.update_lane(ctx, dt);
+        // `update_lane` can complete a held-wheel crossing. Mirror that
+        // discrete result before cruise reads the traffic bubble: steering
+        // alone remains in the origin lane, while the crossing frame selects
+        // traffic in the lane the truck has actually entered. Tap changes
+        // retain their explicit destination intent below.
+        self.trip.traffic_manager.player_lane = self.lane.lane;
+        self.trip.traffic_manager.player_lane_target = self.lane_change_target;
         self.update_exit_preparation(ctx, dt);
         self.resume_speed_control_if_ready(ctx, braking);
         self.update_cruise(ctx, dt, braking, hand_accelerating, clutch_disengaged);
@@ -484,12 +492,6 @@ impl DrivingState {
         // change; the setter only re-renders cues when the choice actually flips.
         self.trip.set_imperial(ctx.settings.imperial_units);
         let pos_before = self.trip.position_mi;
-        // Same-lane traffic checks and spoken relative lanes follow the
-        // player's discrete lane, so mirror it before the trip advances.
-        self.trip.traffic_manager.player_lane = self.lane.lane;
-        // And while a tap-change is underway, lead selection follows the
-        // lane it is moving into instead -- see TrafficManager.lead_vehicle.
-        self.trip.traffic_manager.player_lane_target = self.lane_change_target;
         // Tell the trip model which stop's exit is signaled or on the ramp so its
         // plan-cancelled warning can tell a driver who is taking the exit from one
         // who blew past it. Set before trip.update (which runs check_stops) and

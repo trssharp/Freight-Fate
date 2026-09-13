@@ -367,6 +367,91 @@ fn test_adaptive_cruise_ignores_the_lane_being_left_mid_change() {
 }
 
 #[test]
+fn test_adaptive_cruise_switches_lanes_on_a_held_steering_crossing() {
+    // Held steering has no tap-change destination intent. Cruise must keep
+    // following the slow car in the current lane until the tires actually
+    // cross the line, then stop following it on that crossing frame.
+    let mut harness = bench_drive("ACC Held Crossing", 200.0, 0.0);
+    harness.with_drive(|d, _| {
+        let at = d.trip.position_mi + 0.08;
+        d.trip.set_npc_vehicles(vec![NPCVehicle::new(
+            "npc:origin",
+            at,
+            44.0,
+            44.0,
+            0,
+            "braking_traffic",
+        )
+        .into()]);
+        d.truck_mut().transmission.gear = 10;
+        d.truck_mut().velocity_mps = 29.0; // ~65 mph
+    });
+    harness.app.ctx.settings.lane_keeping = "off".to_string();
+    press(&mut harness, Key::E, None);
+    press(&mut harness, Key::K, None);
+    assert_eq!(harness.read_drive(|d| d.lane.lane), 0);
+
+    hold(&mut harness, &[Key::Left]);
+    frame(&mut harness, DT);
+    assert_eq!(harness.read_drive(|d| d.lane.lane), 0);
+    assert!(harness.read_drive(|d| d.acc_following));
+
+    for _ in 0..180 {
+        frame(&mut harness, DT);
+        if harness.read_drive(|d| d.lane.lane) == 1 {
+            break;
+        }
+    }
+    release_keys(&mut harness);
+
+    assert_eq!(harness.read_drive(|d| d.lane.lane), 1);
+    assert!(harness.read_drive(|d| d.lane_change_target).is_none());
+    assert_eq!(
+        harness.read_drive(|d| d.trip.traffic_manager.player_lane),
+        1
+    );
+    assert!(!harness.read_drive(|d| d.acc_following));
+    assert!(said_any(&harness, "In the left lane."));
+}
+
+#[test]
+fn test_adaptive_cruise_follows_destination_traffic_on_a_held_steering_crossing() {
+    // A held crossing must not discard occupied-lane safety. The destination
+    // lead is ignored before the line, then followed on the exact frame the
+    // truck enters that lane.
+    let mut harness = bench_drive("ACC Held Destination", 200.0, 0.0);
+    harness.with_drive(|d, _| {
+        let at = d.trip.position_mi + 0.08;
+        let mut destination =
+            NPCVehicle::new("npc:destination", at, 38.0, 38.0, -1, "braking_traffic");
+        destination.lane = 1;
+        d.trip.set_npc_vehicles(vec![destination.into()]);
+        d.truck_mut().transmission.gear = 10;
+        d.truck_mut().velocity_mps = 29.0; // ~65 mph
+    });
+    harness.app.ctx.settings.lane_keeping = "off".to_string();
+    press(&mut harness, Key::E, None);
+    press(&mut harness, Key::K, None);
+    hold(&mut harness, &[Key::Left]);
+    frame(&mut harness, DT);
+    assert!(!harness.read_drive(|d| d.acc_following));
+
+    let mut following_on_cross = false;
+    for _ in 0..180 {
+        frame(&mut harness, DT);
+        if harness.read_drive(|d| d.lane.lane) == 1 {
+            following_on_cross = harness.read_drive(|d| d.acc_following);
+            break;
+        }
+    }
+    release_keys(&mut harness);
+
+    assert_eq!(harness.read_drive(|d| d.lane.lane), 1);
+    assert!(harness.read_drive(|d| d.lane_change_target).is_none());
+    assert!(following_on_cross);
+}
+
+#[test]
 fn test_adaptive_cruise_follows_the_lane_being_entered_mid_change() {
     // The other half of the fix: a slow lead already sitting in the
     // DESTINATION lane must still cap the target mid-change. Lead selection

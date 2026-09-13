@@ -19,7 +19,7 @@
 
 use ff_core::sim::enforcement_posts::{method_by_kind, EnforcementPost, KIND_MEDIAN};
 use ff_core::sim::traffic_manager::TrafficVehicle;
-use ff_core::sim::trip_models::NavigationCue;
+use ff_core::sim::trip_models::{NavigationCue, Zone};
 use ff_core::sim::weather::WeatherKind;
 
 use freight_fate::playtest::harness::{key_event, PlaytestHarness, StartDelivery};
@@ -509,4 +509,65 @@ fn test_the_speed_readout_says_what_the_keeper_is_holding_not_just_what_is_set()
         "{said}"
     );
     assert!(!said.contains("for the corner"), "{said}");
+}
+
+#[test]
+fn test_the_speed_readout_names_the_slow_car_setting_the_keepers_number() {
+    // Agent drive, I-35, 2026-09-11: a car doing 51 held the truck at 51
+    // through twenty miles of a 58 zone, and Space answered "speed keeper
+    // holding 58" every time -- the SET number, with nothing naming the car.
+    // The loop publishes what it held and why, as cruise does.
+    let mut harness = a_drive("Keeper Follows");
+    harness.app.ctx.settings.speed_keeper = true;
+    harness.with_drive(|drive, _| {
+        let miles = drive.trip.total_miles();
+        drive.trip.zones = vec![Zone::new(0.0, miles, 58.0, "heavy traffic")];
+        drive.truck_mut().transmission.automatic = true;
+        drive.truck_mut().start_engine();
+        drive.truck_mut().set_air_ready(true);
+        drive.truck_mut().parking_brake = false;
+        drive.truck_mut().velocity_mps = 58.0 / MPH_PER_MPS;
+        drive.truck_mut().transmission.gear = drive.truck().transmission.num_gears() / 2;
+        let ahead = drive.trip.position_mi + 0.03;
+        drive.trip.set_npc_vehicles(vec![TrafficVehicle::new(
+            "bench:slow-car",
+            ahead,
+            51.0,
+            51.0,
+            0,
+            "cruising",
+            "car",
+        )]);
+    });
+    harness.with_drive(|drive, ctx| {
+        drive.engage_keeper(ctx, 58.0, "heavy traffic", Some(58.0), false);
+        drive.update_keeper(ctx, 0.1, false, false, false);
+    });
+    assert!(
+        harness.read_drive(|d| d.keeper_mph.is_some()),
+        "the keeper refused to engage"
+    );
+    harness.clear_speech();
+
+    harness.with_drive(|drive, ctx| drive.speak_speed(ctx));
+    let said = last_main(&harness);
+    assert!(
+        said.contains("speed keeper holding 51 miles per hour for the traffic ahead, set 58"),
+        "{said}"
+    );
+    assert!(!said.contains("holding 58 miles per hour,"), "{said}");
+
+    // The car gone: one number again, and no stale reason.
+    harness.with_drive(|drive, ctx| {
+        drive.trip.set_npc_vehicles(Vec::new());
+        drive.update_keeper(ctx, 0.1, false, false, false);
+    });
+    harness.clear_speech();
+    harness.with_drive(|drive, ctx| drive.speak_speed(ctx));
+    let said = last_main(&harness);
+    assert!(
+        said.contains("speed keeper holding 58 miles per hour"),
+        "{said}"
+    );
+    assert!(!said.contains("for the traffic ahead"), "{said}");
 }

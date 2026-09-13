@@ -88,27 +88,80 @@ pub fn is_identity(path: &Path) -> bool {
         || name.starts_with("online.token")
 }
 
-/// Copy the real settings in, with everything that publishes turned off.
+/// The live-data feeds a sandbox reads: real weather (and with it the
+/// Weather Service warnings), state 511 traffic and construction, TPIMS
+/// truck parking. None of these carries the driver identity or publishes
+/// anything, and a sandbox exists to test the game against the world, so
+/// they are on in every sandbox whatever the real settings say (owner
+/// ruling, 2026-09-12: the agent drive has to be able to hear live data).
+pub const LIVE_SETTINGS: [&str; 4] = [
+    "real_weather",
+    "real_traffic",
+    "real_parking",
+    "real_fuel_prices",
+];
+
+/// Copy the real settings in, with everything that publishes turned off
+/// and every live-data feed turned on.
 ///
 /// False when there is no real settings file to copy, which is not an error:
-/// a machine that has never run the game gets the game's own defaults, and
-/// that is a legitimate thing to playtest.
+/// a machine that has never run the game gets the game's own defaults with
+/// the same two rules applied, and that is a legitimate thing to playtest.
 pub fn seed_settings(sandbox: &Path, source: &Path) -> bool {
     let src = source.join("settings.json");
-    let Ok(text) = std::fs::read_to_string(&src) else {
-        return false;
-    };
-    let Ok(Value::Object(mut data)) = serde_json::from_str::<Value>(&text) else {
-        return false;
+    let copied = std::fs::read_to_string(&src).ok();
+    let mut data = match copied.as_deref().map(serde_json::from_str::<Value>) {
+        Some(Ok(Value::Object(data))) => data,
+        Some(_) => return false,
+        None => Map::new(),
     };
     for key in OFFLINE_SETTINGS {
         data.insert(key.to_string(), Value::Bool(false));
+    }
+    for key in LIVE_SETTINGS {
+        data.insert(key.to_string(), Value::Bool(true));
+    }
+    if copied.is_none() {
+        let sorted: Map<String, Value> = data.into_iter().collect();
+        if let Ok(rendered) = serde_json::to_string_pretty(&Value::Object(sorted)) {
+            let _ = std::fs::write(sandbox.join("settings.json"), rendered);
+        }
+        return false;
     }
     let sorted: Map<String, Value> = data.into_iter().collect();
     let Ok(rendered) = serde_json::to_string_pretty(&Value::Object(sorted)) else {
         return false;
     };
     std::fs::write(sandbox.join("settings.json"), rendered).is_ok()
+}
+
+/// Turn every live-data feed on in a sandbox that already has settings.
+///
+/// A sandbox outlives the session that seeded it, and a tester may have
+/// flipped a feed off inside it; the live feeds are what an agent drive is
+/// there to hear, so each `prepare` puts them back on. Nothing else in the
+/// file is touched. Quietly does nothing when there is no settings file.
+pub fn force_live_settings(sandbox: &Path) {
+    let path = sandbox.join("settings.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(Value::Object(mut data)) = serde_json::from_str::<Value>(&text) else {
+        return;
+    };
+    if LIVE_SETTINGS
+        .iter()
+        .all(|key| data.get(*key) == Some(&Value::Bool(true)))
+    {
+        return;
+    }
+    for key in LIVE_SETTINGS {
+        data.insert(key.to_string(), Value::Bool(true));
+    }
+    let sorted: Map<String, Value> = data.into_iter().collect();
+    if let Ok(rendered) = serde_json::to_string_pretty(&Value::Object(sorted)) {
+        let _ = std::fs::write(&path, rendered);
+    }
 }
 
 /// Copy the real careers in as throwaways. Returns how many landed.
@@ -157,6 +210,7 @@ pub fn prepare(sandbox: &Path, reset: bool, careers: bool, source: &Path) -> std
     if !sandbox.join("settings.json").exists() {
         seed_settings(sandbox, source);
     }
+    force_live_settings(sandbox);
     if careers && !sandbox.join("profiles").exists() {
         seed_careers(sandbox, source);
     }

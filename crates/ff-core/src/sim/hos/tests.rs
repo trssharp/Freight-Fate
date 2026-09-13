@@ -111,6 +111,41 @@ fn test_eight_two_sleeper_split_restores_time_without_full_reset() {
 }
 
 #[test]
+fn test_long_sleeper_period_pauses_duty_window_until_paired() {
+    // 7 hours of duty, then 8 in the berth: the window must not close in
+    // the driver's sleep (tester report, 2026-09-11).
+    let mut c = HosClock::new();
+    c.drive(420.0);
+    assert!(!c.sleeper_split_rest(480.0));
+    assert!(approx(c.duty_min, 420.0));
+    assert!(approx(c.driving_min, 420.0));
+    assert!(!c.in_violation("realistic"));
+    assert!(c.split_pending_summary().is_some());
+
+    // The 2-hour partner then moves the window's start to the end of the
+    // long rest, so only the duty between the two rests remains.
+    c.drive(120.0);
+    assert!(c.sleeper_split_rest(120.0));
+    assert!(approx(c.duty_min, 120.0));
+    assert!(approx(c.driving_min, 120.0));
+    assert_eq!(c.split_pending_summary(), None);
+}
+
+#[test]
+fn test_short_first_sleeper_period_still_counts_against_window() {
+    let mut c = HosClock::new();
+    c.drive(420.0);
+    assert!(!c.sleeper_split_rest(120.0));
+    assert!(approx(c.duty_min, 540.0));
+
+    // An off-duty stretch of 7 hours is not a berth period and never pauses.
+    let mut off = HosClock::new();
+    off.drive(420.0);
+    off.off_duty(420.0);
+    assert!(approx(off.duty_min, 840.0));
+}
+
+#[test]
 fn test_normal_sleeper_periods_can_complete_split_credit() {
     let mut c = HosClock::new();
     c.drive(300.0);
@@ -1415,7 +1450,9 @@ fn split_event_key_is_the_python_repr() {
         "(('sleeper_berth', 'normal', 480.0, 120.0, 300.0, 0.0), \
          ('off_duty', 'normal', 120.0, 480.0, 780.0, 0.0))"
     );
-    // The key a real 8/2 split stores, worked by hand from the ledger.
+    // The key a real 8/2 split stores, worked by hand from the ledger. The
+    // second event's duty figure is 600, not 1080: the 8-hour berth period
+    // paused the window, so only the two 300-minute drives had counted.
     let mut c = HosClock::new();
     c.drive(300.0);
     c.sleeper_split_rest(480.0);
@@ -1425,7 +1462,7 @@ fn split_event_key_is_the_python_repr() {
         c.split_credit_key.as_deref(),
         Some(
             "(('sleeper_berth', 'normal', 480.0, 300.0, 300.0, 300.0), \
-             ('sleeper_berth', 'normal', 120.0, 600.0, 1080.0, 300.0))"
+             ('sleeper_berth', 'normal', 120.0, 600.0, 600.0, 300.0))"
         )
     );
     assert_eq!(py_repr_str("it's"), "\"it's\"");

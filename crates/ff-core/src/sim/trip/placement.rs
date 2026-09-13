@@ -101,7 +101,7 @@ impl Trip {
                     parking: stop.parking.clone(),
                     exit_label,
                     parking_spaces: stop.parking_spaces,
-                    vehicle_access: stop.vehicle_access.clone(),
+                    vehicle_access: stop.effective_vehicle_access().to_string(),
                 });
             }
             start += leg.miles;

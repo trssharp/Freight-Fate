@@ -450,6 +450,20 @@ impl DrivingState {
                 target_mph = target_mph.min(context.lead.speed_mph);
             }
         }
+        // Publish what the keeper is really holding and why, for the status
+        // keys, the way the cruise loop does. A slow car held the truck at 51
+        // through twenty miles of a 58 zone while Space answered "speed keeper
+        // holding 58" every time, with no reason: the number was the set one
+        // and nothing named the car (agent drive, I-35, 2026-09-11).
+        self.keeper_held_mph = Some(target_mph);
+        self.keeper_held_reason = if context
+            .as_ref()
+            .is_some_and(|c| (target_mph - c.lead.speed_mph).abs() < 0.01)
+        {
+            "for the traffic ahead".to_string()
+        } else {
+            String::new()
+        };
         let acceleration_lane = zone_reason == "acceleration lane";
         if acceleration_lane
             && self.departure_cruise_handoff_mph.is_some_and(|handoff| {

@@ -8,6 +8,9 @@
 
 mod account_achievements;
 mod audio_support;
+mod dispatch_relay;
+mod live_fuel_prices;
+mod live_weather_alerts;
 mod states_city_support;
 mod states_driving_menus_support;
 mod states_main_menu_support;
@@ -54,6 +57,7 @@ mod playtest_harness;
 mod playtest_road_departure;
 mod playtest_road_destination;
 mod playtest_sandbox;
+mod playtest_scenario;
 mod playtest_state_lines;
 mod save_dir_guard;
 mod sdl_shell;

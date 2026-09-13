@@ -499,6 +499,72 @@ fn test_split_sleeper_rest_action_advances_clock_and_speaks_status() {
     assert!(completed.contains("duty window closes"), "{completed}");
 }
 
+/// The long half of a split stops the duty window while it runs. A tester
+/// with 7 hours of duty on the clock slept 8 in the berth and woke to a
+/// closed window (2026-09-11); now the window waits, and the wake-up line
+/// says so.
+#[test]
+fn test_long_sleeper_period_pauses_duty_window_and_says_so() {
+    let mut harness = a_drive("Split Pause");
+    sleep_stop_here(&mut harness);
+    press_t(&mut harness);
+    assert!(harness.state_is::<RestStopState>());
+    harness
+        .app
+        .ctx
+        .profile
+        .as_mut()
+        .expect("a career")
+        .hos
+        .drive(420.0);
+    // The drive so far already put some duty on the clock; the window must
+    // read exactly the same after the sleep as before it.
+    let before = harness
+        .app
+        .ctx
+        .profile
+        .as_ref()
+        .expect("a career")
+        .hos
+        .clone();
+    harness.clear_speech();
+
+    harness.select_menu_item("Sleep 8 hours in sleeper berth");
+
+    let hos = harness
+        .app
+        .ctx
+        .profile
+        .as_ref()
+        .expect("a career")
+        .hos
+        .clone();
+    assert!(
+        approx(hos.duty_min, before.duty_min),
+        "duty window ran on: {} -> {}",
+        before.duty_min,
+        hos.duty_min
+    );
+    assert!(
+        approx(hos.driving_min, before.driving_min),
+        "{}",
+        hos.driving_min
+    );
+    assert!(!hos.in_violation("realistic"));
+    let woke = spoken(&harness)
+        .into_iter()
+        .find(|line| line.contains("You slept 8 hours"))
+        .unwrap_or_else(|| panic!("no wake-up line: {:#?}", spoken(&harness)));
+    let left = ff_core::pyfmt::fmt_f((14.0 * 60.0 - before.duty_min) / 60.0, 1);
+    assert!(
+        woke.contains(&format!(
+            "your duty window paused while you slept. It closes in {left} hours"
+        )),
+        "{woke}"
+    );
+    assert!(woke.contains("Sleeper split pending"), "{woke}");
+}
+
 #[test]
 fn test_sleeping_shuts_down_a_running_engine() {
     // A truck must not idle through a 10-hour sleep (issue #40): sleeping

@@ -184,3 +184,46 @@ fn answering_provider(city_key: &str) -> RealWeatherProvider {
     }))
     .with_threaded(false)
 }
+
+// -- construction notes on the options --------------------------------------------------
+
+#[test]
+fn test_route_planning_reads_dispatch_construction_notes_on_each_option() {
+    // An owner-operator chooses, but hears what dispatch read on 511: the
+    // option list is dispatch's order, the reason it moved route 1 up is
+    // spoken on entry, and each option carries its own construction note.
+    let mut app = TestApp::new();
+    app.ctx.profile = Some(Profile::named_in("Route Notes", "Chicago"));
+    let world = get_world();
+    let job = a_job_with_vias(&app, 2);
+    let routes = world
+        .supported_route_options(&job.origin, &job.destination, 3)
+        .expect("the world routes");
+    let note = "Construction: one lane closed on I-65 near Chicago, 5 miles at 45 miles \
+                per hour, about 2 minutes.";
+    let mut notes = vec![String::new(); routes.len()];
+    notes[0] = note.to_string();
+    let dispatch_note = "Route 1 avoids the road closed on I-90 near Gary.";
+    let mut state = RouteSelectState::new(
+        &mut app.ctx,
+        job,
+        routes.clone(),
+        RouteSelectOptions {
+            notes,
+            dispatch_note: dispatch_note.to_string(),
+            ..RouteSelectOptions::default()
+        },
+    );
+    let items = state.build_items(&mut app.ctx);
+    let first = items[0].text(&state, &app.ctx);
+    assert!(first.ends_with(note), "{first}");
+    if routes.len() > 1 {
+        let second = items[1].text(&state, &app.ctx);
+        assert!(!second.contains("Construction:"), "{second}");
+    }
+    app.clear_speech();
+    state.announce_entry(&mut app.ctx);
+    let said = app.main_lines().join(" ");
+    assert!(said.contains("route option"), "{said}");
+    assert!(said.contains(dispatch_note), "{said}");
+}

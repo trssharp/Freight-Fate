@@ -433,7 +433,13 @@ impl Settings {
                     // difficulty. The blanket "everything off" below must
                     // not reach it, or a pre-preset save would change what
                     // the truck does the moment it is opened.
-                    "lane_departure_warning" | "lane_centering_assist" | "lane_keeping" => {}
+                    // Facility stopping was an explicit opt-in on every
+                    // pre-preset save (its merged rest-stop half too, kept
+                    // above); the blanket off must not take it back.
+                    "lane_departure_warning"
+                    | "lane_centering_assist"
+                    | "lane_keeping"
+                    | "destination_approach_assist" => {}
                     other => {
                         s.set_assist_value(other, super::AssistValue::Flag(false));
                     }

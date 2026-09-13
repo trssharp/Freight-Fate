@@ -606,6 +606,43 @@ fn test_the_road_bed_leans_through_a_ramp_connector() {
 }
 
 #[test]
+fn test_the_speed_limit_readout_leaves_a_connector_arc_unnamed() {
+    // Owner drive, I-30 to I-35 at Fort Worth: S said "The bend here advises
+    // 40" inside a highway-to-highway connector that the curve call, the
+    // servo and the cargo model all leave out by design -- a bend no assist
+    // acts on. The readout names mainline bends only now.
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    let mut arc = RouteCurve {
+        start_mi: d.trip.position_mi - 0.05,
+        apex_mi: d.trip.position_mi,
+        end_mi: d.trip.position_mi + 0.05,
+        direction: 'R',
+        advisory_mph: 30,
+        min_radius_ft: 300,
+        deflection_deg: 80.0,
+        connector: true,
+    };
+    d.trip.curves = vec![arc];
+    mph(&mut d, 55.0);
+
+    app.clear_speech();
+    d.speak_speed_limit(&mut app.ctx);
+    let said = app.main_lines().join(" ");
+    assert!(said.starts_with("Speed limit"), "{said}");
+    assert!(!said.contains("bend here advises"), "{said}");
+
+    // The same arc as a mainline bend is still named: the fix is the
+    // connector flag, not the readout.
+    arc.connector = false;
+    d.trip.curves = vec![arc];
+    app.clear_speech();
+    d.speak_speed_limit(&mut app.ctx);
+    let said = app.main_lines().join(" ");
+    assert!(said.contains("The bend here advises 30"), "{said}");
+}
+
+#[test]
 fn test_the_road_bed_leans_on_an_exit_ramp() {
     let mut app = TestApp::new();
     let mut d = a_drive(&mut app);
@@ -1589,6 +1626,25 @@ struct BendRun {
     lines: Vec<String>,
 }
 
+#[test]
+fn test_curve_fixture_stays_empty_after_traffic_update() {
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+
+    a_hot_bend_ahead(&mut app, &mut d, 60.0, 35, 307, 0.5);
+    assert!(
+        d.trip.traffic_manager.vehicles.is_empty(),
+        "the bend fixture should start with no traffic"
+    );
+
+    d.trip.update(DT);
+
+    assert!(
+        d.trip.traffic_manager.vehicles.is_empty(),
+        "updating the empty-road bend fixture replenished traffic"
+    );
+}
+
 /// The engine running, air up, rolling at `speed_mph` on the corridor's first
 /// open-road mile, curve speed assistance on, with a bend of `advisory` and
 /// `radius` set `ahead_mi` up the road.
@@ -1601,6 +1657,7 @@ fn a_hot_bend_ahead(
     ahead_mi: f64,
 ) -> RouteCurve {
     app.ctx.settings.curve_speed_assist = true;
+    d.trip.traffic_manager.rolling_bubble = false;
     d.trip.position_mi = open_road_mile(d);
     d.trip.truck.set_air_ready(false);
     d.trip.truck.start_engine();

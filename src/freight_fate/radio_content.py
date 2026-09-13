@@ -207,10 +207,18 @@ AD_FORMAT_TAGS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# One break after every 2 songs; break content cycles this pattern. An
-# ad never runs without an ID chasing it back into music, so ads are
-# never adjacent and an ID lands at least once per four breaks.
-BREAK_PATTERN: tuple[str, ...] = ("host", "id", "host", "ad_id")
+# One break after every 2 songs; break content cycles this pattern. A slot
+# kind is the pool names it draws, joined by underscores: a host break, a
+# station ID on its own, and two stopsets (two spots then an ID, one spot
+# then an ID). An ad break always ends with the station chasing itself back
+# into music, and a six-break cycle (twelve songs) carries three spots,
+# four IDs and two host breaks.
+BREAK_PATTERN: tuple[str, ...] = ("host", "id", "ad_ad_id", "host", "id", "ad_id")
+
+
+def _pool_uses(kinds: tuple[str, ...], token: str) -> int:
+    """How many times ``token`` appears across ``kinds``."""
+    return sum(1 for kind in kinds for t in kind.split("_") if t == token)
 
 
 def content_duration_s(key: str) -> float:
@@ -245,14 +253,15 @@ def plan_break(
 ) -> tuple[str, ...]:
     """Asset keys for one break slot. Empty when the station has no voice.
 
-    Slot kinds cycle BREAK_PATTERN; a kind whose pool is empty falls back
-    to a host break so the cadence the player learned never stutters.
+    Slot kinds cycle BREAK_PATTERN; a kind any of whose pools is empty falls
+    back to a host break so the cadence the player learned never stutters.
 
     Each pool advances on its OWN count, not on the global break index: a
-    host is heard twice per pattern cycle, an ID up to twice (its own slot
-    plus the tag chasing an ad), an ad once. Indexing every pool by the
-    global break number would sample them at stride 2 or 4 and leave most
-    of a pool permanently unreachable.
+    pool's position is how many times the pattern has drawn from it so far
+    (full cycles, plus the draws earlier in this cycle and earlier in this
+    slot). Indexing every pool by the global break number would sample them
+    at the pattern's stride and leave most of a pool permanently
+    unreachable.
     """
     from .music import STATION_HOST_SEGMENTS
 
@@ -260,16 +269,28 @@ def plan_break(
     if not hosts:
         return ()
     cycle, pattern_pos = divmod(break_index, len(BREAK_PATTERN))
-    kind = BREAK_PATTERN[pattern_pos]
-    host_pos = 2 * cycle + (1 if pattern_pos == 2 else 0)
-    id_pos = 2 * cycle + (1 if kind == "ad_id" else 0)
-    ids = STATION_IDS.get(station_id, ())
-    ads = station_ads(playlist)
-    if kind == "id" and ids:
-        return (_pick(ids, f"{seed_key}|id", id_pos),)
-    if kind == "ad_id" and ads and ids:
+    pools = {
+        "host": hosts,
+        "id": STATION_IDS.get(station_id, ()),
+        "ad": station_ads(playlist),
+    }
+    slots = BREAK_PATTERN[pattern_pos].split("_")
+
+    def position(token: str, within: int) -> int:
         return (
-            _pick(ads, f"{seed_key}|ad", cycle),
-            _pick(ids, f"{seed_key}|tag", id_pos),
+            cycle * _pool_uses(BREAK_PATTERN, token)
+            + _pool_uses(BREAK_PATTERN[:pattern_pos], token)
+            + within
         )
-    return (_pick(hosts, f"{seed_key}|host", host_pos),)
+
+    if any(not pools[token] for token in slots):
+        return (_pick(hosts, f"{seed_key}|host", position("host", 0)),)
+    planned: list[str] = []
+    for i, token in enumerate(slots):
+        within = slots[:i].count(token)
+        key = _pick(pools[token], f"{seed_key}|{token}", position(token, within))
+        # A pool too small for a two-spot stopset airs the one spot once,
+        # never the same read twice in a row.
+        if key not in planned:
+            planned.append(key)
+    return tuple(planned)

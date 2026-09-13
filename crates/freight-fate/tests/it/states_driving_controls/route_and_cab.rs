@@ -742,3 +742,39 @@ fn test_the_cab_confirmations_still_speak_at_standard() {
     d.toggle_engine(&mut app.ctx);
     assert_eq!(app.main_lines(), vec!["Engine off.".to_string()]);
 }
+
+#[test]
+fn test_clock_key_counts_the_highway_run_while_still_on_the_departure_streets() {
+    // Agent drive, Dallas to Sherman, 2026-09-11: pressed on the two miles of
+    // streets out of the pickup, C said "arrival in 0.1 hours" with 123 miles
+    // of interstate still parked in the highway trip. The streets alone are
+    // not the run.
+    let mut app = TestApp::new();
+    let mut d = a_drive_between(&mut app, "Rochester", "Buffalo", "Rochester freight market");
+    assert!(
+        d.begin_departure_chain(&mut app.ctx, false),
+        "no departure chain for this facility"
+    );
+    let highway_miles = d
+        .highway_trip
+        .as_ref()
+        .expect("the departure chain keeps the highway trip")
+        .total_miles();
+    assert!(highway_miles > 30.0, "{highway_miles}");
+    d.trip.position_mi = d.trip.total_miles() * 0.5;
+    d.trip.truck.velocity_mps = mph_to_mps(25.0);
+    app.clear_speech();
+
+    d.handle_key_event(&mut app.ctx, &key(Key::C));
+
+    let report = last(&app);
+    let eta: f64 = report
+        .split("arrival in ")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|hours| hours.parse().ok())
+        .unwrap_or_else(|| panic!("no arrival estimate in {report}"));
+    // At least the highway at a fast pace, never the streets alone.
+    assert!(eta >= highway_miles / 75.0, "{report}");
+    assert!(report.contains("at a typical highway pace"), "{report}");
+}

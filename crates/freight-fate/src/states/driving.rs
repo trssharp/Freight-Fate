@@ -100,6 +100,13 @@ pub struct DrivingState {
     // the trip and die with it -- keyed by buff group, see data/buffs.py.
     pub rig_buffs: RigBuffs,
     pub weather_source_real: bool,
+    /// The route mile the cab next asks the Weather Service for warnings at.
+    pub alerts_next_poll_mi: f64,
+    /// The point asked about and not yet answered: latitude, longitude, and
+    /// the route mile it was asked at.
+    pub alerts_pending: Option<(f64, f64, f64)>,
+    /// Warning ids already read out this drive, so each is said once.
+    pub alerts_said: std::collections::HashSet<String>,
     pub live_weather_controls_calendar: bool,
     pub traffic_source_real: bool,
     pub parking_source_real: bool,
@@ -590,6 +597,12 @@ pub struct DrivingState {
     // latch for the posted-limit version of that cue.
     pub keeper_ease_said: Option<f64>,
     pub keeper_ease_target: Option<(f64, f64, String)>,
+    // What the keeper is holding RIGHT NOW and why, published by the loop
+    // for the status keys (the cruise loop's `cruise_held_*` pair, for the
+    // other controller). The reason is empty unless a lead vehicle set the
+    // number; None until the loop has run.
+    pub keeper_held_mph: Option<f64>,
+    pub keeper_held_reason: String,
     // The service-brake snub the keeper is holding (0.0 = off the pedal),
     // and how long it has been out of authority with the truck still over
     // the number -- past which it owns up rather than riding it out.

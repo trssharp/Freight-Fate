@@ -9,13 +9,15 @@
 
 use crate::states_city_support::*;
 use ff_core::models::career::LEVEL_XP;
-use ff_core::models::jobs::{Job, JobBoard, OfferOptions};
+use ff_core::models::jobs::{route_drive_hours, Job, JobBoard, OfferOptions};
 use ff_core::models::profile::Profile;
 use ff_core::sim::hos::limits;
 use freight_fate::app::testing::TestApp;
 use freight_fate::states::base::{Key, Menu};
 use freight_fate::states::city::{CityMenuState, JobBoardState};
-use freight_fate::states::city_pickup::PickupFacilityState;
+use freight_fate::states::city_pickup::{
+    PickupFacilityState, PICKUP_CHECK_IN_MIN, PICKUP_LOADING_MIN,
+};
 
 fn approx(a: f64, b: f64) -> bool {
     (a - b).abs() <= 1e-6 * b.abs().max(1.0)
@@ -152,6 +154,68 @@ fn test_dispatch_warns_before_accepting_job_that_exceeds_current_hos() {
     board.accept(&mut app.ctx, 0);
     app.ctx.run_deferred();
 
+    assert!(profile(&app).active_trip.is_some());
+}
+
+#[test]
+fn test_dispatch_warns_when_the_load_fits_the_window_only_on_paper() {
+    // Chippewa Falls to Duluth, owner, 2026-09-12: a 5-hour job accepted on
+    // 4 h 17 m of duty window passed the board's check by a few minutes,
+    // and the drive ended with a forced 10-hour sleep 5.2 hours past the
+    // deadline. A fit with less than the planning cushion to spare must warn.
+    let (_, duty_limit, _) = limits("realistic").expect("realistic has limits");
+    let pickup_min = PICKUP_CHECK_IN_MIN + PICKUP_LOADING_MIN;
+
+    let board_with_margin = |margin_min: f64| {
+        let mut app = TestApp::new();
+        app.record_audio();
+        app.ctx.profile = Some(Profile::named_in("Paper Fit", "Austin"));
+        app.ctx.settings.hos_mode = "realistic".to_string();
+        let jobs = austin_offers(&app);
+        let job = job_with_supported_route(&app, "Austin", 2, &jobs);
+        let route = app
+            .ctx
+            .world
+            .supported_route(&job.origin, &job.destination, None)
+            .expect("route lookup")
+            .expect("supported route");
+        let loaded_min = route_drive_hours(Some(&route), 0.0, Some(app.ctx.world)) * 60.0;
+        profile_mut(&mut app).hos.duty_min = duty_limit - pickup_min - loaded_min - margin_min;
+        let board = JobBoardState::new(&app.ctx, vec![job]);
+        (app, board)
+    };
+
+    // Ten minutes to spare on the loaded route alone: on paper it fits, and
+    // that is exactly the case that lost the delivery.
+    let (mut app, mut board) = board_with_margin(10.0);
+    app.clear_speech();
+    board.accept(&mut app.ctx, 0);
+    app.ctx.run_deferred();
+    assert!(
+        app.main_lines()
+            .last()
+            .is_some_and(|line| line.contains("Hours warning")),
+        "{:?}",
+        app.main_lines()
+    );
+    assert!(profile(&app).active_trip.is_none());
+    // One live TestApp per thread: release the first before the second.
+    drop(board);
+    drop(app);
+
+    // Two hours to spare covers the deadhead and the cushion: no warning,
+    // the load is accepted on the first press.
+    let (mut app, mut board) = board_with_margin(120.0);
+    app.clear_speech();
+    board.accept(&mut app.ctx, 0);
+    app.ctx.run_deferred();
+    assert!(
+        !app.main_lines()
+            .iter()
+            .any(|line| line.contains("Hours warning")),
+        "{:?}",
+        app.main_lines()
+    );
     assert!(profile(&app).active_trip.is_some());
 }
 

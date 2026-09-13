@@ -370,6 +370,7 @@ from the words, and synonyms cost them a re-read.
 | The hazard now behind the truck | Hazard clear | hazard passed, all clear | `events/hazard_clear` |
 | The truck striking a hazard it did not clear (the failure half of the dodge outcome pair) | Collision | crash, impact, hit | `vehicle/collision` |
 | Roadwork ahead: the posted limit drops and a lane may close | Construction zone | work zone, roadwork cue | `events/construction_zone` |
+| A National Weather Service warning active on the road, spoken with the Service's own product name after it ("Weather alert: High Wind Warning, gusts to 60 miles per hour") | Weather alert | weather warning (as the noun), advisory, watch, bulletin, NWS alert | `sim/real_weather_alerts.rs`, `DrivingState::sync_weather_alerts`, on with the `real_weather` setting |
 | The traffic ahead coming down in speed | Traffic slowing | slowdown cue, brake lights ahead | `events/traffic_slowing` |
 | A street maneuver coming up on a local drive | Turn ahead | maneuver cue, upcoming turn | `events/turn_ahead` |
 | The next maneuver is a left | Turn left | left-turn cue, left maneuver | `events/turn_left` |

@@ -109,6 +109,20 @@ pub(super) fn split_event_key(first: &HosEvent, second: &HosEvent) -> String {
     format!("({}, {})", event_key(first), event_key(second))
 }
 
+/// Whether a rest stops the 14-hour window while it runs.
+///
+/// 49 CFR 395.1(g)(1)(iii)(B) excludes qualifying sleeper-berth periods from
+/// the 14-hour window, and an ELD stops the window the moment a period
+/// qualifies on its own -- 7 or more consecutive hours in the berth -- rather
+/// than waiting for its 2-hour partner. A shorter rest keeps counting until
+/// the pair is credited. Before this, an 8-hour sleeper after 7 hours of duty
+/// closed the window in the driver's sleep (tester report, 2026-09-11).
+/// Only a rest recorded as a normal split candidate pauses; the fallback
+/// rests (shoulder, cramped lot) never do.
+fn pauses_duty_window(status: &str, minutes: f64, source: &str) -> bool {
+    source == "normal" && status == "sleeper_berth" && minutes >= SPLIT_LONG_MIN
+}
+
 fn split_pair_qualifies(first: &HosEvent, second: &HosEvent) -> bool {
     if first.source == "full_reset"
         || second.source == "full_reset"
@@ -260,7 +274,9 @@ impl HosClock {
     pub fn sleeper(&mut self, minutes: f64) {
         let minutes = positive_minutes(minutes);
         self.record_event("sleeper_berth", minutes, "normal");
-        self.duty_min += minutes;
+        if !pauses_duty_window("sleeper_berth", minutes, "normal") {
+            self.duty_min += minutes;
+        }
         self.status = "sleeper_berth".to_string();
         self.record_non_driving(minutes);
         self.off_duty_min += minutes;
@@ -401,6 +417,11 @@ impl HosClock {
             return self.split_rest_history[second].duty_before - self.split_duty_after_rest(first);
         }
         let event = &self.split_rest_history[event];
+        if pauses_duty_window(&event.status, event.minutes, &event.source) {
+            // The window never counted this rest, so the end of the rest
+            // is where the window stood when the rest began.
+            return event.duty_before;
+        }
         event.duty_before + event.minutes
     }
 
@@ -435,7 +456,9 @@ impl HosClock {
     pub fn sleeper_split_rest_from(&mut self, minutes: f64, source: &str) -> bool {
         let minutes = positive_minutes(minutes);
         self.record_event("sleeper_berth", minutes, source);
-        self.duty_min += minutes;
+        if !pauses_duty_window("sleeper_berth", minutes, source) {
+            self.duty_min += minutes;
+        }
         self.status = "sleeper_berth".to_string();
         self.record_non_driving(minutes);
         self.off_duty_min += minutes;

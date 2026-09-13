@@ -9,6 +9,7 @@
 //! truck. Controllers keep the combined readout on D-pad right; a pad has
 //! nowhere to put three more info buttons.
 
+use ff_core::models::jobs::route_drive_hours;
 use ff_core::sim::trip_models::RoadStop;
 
 use crate::app::GameContext;
@@ -117,7 +118,20 @@ impl DrivingState {
             return;
         }
         let remaining = self.job.deadline_game_h - hours_used;
-        let eta = self.trip.eta_game_hours(self.trip.truck.speed_mph());
+        // On the departure chain `self.trip` is the two miles of streets to
+        // the on-ramp and the highway run sits parked in `highway_trip`, so
+        // the chain's own estimate is the streets alone: "arrival in 0.1
+        // hours" with 123 miles of interstate still to drive (agent drive,
+        // Dallas to Sherman, 2026-09-11). Add the highway at its route pace,
+        // the same walk the hours-of-service planner already does here.
+        let highway_hours = if self.departure_chain {
+            self.highway_trip.as_ref().map_or(0.0, |highway| {
+                route_drive_hours(Some(&highway.route), highway.position_mi, Some(ctx.world))
+            })
+        } else {
+            0.0
+        };
+        let eta = self.trip.eta_game_hours(self.trip.truck.speed_mph()) + highway_hours;
         if remaining <= 0.0 {
             ctx.say(&format!(
                 "{now} {:.1} hours past the deadline. The pay is shrinking.{tail}",
@@ -136,7 +150,11 @@ impl DrivingState {
             ));
             return;
         }
-        let basis = if self.trip.truck.speed_mph() >= ff_core::sim::trip::ETA_MIN_MPH {
+        // With the highway still ahead the estimate is mostly the route's
+        // pace, whatever the streets are doing right now.
+        let basis = if self.trip.truck.speed_mph() >= ff_core::sim::trip::ETA_MIN_MPH
+            && highway_hours == 0.0
+        {
             "at this pace"
         } else {
             "at a typical highway pace"

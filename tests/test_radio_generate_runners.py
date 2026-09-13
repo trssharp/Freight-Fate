@@ -238,6 +238,58 @@ def test_plan_ids_filenames_follow_the_asset_key_and_03_contract(money_path):
     assert len(money_path.post_calls) == 3
 
 
+def test_plan_ids_liners_land_at_05_and_06(money_path, monkeypatch):
+    _write_fake_sfx(money_path.sfx_dir)
+    with_liners = StationPlan(
+        **{
+            **FAKE_STATION.__dict__,
+            "id_lines": FAKE_STATION.id_lines + ("Liner one, Test Station.", "Test Station, two."),
+            "jingle_prompts": FAKE_STATION.jingle_prompts
+            + (("id_teststation_04", "Ten second third test jingle"),),
+        }
+    )
+    monkeypatch.setattr(radio_content_plan, "STATIONS", {"teststation": with_liners})
+
+    rgc.run_plan_ids("fake-key", "teststation")
+
+    music = money_path.music_dir
+    for slot in ("03", "05", "06", "01", "02", "04"):
+        assert (music / f"id_teststation_{slot}.ogg").exists(), slot
+    # 3 spoken TTS calls + 3 jingle Music calls
+    assert len(money_path.post_calls) == 6
+    spoken = [c for c in money_path.post_calls if "text" in c["body"]]
+    assert [c["body"]["text"] for c in spoken] == list(with_liners.id_lines)
+
+
+def test_runners_skip_an_asset_already_shipped_as_opus(money_path):
+    # The shipped music tree is Opus; a runner that only looked for .ogg
+    # would buy every song, ad and ID again.
+    music = money_path.music_dir
+    (music / "radio_oldies_test_song.opus").write_bytes(b"FAKE-OPUS")
+    (music / "ad_test_shop.opus").write_bytes(b"FAKE-OPUS")
+    for i in range(1, 3):
+        (music / f"host_teststation_{i:02d}.opus").write_bytes(b"FAKE-OPUS")
+
+    rgc.run_plan_songs("fake-key", "oldies")
+    rgc.run_plan_ads("fake-key")
+    rgc.run_plan_hosts("fake-key", "teststation")
+    assert money_path.post_calls == []
+
+
+def test_credit_usage_tolerates_a_scoped_key(monkeypatch, capsys):
+    # A generation-only key answers 401 on the subscription read; that
+    # must not stop a run, and the spend line must say it could not read.
+    def denied(key):
+        raise urllib.error.HTTPError(
+            rgc.SUBSCRIPTION_API, 401, "Unauthorized", email.message.Message(), io.BytesIO(b"")
+        )
+
+    monkeypatch.setattr(rgc, "_subscription", denied)
+    assert rgc.credit_usage("scoped-key") is None
+    rgc._print_spend(None, None)
+    assert "not readable" in capsys.readouterr().out
+
+
 # --- --plan-ads -----------------------------------------------------------
 
 

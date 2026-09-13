@@ -1329,7 +1329,10 @@ tools.
 
 A nap in the sleeper berth that does not reset your 14-hour window says so
 when you wake, and names the time the window still closes, so a short rest
-never reads as a fresh day.
+never reads as a fresh day. The long half of a split, 7 or 8 hours in the
+berth, stops the duty window while you sleep, so you wake with the hours you
+went to bed with. The short half, 2 or 3 hours, keeps counting until the
+pair is complete, and then only the duty between the two rests remains.
 
 The game gives warnings at 2 hours, 1 hour, and 30 minutes before a limit.
 Driving past a limit risks inspections, fines, reputation loss, and
@@ -1530,7 +1533,9 @@ Exit speed assistance slows for an already-selected exit. Facility stopping
 assistance (the destination approach assistance row) slows and stops at the
 selected facility arrival point. About a block out, it says "Facility stopping assistance taking the pedals" and controls the pedals until the gate. From a
 cleared stop or green light at the end of the destination ramp, it also pulls
-ahead for you and hands city streets to the speed keeper.
+ahead for you and hands city streets to the speed keeper. Realistic leaves it
+off; Balanced and All assists turn it on, and changing it by hand reads as
+Custom like any other preset row.
 
 The separate default-off planned-stop control stops at a sleep stop only after
 T plans it and X signals for it.

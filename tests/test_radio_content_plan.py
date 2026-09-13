@@ -60,10 +60,38 @@ def _name_hook(name: str) -> str:
 def test_every_station_plan_is_complete():
     for key, plan in STATIONS.items():
         assert len(plan.host_lines) == 8, key
-        assert len(plan.id_lines) >= 1, key
-        assert len(plan.jingle_prompts) == 2, key  # 2 produced + 1 spoken = 3 IDs
+        # legal ID + 2 liners spoken, 3 produced jingles = 6 IDs per station
+        assert len(plan.id_lines) == 3, key
+        assert len(plan.jingle_prompts) == 3, key
         assert plan.voice, key
-        assert plan.name in " ".join(plan.id_lines), key  # IDs name the station
+        assert plan.name in plan.id_lines[0], key  # the legal ID names the station in full
+
+
+def test_every_liner_names_the_station_and_stays_in_register():
+    # A liner is the station saying its own name; a listener who tunes in
+    # mid-break must still learn where they are. Same spoken register as
+    # the host lines.
+    for key, plan in STATIONS.items():
+        hook = _name_hook(plan.name)
+        for line in plan.id_lines:
+            assert hook in line, (key, line)
+            assert 4 <= len(line.split()) <= 20, (key, line)
+            lowered = line.lower()
+            for banned in BANNED_SPOKEN:
+                assert banned not in lowered, (key, banned, line)
+
+
+def test_third_jingle_key_is_04_and_liners_land_after_it():
+    # The runner writes id_lines[0] at _03 and the liners at _05, _06; the
+    # third jingle owns _04, so the keys never collide.
+    from tools.radio_generate_content import spoken_id_slot
+
+    for key, plan in STATIONS.items():
+        jingle_keys = [asset for asset, _ in plan.jingle_prompts]
+        assert jingle_keys == [f"id_{key}_01", f"id_{key}_02", f"id_{key}_04"], key
+        spoken = [f"id_{key}_{spoken_id_slot(i):02d}" for i in range(len(plan.id_lines))]
+        assert spoken == [f"id_{key}_03", f"id_{key}_05", f"id_{key}_06"], key
+        assert not set(spoken) & set(jingle_keys), key
 
 
 def test_station_casting_is_one_to_one():

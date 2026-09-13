@@ -38,6 +38,7 @@ use crate::states::city::{
     launch_driving, profile, profile_mut, sleeps_needed, DrivingLaunch, LaunchAnnouncement,
     DRIVE_PHASE_DELIVERY, DRIVE_PHASE_PICKUP, PICKUP_CHECK_IN_MIN, PICKUP_LOADING_MIN,
 };
+use crate::states::city_pickup::warm_route_feeds;
 use crate::states::city_pickup::{
     pickup_snapshot, PickupFacilityState, PickupOptions, PickupSnapshotOptions,
 };
@@ -89,6 +90,16 @@ fn settlement_for(p: &Profile, job: &Job, with_reputation: bool) -> BusinessSett
 /// company yard where the data has none), so the board can hand out loads
 /// that ship from it. Name and city both have to match: a same-named yard
 /// in another city is a drive away.
+/// Minutes of shift the hours warning refuses to plan away.
+///
+/// The route estimate already runs slower than the posted limits
+/// (`DEADLINE_PLANNING_SPEED_FACTOR`), but a plan that lands on the last
+/// minute of the window still loses to rain, town limits and a slow ramp.
+/// Half an hour is the smallest unit a dispatcher plans in (the break
+/// requirement is 30 minutes), so a load that fits with less than that to
+/// spare is called what it is: one that needs a rest first.
+pub const HOS_FIT_CUSHION_MIN: f64 = 30.0;
+
 pub fn job_origin_is_this_yard(ctx: &GameContext, job: &Job, terminal_name: &str) -> bool {
     if job.bobtail {
         return false;
@@ -526,6 +537,16 @@ impl JobBoardState {
         }
         let mut queue = fresh;
         queue.extend(reoffered);
+        // A load dispatch relayed from a nearby city IS the assignment: the
+        // board here was thin, which is the only reason it is on it.
+        let here = ctx.world.resolve_city_key(&profile(ctx).current_city);
+        if let Some(pos) = queue.iter().position(|&index| {
+            let job = &self.jobs[index];
+            !job.bobtail && ctx.world.resolve_city_key(&job.origin) != here
+        }) {
+            let index = queue.remove(pos);
+            queue.insert(0, index);
+        }
         let forced = forced_dispatch_destination();
         if !forced.is_empty() && !queue.is_empty() {
             // Playtest lever: dispatch assigns the forced-destination load
@@ -586,11 +607,42 @@ impl JobBoardState {
         // mile; being over 30 non-driving minutes, they also reset the break
         // clock, so only the drive and duty limits matter here.
         let pickup_work_min = PICKUP_CHECK_IN_MIN + PICKUP_LOADING_MIN;
-        let drive_h = route_drive_hours(Some(&route), 0.0, Some(ctx.world));
+        // The deadhead to the pickup is driving too. Counting the loaded
+        // route alone let a 5-hour job through on 4 h 17 m of window
+        // (Chippewa Falls to Duluth, owner, 2026-09-12): it fit by minutes on
+        // paper, the pickup and the yard roads ate them, and the drive ended
+        // with a forced 10-hour sleep 5 hours past the deadline.
+        let deadhead_h = if job_origin_is_this_yard(ctx, job, &home_terminal(ctx).name) {
+            0.0
+        } else {
+            // A load relayed from a nearby city adds the corridor to that
+            // city ahead of the shipper's own approach.
+            let here = ctx.world.resolve_city_key(&p.current_city);
+            let origin = ctx.world.resolve_city_key(&job.origin);
+            let corridor_h = if origin != here {
+                ctx.world
+                    .supported_route(&here, &origin, None)
+                    .ok()
+                    .flatten()
+                    .map(|corridor| route_drive_hours(Some(&corridor), 0.0, Some(ctx.world)))
+                    .unwrap_or(0.0)
+            } else {
+                0.0
+            };
+            corridor_h
+                + ctx
+                    .world
+                    .facility_approach_route(&job.origin, &job.origin_location)
+                    .map(|approach| route_drive_hours(Some(&approach), 0.0, Some(ctx.world)))
+                    .unwrap_or(0.0)
+        };
+        let drive_h = deadhead_h + route_drive_hours(Some(&route), 0.0, Some(ctx.world));
         let shift_h = drive_limit / 60.0;
-        let fresh_first_h = drive_limit.min(duty_limit - pickup_work_min) / 60.0;
-        let current_first_h = (drive_limit - p.hos.driving_min)
-            .min(duty_limit - p.hos.duty_min - pickup_work_min)
+        let fresh_first_h = (drive_limit - HOS_FIT_CUSHION_MIN)
+            .min(duty_limit - pickup_work_min - HOS_FIT_CUSHION_MIN)
+            / 60.0;
+        let current_first_h = (drive_limit - p.hos.driving_min - HOS_FIT_CUSHION_MIN)
+            .min(duty_limit - p.hos.duty_min - pickup_work_min - HOS_FIT_CUSHION_MIN)
             .max(0.0)
             / 60.0;
         sleeps_needed(drive_h, current_first_h, shift_h)
@@ -685,6 +737,14 @@ impl JobBoardState {
             self.accept_reposition(ctx, index);
             return;
         }
+        // A load dispatch relayed from a nearby city: the deadhead there and
+        // the local approach to its shipper are one drive, so the pickup
+        // opens on arrival exactly as a same-city deadhead's does.
+        let here = ctx.world.resolve_city_key(&profile(ctx).current_city);
+        if ctx.world.resolve_city_key(&job.origin) != here {
+            self.accept_relay(ctx, index, job, &here);
+            return;
+        }
         let route = ctx
             .world
             .facility_approach_route(&job.origin, &job.origin_location);
@@ -720,6 +780,8 @@ impl JobBoardState {
             job.origin_facility_text()
         );
         ctx.mark_meaningful_play(MeaningfulPlayReason::JobAccepted);
+        // The deadhead is time enough for 511 to answer before the pickup.
+        warm_route_feeds(ctx, &job.origin, &job.destination);
         launch_driving(
             ctx,
             DrivingLaunch::new(
@@ -734,11 +796,61 @@ impl JobBoardState {
         // stay so the cloud validator's allow-list never sees a removed id.
     }
 
+    /// Accept a load dispatch relayed from a nearby city (`jobs::relay`):
+    /// the corridor to that city and its shipper's own approach, joined as
+    /// one pickup drive, so the deadhead is driven, paid and timed as part
+    /// of the assignment and the pickup opens on arrival.
+    fn accept_relay(&mut self, ctx: &mut GameContext, index: usize, job: Job, here: &str) {
+        let origin = ctx.world.resolve_city_key(&job.origin);
+        let corridor = ctx
+            .world
+            .supported_route(here, &origin, None)
+            .ok()
+            .flatten();
+        let Some(corridor) = corridor else {
+            self.drop_dead_offer(ctx, index);
+            ctx.say("That load's city is no longer on the network. Dispatch pulled the offer.");
+            return;
+        };
+        // A shipper with no baked approach is reached at the city itself.
+        let route = match ctx
+            .world
+            .facility_approach_route(&origin, &job.origin_location)
+        {
+            Ok(approach) => corridor.then(&approach),
+            Err(_) => corridor.clone(),
+        };
+        let equipment_note = slip_seat_note(ctx, &job);
+        profile_mut(ctx).dispatch_board_cache = None;
+        // The facility text already names its city; whole miles for a run
+        // this long (heard live: "in Las Vegas, Nevada in Las Vegas, Nevada"
+        // and "211.0 miles", 2026-09-12).
+        let line = format!(
+            "Dispatch accepted.{equipment_note} Load waiting at {}: deadhead {} on {} first, \
+             then the pickup.",
+            job.origin_facility_text(),
+            ctx.settings.distance_text(corridor.miles(), false),
+            corridor.highways().first().cloned().unwrap_or_default(),
+        );
+        ctx.mark_meaningful_play(MeaningfulPlayReason::JobAccepted);
+        warm_route_feeds(ctx, &job.origin, &job.destination);
+        launch_driving(
+            ctx,
+            DrivingLaunch::new(
+                job,
+                route,
+                DRIVE_PHASE_PICKUP,
+                LaunchAnnouncement::Line(line),
+            ),
+        );
+    }
+
     /// Accept a load staged at the home yard: no deadhead, the shipping
     /// office is here. Same bookkeeping as the deadhead launch (the slip-seat
     /// draw, the board cache, a trip snapshot so a save resumes at the
     /// pickup), then the pickup facility itself instead of a drive to it.
     fn accept_at_home_yard(&mut self, ctx: &mut GameContext, job: Job, terminal_name: &str) {
+        warm_route_feeds(ctx, &job.origin, &job.destination);
         let equipment_note = slip_seat_note(ctx, &job);
         profile_mut(ctx).dispatch_board_cache = None;
         let snapshot = pickup_snapshot(&job, &PickupSnapshotOptions::default());

@@ -97,7 +97,7 @@ pub(super) const DRIVING_ASSIST_SPECS: [(&str, &str, &str); 13] = [
     (
         "destination_approach_assist",
         "Facility stopping assistance",
-        "On the final approach, after any exit, it works the throttle and brakes: up to 12 miles per hour through the facility lane, creeping the last 200 feet, then stopping at pickup and delivery facilities, rest stops, and required weigh stations. It never chooses an exit, enters a yard, or docks. Presets never change it.",
+        "On the final approach, after any exit, it works the throttle and brakes: up to 12 miles per hour through the facility lane, creeping the last 200 feet, then stopping at pickup and delivery facilities, rest stops, and required weigh stations. It never chooses an exit, enters a yard, or docks. Realistic leaves it off; Balanced and All assists turn it on.",
     ),
     (
         "curve_speed_assist",
@@ -345,6 +345,7 @@ impl SettingsCategoryState {
             "world" => vec![
                 adjust(|s, ctx, d| s.toggle_real_weather(ctx, d)),
                 adjust(|s, ctx, d| s.toggle_real_traffic(ctx, d)),
+                adjust(|s, ctx, d| s.toggle_real_fuel_prices(ctx, d)),
                 adjust(|s, ctx, d| s.toggle_real_parking(ctx, d)),
                 adjust(|s, ctx, d| s.toggle_live_weather_calendar(ctx, d)),
             ],
@@ -440,7 +441,10 @@ impl SettingsCategoryState {
                         )
                     }),
                     adjust(|s, ctx, d| s.toggle_real_weather(ctx, d)),
-                    "Real world uses live city conditions when available.",
+                    "Real world uses live city conditions when available, and reads \
+                     the Weather Service's active warnings along your route: dispatch \
+                     plans around a blizzard, ice storm, hurricane or tornado warning, \
+                     and the cab reads a warning out as you drive into it.",
                 ),
                 row(
                     dyn_label(|s| {
@@ -456,6 +460,22 @@ impl SettingsCategoryState {
                     adjust(|s, ctx, d| s.toggle_real_traffic(ctx, d)),
                     "Real time uses live traffic incidents from state 511 \
                      services when available.",
+                ),
+                row(
+                    dyn_label(|s| {
+                        format!(
+                            "Fuel prices: {}",
+                            if s.real_fuel_prices {
+                                "this week's national average"
+                            } else {
+                                "simulated"
+                            }
+                        )
+                    }),
+                    adjust(|s, ctx, d| s.toggle_real_fuel_prices(ctx, d)),
+                    "This week's national average puts the federal weekly diesel survey \
+                     price at every pump, with each region's usual difference on top. \
+                     Simulated draws a price per region for the session.",
                 ),
                 row(
                     dyn_label(|s| {

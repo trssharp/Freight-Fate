@@ -491,6 +491,36 @@ GOSPEL_TRACKS: tuple[MusicTrack, ...] = (
         "Gentle piano ballad of hope before dawn",
         198.1,
     ),
+    MusicTrack(
+        "radio_gospel_hands_on_the_wheel",
+        "Hands on the Wheel",
+        "Trucker gospel shuffle of faith on the road",
+        188.0,
+    ),
+    MusicTrack(
+        "radio_gospel_hallelujah_highway",
+        "Hallelujah Highway",
+        "Hand-clapping up-tempo gospel celebration",
+        176.0,
+    ),
+    MusicTrack(
+        "radio_gospel_old_church_bell",
+        "Old Church Bell",
+        "Close-harmony quartet remembering a country church",
+        192.0,
+    ),
+    MusicTrack(
+        "radio_gospel_sunday_sunrise",
+        "Sunday Sunrise",
+        "Instrumental organ-and-steel Sunday meditation",
+        204.0,
+    ),
+    MusicTrack(
+        "radio_gospel_carry_me_home",
+        "Carry Me Home",
+        "Slow spiritual with deep soloist and choir",
+        234.0,
+    ),
 )
 
 TEJANO_TRACKS: tuple[MusicTrack, ...] = (
@@ -512,6 +542,36 @@ TEJANO_TRACKS: tuple[MusicTrack, ...] = (
         "Romantic border-moon ranchera ballad",
         216.0,
     ),
+    MusicTrack(
+        "radio_tejano_baila_conmigo",
+        "Baila Conmigo",
+        "Irresistible dance-floor cumbia invitation",
+        174.0,
+    ),
+    MusicTrack(
+        "radio_tejano_acordeon_del_alma",
+        "Acordeón del Alma",
+        "Accordion showcase instrumental with soul",
+        170.0,
+    ),
+    MusicTrack(
+        "radio_tejano_polvo_del_camino",
+        "Polvo del Camino",
+        "Road-dust conjunto tune for long hauls",
+        190.0,
+    ),
+    MusicTrack(
+        "radio_tejano_corazon_de_cromo",
+        "Corazón de Cromo",
+        "Modern Tejano pop with a chrome heart",
+        179.0,
+    ),
+    MusicTrack(
+        "radio_tejano_cumbia_del_mercado",
+        "Cumbia del Mercado",
+        "Market-day cumbia instrumental",
+        168.1,
+    ),
 )
 
 SYNTHWAVE_TRACKS: tuple[MusicTrack, ...] = (
@@ -520,6 +580,48 @@ SYNTHWAVE_TRACKS: tuple[MusicTrack, ...] = (
         "Afterglow Avenue",
         "Dreamwave with soft vocals for the last mile",
         224.0,
+    ),
+    MusicTrack(
+        "radio_synthwave_midnight_grid",
+        "Midnight Grid",
+        "Pulsing retrowave for empty city freeways",
+        208.0,
+    ),
+    MusicTrack(
+        "radio_synthwave_sodium_lights",
+        "Sodium Lights",
+        "Amber-lit nocturne of highway lamps",
+        222.0,
+    ),
+    MusicTrack(
+        "radio_synthwave_starlight_odometer",
+        "Starlight Odometer",
+        "Glittering night-drive arpeggio piece",
+        196.1,
+    ),
+    MusicTrack(
+        "radio_synthwave_neon_mirage",
+        "Neon Mirage",
+        "Desert-heat retrowave shimmer",
+        230.0,
+    ),
+    MusicTrack(
+        "radio_synthwave_taillight_river",
+        "Taillight River",
+        "Flowing red-light meditation for slow lanes",
+        218.1,
+    ),
+    MusicTrack(
+        "radio_synthwave_analog_heart",
+        "Analog Heart",
+        "Synthpop love song for machines that feel",
+        192.0,
+    ),
+    MusicTrack(
+        "radio_synthwave_desert_satellites",
+        "Desert Satellites",
+        "Wide-sky ambient synthwave finale",
+        240.0,
     ),
 )
 
@@ -536,6 +638,18 @@ NIGHT_LINE_VOCAL_TRACKS: tuple[MusicTrack, ...] = (
         "Third Shift Waltz",
         "Gentle waltz for night workers",
         109.2,
+    ),
+    MusicTrack(
+        "radio_night_paper_cup_moon",
+        "Paper Cup Moon",
+        "Quiet ballad of vending-machine coffee at midnight",
+        196.1,
+    ),
+    MusicTrack(
+        "radio_night_idle_hearts",
+        "Idle Hearts",
+        "Slow duet for two trucks idling side by side",
+        218.1,
     ),
 )
 

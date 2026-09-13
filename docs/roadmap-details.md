@@ -1815,15 +1815,69 @@ repository root; Markdown links are relative to this document.
       snapshot, not a fact: stations come back, and a 5xx on sweep day is a
       bad afternoon rather than a closure. `--recheck-dead` re-probes only
       the casualties, which is cheap enough to be routine.
-- [ ] **Finish the station song batch after the ElevenLabs quota resets
-      (2026-09-06).** Gospel +5, tejano +5, synthwave +7, plus top-ups
-      (8-10 each) for country, classic rock, blues, and jazz, and 2-3 new
-      Night Line ballads. `tools/generate_radio.py --plan-songs` supports
-      capped waves via `--limit`. Three of the country top-ups arrived early
-      and by hand -- Dangerous Dan and Dial-up Summer on 2026-08-26, Four
-      Sources and the Truth on 2026-08-30, all owner renders rather than a
-      generated wave -- so the country pool is 3 down on its target and the
-      rest of the batch still waits on the quota.
+- [x] **Gospel, tejano, synthwave and the Night Line filled out -- landed
+      2026-09-11.** Nineteen songs on Eleven Music `music_v2_5` (gospel +5,
+      tejano +5, synthwave +7, Night Line +2), encoded to Opus from the
+      kept MP3 masters (`C:\Users\joshu\freight-fate-masters-backup-20260911`).
+      The nineteenth call of the run ended the month's credits, so the
+      third Night Line ballad (Dashboard Glow) and the top-ups below wait
+      for the next reset.
+- [ ] **Song top-ups still owed: country, classic rock, blues, jazz (8
+      each, planned in `radio_content_pools.py`) and Night Line's Dashboard
+      Glow.** `tools/generate_radio.py --plan-songs POOL --limit N` runs
+      capped waves; the resume check now recognises the shipped `.opus`
+      files, so a re-run never buys a song twice. Three of the country
+      top-ups arrived early and by hand -- Dangerous Dan and Dial-up Summer
+      on 2026-08-26, Four Sources and the Truth on 2026-08-30, owner
+      renders rather than a generated wave.
+- [ ] **Voice the second-wave station identity.** Written and wired
+      2026-09-11 but not yet generated: twenty more ads
+      (`radio_content_ads.py`, 38 in the rotation), two spoken liners per
+      station (`radio_content_liners.py`, `id_<station>_05/06`) and a third
+      sung jingle per station (`id_<station>_04`). One thing blocks the
+      run: the month's credits are spent (the key's missing
+      `text_to_speech`, `user_read`, `models_read` and `voices` scopes were
+      granted the same night). Budget for the next wave, measured on the
+      usage page 2026-09-11: Eleven Music `music_v2_5` bills about 1,600
+      credits per minute of audio, not the 900 the pricing page lists for
+      v1, so a three-and-a-half-minute song is roughly 5,500 credits and
+      the Creator plan's 100,000 covers about eighteen songs a month with
+      nothing else running. TTS liners and ads are cheap by comparison
+      (one credit per character, about 20,000 for the whole second wave),
+      so run `--plan-ids` and `--plan-ads` FIRST after the reset, then
+      size the song top-ups with `--limit` from what is left.
+      Once the credits are back: `--plan-ids` then `--plan-ads`, measure the clip
+      durations, add the rows to `radio_content.rs` `STATION_ID_ROWS` /
+      `AD_ROWS` / `AD_FORMAT_ROWS` (and the Python mirror), repack
+      `music.pak`. The break planner already draws two spots per stopset,
+      so the new rotation takes effect the moment the rows land.
+- [x] **Stopsets of two -- landed 2026-09-11.** `BREAK_PATTERN` is now
+      host, ID, ad+ad+ID, host, ID, ad+ID: three spots per twelve songs
+      where the first batch ran one, still light against real radio. Slot
+      kinds are pool names joined by underscores and every pool advances on
+      its own draw count, so adding a kind is a one-line change; a pool too
+      small for a two-spot set airs one spot rather than the same read
+      twice.
+- [x] **Every traffic pass and crossing cue is API audio now -- landed
+      2026-09-11.** All eleven cues added on 2026-08-20 (pickup, motorcycle,
+      bus and tractor passes; car, pickup, box truck, semi, motorcycle, bus
+      and tractor crossings) had shipped as the deterministic numpy
+      stand-ins, not only the six believed outstanding. Regenerated through
+      the Sound Effects API (`eleven_text_to_sound_v2`, named explicitly
+      now); the synths stay as `--synth-traffic`. The new `music.pak`
+      (378 entries, sha `9b7c9123…`) is pinned in `build_release.py` and
+      was uploaded the same night to the here.now site behind
+      `dev.orinks.net/downloads/music.pak` with
+      `tools/publish_music_pack.py` (here.now's agent API: a one-time
+      code by email, then a key in `~/.herenow/credentials`; update in
+      place by slug, so the URL never changes).
+- [x] **Generation tooling on current ElevenLabs models -- 2026-09-11.**
+      TTS on `eleven_v3` (stability 0.5, no style knob), music on
+      `music_v2_5` (`music_v1` is deprecated; there is no music v3),
+      sound effects naming `eleven_text_to_sound_v2`. `credit_usage`
+      tolerates a key without `user_read` and each response's
+      `character-cost` header is printed instead; Music responses carry no
+      such header, so a song run's cost is only visible on the dashboard.
 - [x] **The in-house stations run their own clock -- landed 2026-08-26
       (Marie, issue #158).** Every tune-in restarted a station's shuffled
       order at track one, second zero, so re-tuning always opened on the same
@@ -7013,15 +7067,18 @@ repository root; Markdown links are relative to this document.
       until the truck is through a light/sign terminal, instead of
       easing compression only with speed. Free-flow ramps compress as
       before.
-- [ ] **Signal running: dice and tickets, not a guaranteed clip (owner
-      playtest 2026-07-15).** Blowing the ramp-end red or stop sign today
-      ALWAYS clips cross traffic and never draws a citation -- backwards
-      on both counts. Make the clip a seeded traffic roll (sometimes the
-      horn and a near miss, sometimes a T-bone that belongs in the
-      catastrophic tier), and make running the light risk a citation on
-      the existing trooper/citation rails (chain-law checkpoint pattern).
-      Rides the back-road stoplights feature where the signal mechanic
-      lives.
+- [x] **Signal running: dice and tickets, not a guaranteed clip (owner
+      playtest 2026-07-15; shipped 2026-09-12).** Blowing the ramp-end red
+      or stop sign used to ALWAYS clip cross traffic and never draw a
+      citation -- backwards on both counts. The cross-traffic bubble now
+      decides what the run meets (nothing, a horn, a clip, or a semi, bus
+      or box truck broadside at two and a half times the clip severity),
+      and a save restored mid-ramp rolls the same seeded crossroad instead
+      of falling back to the certainty. Running the light or sign risks a
+      citation on the chain-law checkpoint rails: a flat seeded roll for
+      whether anyone was watching, then the career's repeat scaling and the
+      work-zone doubling, priced with every other fine in
+      `models/enforcement`.
 - [x] **Dense maxspeed and curve-geometry sweep (2026-07-15).** Every leg in
       the country re-sampled along its real routed geometry with a
       curvature-adaptive sampler (dense through curves, collapsed on tangents):
@@ -8922,6 +8979,27 @@ From a batch of player reports:
   every 1.9 backup.
 
 ### Fatigue and driver responsibility
+
+- [x] **The dispatch hours warning counts the deadhead and keeps a cushion
+      -- landed 2026-09-12 (owner's log).** A 5-hour Chippewa Falls to
+      Duluth load accepted on 4 h 17 m of duty window passed
+      `job_exceeds_current_hos` in silence: the check timed the loaded
+      route alone at planning speed and fit it with minutes to spare, then
+      the 8-mile deadhead, the hour at the dock, rain and town limits ate
+      them. At the last reachable rest area (123 miles out, 2 hours of
+      window, deadline 4.8 hours off) no rest option was on time and the
+      only on-time path blew the 14-hour window; the driver took the
+      10-hour sleep and delivered 5.2 hours late. The check now adds the
+      yard-to-pickup approach route's drive time and subtracts
+      `HOS_FIT_CUSHION_MIN` (30 minutes) from the remaining shift, so a fit
+      with less than half an hour to spare speaks the Hours warning and
+      offers Sleep first. Pinned by
+      `test_dispatch_warns_when_the_load_fits_the_window_only_on_paper`.
+- [ ] **Say the deadline against the shift on the board.** The warning
+      says "needs an extra legal rest" but not that the rest makes the
+      delivery late; "sleeping first puts you 5 hours past the deadline;
+      declining costs dispatch trust" would let the driver weigh the two
+      costs the game already knows.
 
 - [x] **Drowsiness consequences.** Shipped: at severe fatigue
   (`FATIGUE_SEVERE`, 80+) the driver involuntarily nods off on a shrinking

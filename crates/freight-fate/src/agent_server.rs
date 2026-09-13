@@ -90,6 +90,9 @@ pub enum Command {
     Release {
         key: Key,
     },
+    /// Put the sandbox career in any situation and reopen the terminal on
+    /// it (`playtest::scenario`). Scenario staging, not play.
+    Scenario(Box<crate::playtest::scenario::Scenario>),
     Wait {
         seconds: f64,
     },
@@ -122,6 +125,11 @@ pub enum Command {
     /// The wheel's readouts in one call: speed, limit, grade, what is ahead,
     /// the route, the clock, fuel.
     Status,
+    /// Hand the keyboard to the operator or take it back (see
+    /// [`PlayerInputFrame::set_operator_keys`]).
+    OperatorKeys {
+        live: bool,
+    },
     Listen,
     Menu,
     Observe,
@@ -655,6 +663,16 @@ impl AgentPolicy {
                             .map(|text| format!("({found} match(es), took {picked}) {text}")),
                     );
                 }
+                Command::Scenario(scenario) => {
+                    // A new situation: whatever the agent was holding belongs
+                    // to the old screen, the same as a staged drive.
+                    self.held.clear();
+                    self.timed_hold = None;
+                    let _ = reply.send(input.stage_scenario(&scenario));
+                }
+                Command::OperatorKeys { live } => {
+                    let _ = reply.send(Ok(input.set_operator_keys(live)));
+                }
                 Command::Quit => {
                     let _ = reply.send(Ok("Quitting the game.".to_string()));
                     self.quit = true;
@@ -697,8 +715,11 @@ pub fn policy(
 
 /// The whole `--agent-server` mode: sandbox, real game, MCP on stdio.
 /// With `launch`, the session boots straight into a staged drive at the
-/// found feature -- no menu ever exists.
-pub fn run(reset: bool, launch: Option<LaunchAt>) -> i32 {
+/// found feature -- no menu ever exists. With `operator_keys`, the window
+/// stays up and the operator's keyboard reaches the game, so a human can
+/// take the wheel alongside the agent; off, the keys are dropped at the
+/// door (see [`run_with_staged`]).
+pub fn run(reset: bool, launch: Option<LaunchAt>, operator_keys: bool) -> i32 {
     // Discover BEFORE the window opens: pure world data, and a failed
     // search should refuse cleanly rather than boot a game.
     let staged = match launch {
@@ -714,7 +735,7 @@ pub fn run(reset: bool, launch: Option<LaunchAt>) -> i32 {
             }
         },
     };
-    run_with_staged(reset, staged)
+    run_with_staged(reset, staged, operator_keys)
 }
 
 fn run_with_staged(
@@ -723,6 +744,7 @@ fn run_with_staged(
         crate::playtest::road::Hit,
         crate::playtest::road::RoadOptions,
     )>,
+    operator_keys: bool,
 ) -> i32 {
     use crate::playtest::sandbox;
     let (requests, rx) = mpsc::channel();
@@ -749,9 +771,16 @@ fn run_with_staged(
         // game window turns their typing elsewhere into truck inputs -- and
         // minimizing alone did not hold (the owner's typing in the next
         // window arrived as readouts mid-run, 2026-09-01), so the keys are
-        // dropped at the door as well.
-        app.minimize_window();
-        app.ignore_operator_keys();
+        // dropped at the door as well. `--operator-keys` is the owner's
+        // opt-in to play alongside the agent (asked for 2026-09-11): the
+        // window stays up and every key counts, so the keyboard belongs to
+        // the game for the whole session.
+        if operator_keys {
+            eprintln!("Operator keys are live: the keyboard reaches the game.");
+        } else {
+            app.minimize_window();
+            app.ignore_operator_keys();
+        }
         if let Some((hit, opts)) = staged.take() {
             // The staged drive IS the first screen, exactly as the road
             // launcher does it; quitting reaches the real main menu.

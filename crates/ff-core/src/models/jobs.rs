@@ -19,6 +19,7 @@ use crate::speech_text::typed_name;
 mod board;
 mod deadline;
 pub mod hos_stops;
+pub mod relay;
 #[cfg(test)]
 mod tests;
 
