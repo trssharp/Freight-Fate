@@ -24,6 +24,13 @@ pub struct DrivingRecord {
     pub major_offenses: Vec<f64>,
     /// Every spoken roadside citation, lifetime.
     pub citations: i64,
+    /// Career game hours of each citation booked since the record started
+    /// keeping times, newest last. `citations` is the lifetime tally; this is
+    /// what a carrier's annual review (49 CFR 391.25) and an insurer's
+    /// surcharge actually read, because both count a window, not a life.
+    /// A citation from before this field existed has no time and is never
+    /// inside any window.
+    pub citation_times: Vec<f64>,
     /// Lifetime enforcement money, all sources.
     pub fines_paid: f64,
     /// Times this driver ran off the road asleep.
@@ -74,6 +81,32 @@ impl DrivingRecord {
         self.major_offenses.len() as i64
     }
 
+    /// Citations still inside the three-year window a carrier reviews.
+    pub fn citations_in_window(&self, game_hours: f64) -> i64 {
+        let cutoff = game_hours - SERIOUS_WINDOW_DAYS as f64 * HOURS_PER_DAY;
+        self.citation_times
+            .iter()
+            .filter(|&&at| at >= cutoff)
+            .count() as i64
+    }
+
+    /// The career hour at which the oldest citation or serious violation
+    /// still in the window leaves it, or `None` when the window is empty.
+    /// This is the date a record-based hold can honestly promise.
+    pub fn window_ages_out_at(&self, game_hours: f64) -> Option<f64> {
+        let window = SERIOUS_WINDOW_DAYS as f64 * HOURS_PER_DAY;
+        let cutoff = game_hours - window;
+        self.citation_times
+            .iter()
+            .chain(self.serious_violations.iter())
+            .filter(|&&at| at >= cutoff)
+            .copied()
+            .fold(None, |oldest: Option<f64>, at| {
+                Some(oldest.map_or(at, |o| o.min(at)))
+            })
+            .map(|oldest| oldest + window)
+    }
+
     pub fn suspended(&self, game_hours: f64) -> bool {
         self.lifetime_disqualified || game_hours < self.suspended_until_h
     }
@@ -105,9 +138,18 @@ impl DrivingRecord {
 
     // -- writes -------------------------------------------------------------
 
+    /// A citation with no career time: the legacy seeding path, and nothing
+    /// else. Every live stop books through [`Self::record_citation_at`].
     pub fn record_citation(&mut self, fine: f64) {
         self.citations += 1;
         self.fines_paid += fine.max(0.0);
+    }
+
+    /// Book a citation at career hour `game_hours`, so the carrier's review
+    /// window and the insurer's surcharge can count it.
+    pub fn record_citation_at(&mut self, fine: f64, game_hours: f64) {
+        self.record_citation(fine);
+        self.citation_times.push(game_hours);
     }
 
     /// Log a serious traffic violation; returns the count in the window.

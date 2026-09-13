@@ -430,9 +430,16 @@ fn test_standing_is_said_plainly_and_names_the_next_consequence() {
     assert!(text.contains("one serious violation"));
     assert!(text.contains("60 days"));
     assert!(!text.to_lowercase().contains("strike")); // that noun belongs to the per-trip counter
-    assert_eq!(
-        text,
-        "Record: one serious violation. One more before your CDL is suspended for 60 days."
+                                                      // The licence half is unchanged; the carrier's review now speaks after it.
+    assert!(
+        text.starts_with(
+            "Record: one serious violation. One more before your CDL is suspended for 60 days. "
+        ),
+        "{text}"
+    );
+    assert!(
+        text.ends_with("One more serious violation and the carrier lets you go."),
+        "{text}"
     );
 }
 
@@ -516,10 +523,19 @@ fn the_spoken_standing_lines_match_the_python_f_strings() {
     clean.record_mut().major_offenses.push(0.0);
     clean.record_mut().serious_violations.push(0.0);
     clean.record_mut().serious_violations.push(0.0);
-    assert_eq!(
-        standing_text(&clean),
-        "Record: two serious violations, one major offense. One more major offense \
-         disqualifies your CDL for life."
+    let text = standing_text(&clean);
+    assert!(
+        text.starts_with(
+            "Record: two serious violations, one major offense. One more major offense \
+             disqualifies your CDL for life."
+        ),
+        "{text}"
+    );
+    // Two serious violations in the window is also the carrier's termination
+    // floor, and the line says so after the licence half.
+    assert!(
+        text.ends_with("The carrier ends your employment at the next terminal."),
+        "{text}"
     );
 }
 
@@ -554,13 +570,17 @@ fn test_debt_alone_holds_the_iron_back_even_with_a_spotless_record() {
 
 #[test]
 fn test_a_suspended_licence_holds_the_seat_but_an_old_violation_does_not() {
-    // Violations reach the band through reputation; only a suspension pins it.
+    // The LICENCE band only moves on a suspension. A lone serious violation
+    // reaches the band another way now -- the carrier's record review, which
+    // holds at guarded and names its own end date (owner, 2026-09-12) -- and
+    // the licence band stays out of it until the second one suspends the CDL.
     let mut p = profile();
     let hours = p.game_hours;
     p.record_mut().record_serious_violation(hours);
     assert!(!p.record().suspended(hours));
     assert_eq!(licence_band(&p), TRUST_FULL);
-    assert_eq!(standing_band(&p), TRUST_FULL);
+    assert_eq!(standing_band(&p), TRUST_GUARDED);
+    assert_eq!(standing_cause(&p), CAUSE_RECORD);
 
     p.record_mut().record_serious_violation(hours); // second: suspended
     assert!(p.record().suspended(hours));
@@ -785,3 +805,182 @@ fn test_a_fine_a_load_cannot_cover_stays_owed_and_is_said_so() {
 // `test_waiting_out_the_suspension_gives_the_licence_back` is live in `crates/freight-fate/tests/states_city.rs`.
 
 // `test_a_floor_reputation_company_driver_loses_the_carrier` is live in `crates/freight-fate/tests/states_city.rs`.
+
+// --- the carrier's record review and the insurer's surcharge ----------------
+//
+// Owner ask, 2026-09-12: citations and serious violations "did not seem to
+// mean anything". They scaled fines and scale odds, silently. Now the carrier
+// reviews the window (49 CFR 391.25), the insurer surcharges it, and both are
+// said.
+
+fn cite(p: &mut FakeProfile, times: i64, at: f64) {
+    for _ in 0..times {
+        p.record_mut().record_citation_at(200.0, at);
+    }
+}
+
+#[test]
+fn a_record_over_the_review_floor_holds_a_company_driver_at_guarded() {
+    let mut p = profile();
+    p.game_hours = 400.0 * DAY;
+    cite(&mut p, 3, 300.0 * DAY);
+    // Three is the floor, not over it.
+    assert_eq!(record_band(&p), TRUST_FULL);
+    assert_eq!(standing_band(&p), TRUST_FULL);
+    cite(&mut p, 1, 350.0 * DAY);
+    assert_eq!(record_band(&p), TRUST_GUARDED);
+    assert_eq!(standing_band(&p), TRUST_GUARDED);
+    assert_eq!(standing_cause(&p), CAUSE_RECORD);
+    let way_back = standing_way_back(&p);
+    assert!(
+        way_back.contains("Your driving record is what is holding it"),
+        "{way_back}"
+    );
+    assert!(
+        way_back.contains("four citations in the last three years"),
+        "{way_back}"
+    );
+    assert!(way_back.contains("ages out"), "{way_back}");
+    // The consequence line counts down to the termination floor.
+    let said = record_consequence_text(&p);
+    assert!(said.contains("holds your equipment back"), "{said}");
+    assert!(
+        said.contains("Two more citations and the carrier lets you go."),
+        "{said}"
+    );
+    assert!(!carrier_termination_due(&p));
+}
+
+#[test]
+fn one_serious_violation_in_the_window_is_over_the_review_floor() {
+    let mut p = profile();
+    p.game_hours = 400.0 * DAY;
+    p.record_mut().record_serious_violation(390.0 * DAY);
+    assert_eq!(record_band(&p), TRUST_GUARDED);
+    assert_eq!(standing_cause(&p), CAUSE_RECORD);
+    assert!(record_consequence_text(&p)
+        .contains("One more serious violation and the carrier lets you go."));
+}
+
+#[test]
+fn six_citations_in_three_years_end_the_employment() {
+    let mut p = profile();
+    p.game_hours = 400.0 * DAY;
+    cite(&mut p, 6, 380.0 * DAY);
+    assert_eq!(record_band(&p), TRUST_POOR);
+    assert!(carrier_termination_due(&p));
+    assert!(record_consequence_text(&p).contains("ends your employment"));
+    // At the fleet of last resort there is nowhere further down: kept on
+    // sufferance, and told so.
+    p.carrier_key = LAST_CHANCE_CARRIER_KEY.to_string();
+    assert!(!carrier_termination_due(&p));
+    assert_eq!(record_band(&p), TRUST_POOR);
+    assert!(record_consequence_text(&p).contains("sufferance"));
+}
+
+#[test]
+fn the_window_empties_and_the_hold_lets_go() {
+    let mut p = profile();
+    p.game_hours = 400.0 * DAY;
+    cite(&mut p, 4, 380.0 * DAY);
+    assert_eq!(record_band(&p), TRUST_GUARDED);
+    let ages_out = p
+        .driving_record()
+        .unwrap()
+        .window_ages_out_at(p.game_hours)
+        .expect("something is in the window");
+    assert!((ages_out - (380.0 + SERIOUS_WINDOW_DAYS as f64) * DAY).abs() < 1e-6);
+    p.game_hours = ages_out + 1.0;
+    assert_eq!(record_band(&p), TRUST_FULL);
+    assert_eq!(standing_text(&p), "Record: clean.");
+}
+
+#[test]
+fn legacy_citations_without_a_time_never_count_against_the_window() {
+    let mut p = profile();
+    p.game_hours = 400.0 * DAY;
+    for _ in 0..10 {
+        p.record_mut().record_citation(200.0);
+    }
+    assert_eq!(p.driving_record().unwrap().citations, 10);
+    assert_eq!(
+        p.driving_record()
+            .unwrap()
+            .citations_in_window(p.game_hours),
+        0
+    );
+    assert_eq!(record_band(&p), TRUST_FULL);
+    assert_eq!(record_insurance_surcharge(&p), 1.0);
+    assert_eq!(standing_text(&p), "Record: clean.");
+}
+
+#[test]
+fn the_record_review_is_a_company_driver_matter_and_the_surcharge_an_owner_operators() {
+    use crate::models::business_constants::{INDEPENDENT_AUTHORITY, LEASED_OWNER_OPERATOR};
+    let mut owner = profile();
+    owner.business_status = LEASED_OWNER_OPERATOR.to_string();
+    owner.game_hours = 400.0 * DAY;
+    cite(&mut owner, 4, 380.0 * DAY);
+    owner.record_mut().record_serious_violation(390.0 * DAY);
+    assert_eq!(record_band(&owner), TRUST_FULL);
+    assert!(!carrier_termination_due(&owner));
+    // 1 + 4 x 0.10 + 1 x 0.35
+    assert_eq!(record_insurance_surcharge(&owner), 1.75);
+    let said = record_consequence_text(&owner);
+    assert!(
+        said.contains("insurance reserve is up 75 percent"),
+        "{said}"
+    );
+    assert!(said.contains("ages out"), "{said}");
+    owner.business_status = INDEPENDENT_AUTHORITY.to_string();
+    assert_eq!(record_insurance_surcharge(&owner), 1.75);
+
+    let mut company = profile();
+    company.game_hours = owner.game_hours;
+    cite(&mut company, 4, 380.0 * DAY);
+    assert_eq!(record_insurance_surcharge(&company), 1.0);
+}
+
+#[test]
+fn the_insurance_surcharge_never_passes_double() {
+    use crate::models::business_constants::LEASED_OWNER_OPERATOR;
+    let mut owner = profile();
+    owner.business_status = LEASED_OWNER_OPERATOR.to_string();
+    owner.game_hours = 400.0 * DAY;
+    cite(&mut owner, 14, 380.0 * DAY);
+    assert_eq!(record_insurance_surcharge(&owner), INSURANCE_SURCHARGE_MAX);
+    assert!(record_consequence_text(&owner).contains("up 100 percent"));
+}
+
+#[test]
+fn the_record_line_counts_recent_citations_and_says_what_they_cost() {
+    let mut p = profile();
+    p.game_hours = 400.0 * DAY;
+    cite(&mut p, 2, 380.0 * DAY);
+    // Under the floor: counted, nothing more.
+    assert_eq!(
+        standing_text(&p),
+        "Record: two citations in the last three years."
+    );
+    cite(&mut p, 2, 390.0 * DAY);
+    let line = standing_text(&p);
+    assert!(
+        line.starts_with("Record: four citations in the last three years."),
+        "{line}"
+    );
+    assert!(
+        line.contains("The carrier's record review holds your equipment back"),
+        "{line}"
+    );
+    // A serious violation keeps its own clause and its own next-step tail.
+    p.record_mut().record_serious_violation(395.0 * DAY);
+    let line = standing_text(&p);
+    assert!(
+        line.contains("four citations in the last three years, one serious violation."),
+        "{line}"
+    );
+    assert!(
+        line.contains("One more before your CDL is suspended for 60 days."),
+        "{line}"
+    );
+}

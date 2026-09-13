@@ -225,6 +225,21 @@ fn hold_cause_phrases<P: CareerProfile + ?Sized>(profile: &P) -> (String, String
             "Clear it".to_string(),
         );
     }
+    if cause == enforcement::CAUSE_RECORD {
+        let record = profile
+            .driving_record()
+            .expect("a record-caused hold reads a record");
+        return (
+            format!(
+                "the carrier's record review found {}",
+                enforcement::record_window_phrase(record, profile.game_hours())
+            ),
+            format!(
+                "Keep the record clean until the oldest ages out {}",
+                enforcement::record_ages_out_text(profile)
+            ),
+        );
+    }
     if cause == enforcement::CAUSE_LICENCE {
         let clears = clears_text(profile);
         let when = if clears.is_empty() {

@@ -68,6 +68,43 @@ pub const MAJOR_FIRST_DISQUALIFICATION_DAYS: i64 = 365;
 
 pub const SUSPENSION_SERIOUS: &str = "serious";
 pub const SUSPENSION_MAJOR: &str = "major";
+
+// -- the carrier's record review (49 CFR 391.25) ----------------------------
+//
+// A carrier must review every driver's motor vehicle record at least once a
+// year and decide whether they still meet its minimum standard. The rule
+// does not set the standard; the carrier's insurer does, and the common
+// hiring floors are "no more than three moving violations in three years"
+// and "no more than one serious violation". These figures are ASSUMED from
+// that practice, not read from a statute: the statute is only that the
+// review happens.
+//
+// Company drivers only. A leased owner-operator answers to an insurer through
+// the surcharge below; an independent has no carrier to review them.
+
+/// More than this many citations in the three-year window and the carrier
+/// holds the driver below the equipment their level earns.
+pub const CARRIER_REVIEW_CITATIONS: i64 = 3;
+/// This many serious violations in the window does the same.
+pub const CARRIER_REVIEW_SERIOUS: i64 = 1;
+/// At this many citations in the window the insurer will not carry the
+/// driver at all, and the carrier ends the employment.
+pub const CARRIER_TERMINATION_CITATIONS: i64 = 6;
+/// Likewise for serious violations. Two in three years is also the second
+/// rung of the 383.51 suspension ladder, so the CDL is suspended at the
+/// same moment -- which is exactly when a real carrier lets a driver go.
+pub const CARRIER_TERMINATION_SERIOUS: i64 = 2;
+
+// -- the owner-operator's insurance surcharge -------------------------------
+//
+// Commercial auto underwriters rate a policy on the driver's record, and the
+// surcharge schedules are proprietary. These steps are ASSUMED: a tenth of
+// the reserve per citation and a third per serious violation, both inside
+// the same three-year window, and never past double the clean rate.
+
+pub const INSURANCE_SURCHARGE_PER_CITATION: f64 = 0.10;
+pub const INSURANCE_SURCHARGE_PER_SERIOUS: f64 = 0.35;
+pub const INSURANCE_SURCHARGE_MAX: f64 = 2.0;
 pub const SUSPENSION_LIFETIME: &str = "lifetime";
 
 // -- money ------------------------------------------------------------------
@@ -470,6 +507,7 @@ const BAND_ORDER: [&str; 4] = [TRUST_LAST_CHANCE, TRUST_POOR, TRUST_GUARDED, TRU
 pub const CAUSE_SERVICE: &str = "service";
 pub const CAUSE_LICENCE: &str = "licence";
 pub const CAUSE_DEBT: &str = "debt";
+pub const CAUSE_RECORD: &str = "record";
 
 fn band_index(band: &str) -> usize {
     BAND_ORDER
@@ -511,7 +549,48 @@ pub fn solvency_band<P: StandingProfile + ?Sized>(profile: &P) -> &'static str {
     [TRUST_FULL, TRUST_GUARDED, TRUST_POOR, TRUST_LAST_CHANCE][debt_rung(profile) as usize]
 }
 
-/// The band the carrier actually acts on: the worst of the three inputs.
+/// Whether the record is past the carrier's review floor.
+pub fn record_over_review_floor(record: &DrivingRecord, game_hours: f64) -> bool {
+    record.citations_in_window(game_hours) > CARRIER_REVIEW_CITATIONS
+        || record.serious_in_window(game_hours) >= CARRIER_REVIEW_SERIOUS
+}
+
+/// Whether the record is past what the carrier's insurer will carry.
+pub fn record_past_termination_floor(record: &DrivingRecord, game_hours: f64) -> bool {
+    record.citations_in_window(game_hours) >= CARRIER_TERMINATION_CITATIONS
+        || record.serious_in_window(game_hours) >= CARRIER_TERMINATION_SERIOUS
+}
+
+/// Whether the carrier's record review applies to this driver at all.
+fn under_carrier_review<P: StandingProfile + ?Sized>(profile: &P) -> bool {
+    !is_owner_operator(profile.business_status())
+}
+
+/// What the carrier's annual record review makes of this driver.
+///
+/// Unlike the licence band, a violation on its own DOES count here -- but
+/// only inside the three-year window, and the hold names the day the window
+/// empties, so it is never a hold no amount of good driving can clear. A
+/// driver already at the fleet of last resort cannot be let go again, so the
+/// termination floor reads as poor trust there instead of full.
+pub fn record_band<P: StandingProfile + ?Sized>(profile: &P) -> &'static str {
+    if !under_carrier_review(profile) {
+        return TRUST_FULL;
+    }
+    let Some(record) = profile.driving_record() else {
+        return TRUST_FULL;
+    };
+    let game_hours = profile.game_hours();
+    if record_past_termination_floor(record, game_hours) {
+        TRUST_POOR
+    } else if record_over_review_floor(record, game_hours) {
+        TRUST_GUARDED
+    } else {
+        TRUST_FULL
+    }
+}
+
+/// The band the carrier actually acts on: the worst of the four inputs.
 ///
 /// Internal name only. Spoken text calls this dispatch trust, because that is
 /// the noun the game already uses and `docs/ontology.md` already rules
@@ -520,6 +599,7 @@ pub fn standing_band<P: StandingProfile + ?Sized>(profile: &P) -> &'static str {
     worst_band(&[
         trust_band(profile.career_reputation()),
         licence_band(profile),
+        record_band(profile),
         solvency_band(profile),
     ])
 }
@@ -533,10 +613,134 @@ pub fn standing_cause<P: StandingProfile + ?Sized>(profile: &P) -> &'static str 
     if licence_band(profile) == band {
         return CAUSE_LICENCE;
     }
+    if record_band(profile) == band {
+        return CAUSE_RECORD;
+    }
     if solvency_band(profile) == band {
         return CAUSE_DEBT;
     }
     CAUSE_SERVICE
+}
+
+/// "three citations and one serious violation in the last three years".
+pub fn record_window_phrase(record: &DrivingRecord, game_hours: f64) -> String {
+    let citations = record.citations_in_window(game_hours);
+    let serious = record.serious_in_window(game_hours);
+    let mut parts = Vec::new();
+    if citations > 0 {
+        let noun = if citations == 1 {
+            "citation"
+        } else {
+            "citations"
+        };
+        parts.push(format!("{} {noun}", count_word(citations)));
+    }
+    if serious > 0 {
+        let noun = if serious == 1 {
+            "serious violation"
+        } else {
+            "serious violations"
+        };
+        parts.push(format!("{} {noun}", count_word(serious)));
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    format!("{} in the last three years", parts.join(" and "))
+}
+
+/// The spoken calendar day the oldest counted violation leaves the window.
+pub fn record_ages_out_text<P: StandingProfile + ?Sized>(profile: &P) -> String {
+    let record = record_of(profile);
+    let Some(at) = record.window_ages_out_at(profile.game_hours()) else {
+        return String::new();
+    };
+    let at = at + profile.calendar_offset_days() * HOURS_PER_DAY;
+    format!("{}, {}", weekday_name(at), date_text(at))
+}
+
+/// The insurer's multiplier on an owner-operator's insurance reserve.
+///
+/// 1.0 for a clean window, for a company driver (the carrier's policy, not
+/// theirs), and for a profile with no record at all.
+pub fn record_insurance_surcharge<P: StandingProfile + ?Sized>(profile: &P) -> f64 {
+    if !is_owner_operator(profile.business_status()) {
+        return 1.0;
+    }
+    let Some(record) = profile.driving_record() else {
+        return 1.0;
+    };
+    let game_hours = profile.game_hours();
+    let raw = 1.0
+        + INSURANCE_SURCHARGE_PER_CITATION * record.citations_in_window(game_hours) as f64
+        + INSURANCE_SURCHARGE_PER_SERIOUS * record.serious_in_window(game_hours) as f64;
+    round_py_n(raw.min(INSURANCE_SURCHARGE_MAX), 2)
+}
+
+/// What the record is costing this driver right now, in one sentence, or
+/// nothing when it costs nothing. The carrier's review for a company driver,
+/// the insurer's surcharge for an owner-operator.
+pub fn record_consequence_text<P: StandingProfile + ?Sized>(profile: &P) -> String {
+    let Some(record) = profile.driving_record() else {
+        return String::new();
+    };
+    let game_hours = profile.game_hours();
+    if is_owner_operator(profile.business_status()) {
+        let surcharge = record_insurance_surcharge(profile);
+        if surcharge <= 1.0 {
+            return String::new();
+        }
+        let percent = round_py_int((surcharge - 1.0) * 100.0);
+        return format!(
+            "Your insurance reserve is up {percent} percent for it, on every settlement, \
+             until the oldest ages out {}.",
+            record_ages_out_text(profile)
+        );
+    }
+    if !under_carrier_review(profile) {
+        return String::new();
+    }
+    if record_past_termination_floor(record, game_hours) {
+        if profile.carrier_key() == LAST_CHANCE_CARRIER_KEY {
+            return format!(
+                "The carrier's insurer will not carry a record like that; {} keeps you on \
+                 sufferance until the oldest ages out {}.",
+                LAST_CHANCE_CARRIER_NAME,
+                record_ages_out_text(profile)
+            );
+        }
+        return "The carrier's insurer will not carry that record. The carrier ends your \
+                employment at the next terminal."
+            .to_string();
+    }
+    if record_over_review_floor(record, game_hours) {
+        let citations = record.citations_in_window(game_hours);
+        let serious = record.serious_in_window(game_hours);
+        let next = if serious + 1 >= CARRIER_TERMINATION_SERIOUS {
+            "One more serious violation and the carrier lets you go.".to_string()
+        } else {
+            let left = CARRIER_TERMINATION_CITATIONS - citations;
+            format!(
+                "{} more {} and the carrier lets you go.",
+                py_capitalize_word(&count_word(left)),
+                if left == 1 { "citation" } else { "citations" }
+            )
+        };
+        return format!(
+            "The carrier's record review holds your equipment back until the oldest ages \
+             out {}. {next}",
+            record_ages_out_text(profile)
+        );
+    }
+    String::new()
+}
+
+fn py_capitalize_word(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 /// What actually brings the band up, naming the thing that is holding it.
@@ -550,6 +754,15 @@ pub fn standing_way_back<P: StandingProfile + ?Sized>(profile: &P) -> String {
         }
         return format!(
             "Your CDL is suspended, so the yard holds your seat until it clears {clears}."
+        );
+    }
+    if cause == CAUSE_RECORD {
+        let record = record_of(profile);
+        return format!(
+            "Your driving record is what is holding it: {}. The carrier's review keeps it \
+             there until the oldest ages out {}; keep the record clean until then.",
+            record_window_phrase(record, profile.game_hours()),
+            record_ages_out_text(profile)
         );
     }
     if cause == CAUSE_DEBT {
@@ -612,7 +825,14 @@ pub fn carrier_termination_due<P: StandingProfile + ?Sized>(profile: &P) -> bool
     if profile.carrier_key() == LAST_CHANCE_CARRIER_KEY {
         return false; // already at the fleet of last resort; nowhere further down
     }
-    profile.career_reputation() < REPUTATION_TERMINATION
+    if profile.career_reputation() < REPUTATION_TERMINATION {
+        return true;
+    }
+    // The annual record review, 49 CFR 391.25: a record the insurer will not
+    // carry ends the employment whatever the service record says.
+    profile
+        .driving_record()
+        .is_some_and(|record| record_past_termination_floor(record, profile.game_hours()))
 }
 
 // -- spoken standing --------------------------------------------------------
@@ -686,12 +906,26 @@ pub fn standing_text<P: StandingProfile + ?Sized>(profile: &P) -> String {
             clears_text(profile)
         );
     }
+    let citations = record.citations_in_window(game_hours);
     let serious = record.serious_in_window(game_hours);
     let majors = record.major_count();
-    if serious == 0 && majors == 0 {
+    if citations == 0 && serious == 0 && majors == 0 {
         return "Record: clean.".to_string();
     }
     let mut parts = Vec::new();
+    // Plain citations were never spoken here, which is how a driver with a
+    // string of them came to ask what the record was for (owner, 2026-09-12).
+    if citations != 0 {
+        let noun = if citations == 1 {
+            "citation"
+        } else {
+            "citations"
+        };
+        parts.push(format!(
+            "{} {noun} in the last three years",
+            count_word(citations)
+        ));
+    }
     if serious != 0 {
         let noun = if serious == 1 {
             "serious violation"
@@ -715,7 +949,13 @@ pub fn standing_text<P: StandingProfile + ?Sized>(profile: &P) -> String {
     } else {
         ""
     };
-    format!("Record: {}.{tail}", parts.join(", "))
+    let consequence = record_consequence_text(profile);
+    let consequence = if consequence.is_empty() {
+        String::new()
+    } else {
+        format!(" {consequence}")
+    };
+    format!("Record: {}.{tail}{consequence}", parts.join(", "))
 }
 
 /// The first thing the dispatch board says while the CDL is not valid.

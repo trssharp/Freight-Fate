@@ -486,3 +486,28 @@ fn test_the_stats_screen_answers_what_is_holding_the_next_truck_back() {
     assert!(next_fleet_tier(&top).is_none());
     assert!(equipment_status_lines(&top)[0].contains("the carrier's best equipment"));
 }
+
+#[test]
+fn test_the_carriers_record_review_holds_the_iron_and_names_the_day_it_ages_out() {
+    // A record over the review floor is the fourth reason the yard holds a
+    // tractor back, and the one hold that can promise its own end date.
+    // Level 14 earns the fourth tier; guarded caps the yard at the third.
+    let mut profile = fleet_driver(14);
+    profile.game_hours = 400.0 * 24.0;
+    let record = profile.driving_record.as_mut().expect("a record");
+    for _ in 0..4 {
+        record.record_citation_at(200.0, 380.0 * 24.0);
+    }
+    assert!(equipment_held_back(&profile));
+    let spoken = equipment_hold_text(&profile, false);
+    assert!(
+        spoken.contains("the carrier's record review found four citations in the last three years"),
+        "{spoken}"
+    );
+    assert!(
+        spoken.contains("Keep the record clean until the oldest ages out"),
+        "{spoken}"
+    );
+    assert!(spoken.contains("comes back to you"), "{spoken}");
+    assert_eq!(assigned_fleet_tier(&profile).key, FLEET_TIERS[2].key);
+}

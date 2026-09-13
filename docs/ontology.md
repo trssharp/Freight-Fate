@@ -302,6 +302,9 @@ from the words, and synonyms cost them a re-read.
 | The last CB call said again because the driver asked for it | repeat the CB chatter | CB replay, rewind, play back the CB, last CB | `DrivingState::speak_last_cb_chatter` (Alt C) |
 | How much police activity you hear | it is not a setting -- the road's own presence, from region, road class and the clock | enforcement presence (the player setting, removed 2026-08-16), police density, patrol frequency, difficulty | `Trip._post_density_at`, `EnforcementWatchMixin._ambience_scale` |
 | How interesting you look to an inspector | safety record | ISS, CSA, SMS, score, rating | `Profile.selection_score` |
+| What the licence file holds against you: citations, serious violations, major offenses | driving record; "Record:" in short status | MVR, rap sheet, points, history | `DrivingRecord`, `enforcement.standing_text` |
+| The carrier deciding, from the driving record, whether to keep a company driver and on what equipment | the carrier's record review | MVR check, annual review, insurance screening | `enforcement.record_band`, 49 CFR 391.25 |
+| What an owner-operator's insurer adds to the reserve for the driving record | insurance surcharge; "surcharged for your driving record" on the settlement line | rate hike, premium bump, points surcharge | `enforcement.record_insurance_surcharge` |
 | The CDL being off the road for a set time | CDL suspension; "suspended" in short status | ban, revocation, lockout | `DrivingRecord.suspended` |
 | The permanent version of it, after a second major offense | lifetime disqualification | permaban, career over, blacklist | `DrivingRecord.lifetime_disqualified` |
 | An offense heavy enough to disqualify a CDL outright | major offense | felony (as the game's own noun), big one | `DrivingRecord.record_major_offense` |

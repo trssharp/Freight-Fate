@@ -132,8 +132,10 @@ impl DrivingState {
             // the debug hours modes freeze the ladder as well as the stop
             return String::new();
         }
-        profile_mut_of(ctx).driving_record.record_citation(fine);
         let hours = record_hours(ctx, self);
+        profile_mut_of(ctx)
+            .driving_record
+            .record_citation_at(fine, hours);
         let text = if major {
             let kind = profile_mut_of(ctx)
                 .driving_record

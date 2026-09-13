@@ -465,6 +465,7 @@ impl DrivingState {
         let fine = JAKE_ZONE_FINES[index];
         self.jake_zone_fines += 1;
         self.jake_fines_paid += fine;
+        let hours = crate::states::driving_rest_states::record_hours(ctx, self);
         {
             let profile = profile_mut_of(ctx);
             profile.money -= fine; // can go negative; never a game over
@@ -472,7 +473,7 @@ impl DrivingState {
                                    // so it never moves the suspension ladder -- but it is still a
                                    // citation on the record, and the next citation of any kind costs
                                    // more for it.
-            profile.driving_record.record_citation(fine);
+            profile.driving_record.record_citation_at(fine, hours);
         }
         ctx.audio.play("ui/error");
         ctx.controller.rumble.alert();

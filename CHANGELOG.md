@@ -4,6 +4,20 @@
 
 ### Added
 
+- **Your driving record now costs you with the carrier and the insurer, and
+  the game says so.** A company driver with more than three citations or a
+  serious violation in the last three years is over the carrier's record
+  review floor: dispatch trust drops to guarded and the yard holds your
+  equipment at the long-haul fleet until the oldest one ages out, on a date
+  the game names. Six citations or two serious violations in three years
+  and the carrier's insurer will not carry you, so the carrier ends your
+  employment the same way it does for a collapsed reputation. An
+  owner-operator's settlement carries an insurance surcharge instead, ten
+  percent per citation and thirty-five per serious violation in the window,
+  never more than double, read out on its own line. The record line on the
+  career stats and status screens counts recent citations and says what is
+  being done about them, and the terminal greeting says the same when it
+  applies. Citations from before this build have no date and never count.
 - **Your public profile now says what each achievement was for.** On the
   orinks.net profile page and in the in-game driver profile, every badge
   carries the same description you hear in the achievements menu, and the

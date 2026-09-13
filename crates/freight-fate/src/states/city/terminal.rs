@@ -633,10 +633,20 @@ impl Menu for CityMenuState {
             } else {
                 String::new()
             };
+            // What the record is costing right now -- the carrier's review
+            // hold or the insurer's surcharge -- said here because the
+            // terminal is where both are decided, and nothing else said it
+            // outside the stats screen (owner, 2026-09-12).
+            let record = enforcement::record_consequence_text(p);
+            let record = if record.is_empty() {
+                String::new()
+            } else {
+                format!(" {record}")
+            };
             format!(
                 "Parked at {} in the {city_name} \
                  service area, {city_state}. {} with \
-                 level {}, {}.{cdl} \
+                 level {}, {}.{cdl}{record} \
                  You have {} dollars. \
                  {first_day}",
                 terminal.spoken_name(),

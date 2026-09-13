@@ -218,18 +218,18 @@ its status or release decision.
       offenses, claims, terminations and repossessions; out-of-service
       orders and fatigue events are scored but not shown, by the same rule
       that keeps fatigue private. Decide whether orders belong on the page.
-- [ ] The driving record should bite through the carrier and the insurer,
-      and be spoken. Today a citation scales later fines, raises the scale
-      pull-in odds and costs reputation; a serious violation adds the
-      383.51 suspension ladder and blocks LCV; nothing says so outside a
-      rest-stop readout. Research (owner ask, 2026-09-12): endorsements
-      stay untied to the record (hazmat is a TSA threat assessment, 49 CFR
-      1572, criminal and immigration disqualifiers only; tank and doubles
-      are knowledge tests, 383.93). Where it belongs: the carrier's annual
-      record review (391.25) withholding a fleet-tier promotion or ending
-      employment on the record, not only on reputation; the owner-operator
-      insurance reserve rising with the record; one career-screen line that
-      reads the live consequences. Owner to choose the slice.
+- [x] The driving record bites through the carrier and the insurer, and is
+      spoken (owner ask, 2026-09-12). Endorsements stay untied to the record
+      (hazmat is a TSA threat assessment, 49 CFR 1572, criminal and
+      immigration disqualifiers only; tank and doubles are knowledge tests,
+      383.93). Citations now carry career times; the carrier's annual record
+      review (391.25) is a fourth dispatch-trust input for company drivers
+      (guarded over three citations or one serious violation in three years,
+      termination at six or two, floors ASSUMED from common insurer hiring
+      standards) with the age-out date spoken; the owner-operator insurance
+      reserve carries a surcharge (a tenth per citation, a third per serious,
+      capped at double, ASSUMED); the record line and the terminal greeting
+      read the live consequence.
 
 ## 1.10 planned -- the working week and home
 

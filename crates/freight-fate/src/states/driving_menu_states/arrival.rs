@@ -331,12 +331,14 @@ impl ArrivalState {
         let carrier_key = profile_of(ctx).carrier_key.clone();
         let reputation_before = profile_of(ctx).career.reputation;
         let transponder = has_weigh_station_transponder(profile_of(ctx));
+        let record_surcharge = enforcement::record_insurance_surcharge(profile_of(ctx));
         let business_status = profile_of(ctx).business_status.clone();
         let terms = SettlementTerms {
             carrier_key: Some(carrier_key.as_str()),
             owned_trailers: &owned_refs,
             reputation: Some(reputation_before),
             transponder,
+            record_surcharge,
         };
         let business = ff_core::models::business::build_business_settlement(
             &business_status,
@@ -364,6 +366,7 @@ impl ArrivalState {
             owned_trailers: &owned_refs,
             reputation: None,
             transponder,
+            record_surcharge,
         };
         let deadline_business = ff_core::models::business::build_business_settlement(
             &business_status,

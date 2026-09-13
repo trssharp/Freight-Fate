@@ -80,6 +80,7 @@ fn settlement_for(p: &Profile, job: &Job, with_reputation: bool) -> BusinessSett
                 None
             },
             transponder: has_weigh_station_transponder(p),
+            record_surcharge: enforcement::record_insurance_surcharge(p),
         },
     )
 }

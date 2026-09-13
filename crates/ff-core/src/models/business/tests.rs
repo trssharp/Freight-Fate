@@ -442,3 +442,60 @@ fn test_a_company_driver_who_chose_to_stay_is_not_nudged_toward_the_buy_in() {
     assert!(summary.contains("stays open here"), "{summary}");
     assert!(!summary.contains("You qualify"), "{summary}");
 }
+
+#[test]
+fn test_an_owner_operators_insurance_reserve_carries_the_record_surcharge_under_its_own_name() {
+    let job = job("general", "yard", 100.0, 1000.0, 12.0);
+    let clean = build_business_settlement(
+        LEASED_OWNER_OPERATOR,
+        &job,
+        job.pay,
+        true,
+        0.0,
+        &SettlementTerms::default(),
+    );
+    assert_eq!(charge(&clean, "insurance reserve"), 9.0);
+    let surcharged = build_business_settlement(
+        LEASED_OWNER_OPERATOR,
+        &job,
+        job.pay,
+        true,
+        0.0,
+        &SettlementTerms {
+            record_surcharge: 1.35,
+            ..Default::default()
+        },
+    );
+    // 100 miles x 0.09 x 1.35, and the readout says why.
+    assert_eq!(
+        charge(
+            &surcharged,
+            "insurance reserve, surcharged for your driving record"
+        ),
+        12.15
+    );
+    assert!(!surcharged
+        .business_charges
+        .iter()
+        .any(|c| c.label == "insurance reserve"));
+    assert!(surcharged.net_before_advance < clean.net_before_advance);
+    // Own authority carries the same surcharge on its own insurance rate.
+    let authority = build_business_settlement(
+        INDEPENDENT_AUTHORITY,
+        &job,
+        job.pay,
+        true,
+        0.0,
+        &SettlementTerms {
+            record_surcharge: 2.0,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        charge(
+            &authority,
+            "insurance reserve, surcharged for your driving record"
+        ),
+        28.0
+    );
+}

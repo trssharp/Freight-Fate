@@ -325,6 +325,7 @@ fn test_toll_route_delivery_settlement_records_expense() {
             owned_trailers: &owned,
             reputation: None,
             transponder: false,
+            record_surcharge: 1.0,
         },
     );
 
