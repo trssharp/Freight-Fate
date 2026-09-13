@@ -4,6 +4,11 @@
 
 ### Added
 
+- **Your public profile now says what each achievement was for.** On the
+  orinks.net profile page and in the in-game driver profile, every badge
+  carries the same description you hear in the achievements menu, and the
+  group it belongs to. A hidden badge shows its description once you have
+  earned it.
 - **Dispatch checks the state construction reports before choosing your
   route.** With real traffic on, dispatch reads each route option for the
   construction the state reports, tells you what is on the way and about
@@ -624,6 +629,14 @@
 
 ### Fixed
 
+- **A chain-law ticket now goes on your safety record.** The checkpoint at
+  the bottom of the grade charged the fine and said so, but never wrote it
+  down, so a driver with a string of them still heard that the safety record
+  was clean and was waved through every scale.
+- **Being placed out of service now counts on your safety record.** An
+  officer's ten-hour or thirty-minute order parked you and reset the clock
+  but was never remembered afterwards, so the scale house never looked harder
+  at a driver who had been shut down before.
 - **Running the light or the sign at a ramp end is a gamble now, and it can
   cost you a ticket.** Before, blowing the red or the stop sign always clipped
   cross traffic and never drew a citation. Now the crossroad decides: some

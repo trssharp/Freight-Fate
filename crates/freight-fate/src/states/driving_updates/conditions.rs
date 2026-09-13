@@ -564,6 +564,11 @@ impl DrivingState {
             p.money
         };
         self.ticket_fines_paid += fine;
+        // On the record like every other citation: this one was charged and
+        // spoken but never booked, so a career of chain-law tickets still
+        // read as a clean safety record (owner report, 2026-09-12). Not a
+        // serious violation under 49 CFR 383.51 Table 2, so no ladder text.
+        self.log_enforcement(ctx, fine, false, false);
         ctx.audio.play("ui/error");
         // A citation is money, not an act-now warning: ROUTE's never-dropped
         // queue instead of an interrupt that could erase one.

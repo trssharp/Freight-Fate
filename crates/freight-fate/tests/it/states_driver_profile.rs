@@ -63,7 +63,8 @@ fn full_profile() -> Value {
         "presence": {"activity": "Driving", "detail": "I-80 near Reno", "updatedAt": NOW_MS},
         "achievementCount": 14,
         "recentAchievements": [
-            {"achievementKey": "a", "label": "First Delivery", "earnedAt": 1},
+            {"achievementKey": "a", "label": "First Delivery", "earnedAt": 1,
+             "description": "The first load signed for and delivered."},
             {"achievementKey": "b", "label": "Night Owl", "earnedAt": 2},
         ],
         "events": [{"eventId": "e1", "summary": "Delivered produce to Reno on time."}],
@@ -115,7 +116,7 @@ fn test_the_rows_follow_the_designs_spoken_order_one_fact_each() {
             "Reputation: 78 out of 100",
             "Endorsements: Hazmat, Tanker",
             "Achievements across every career: 14",
-            "Recent achievement: First Delivery",
+            "Recent achievement: First Delivery. The first load signed for and delivered.",
             "Recent achievement: Night Owl",
             "Road journal: Delivered produce to Reno on time.",
         ]

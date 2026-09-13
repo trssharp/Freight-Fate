@@ -225,12 +225,17 @@ fn achievement_rows(profile: &Value) -> Vec<String> {
         whole(count)
     )];
     if let Some(Value::Array(recent)) = profile.get("recentAchievements") {
-        rows.extend(
-            recent
-                .iter()
-                .filter_map(|item| text(item, "label"))
-                .map(|label| format!("Recent achievement: {label}")),
-        );
+        // The site sends what the badge was for beside its name; a row
+        // without one (an older server) still reads as the name alone.
+        rows.extend(recent.iter().filter_map(|item| {
+            let label = text(item, "label")?;
+            Some(match text(item, "description") {
+                Some(description) if !description.trim().is_empty() => {
+                    format!("Recent achievement: {label}. {}", description.trim())
+                }
+                _ => format!("Recent achievement: {label}"),
+            })
+        }));
     }
     rows
 }

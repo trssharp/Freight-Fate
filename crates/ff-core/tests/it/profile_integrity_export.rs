@@ -109,6 +109,8 @@ fn the_fixture_carries_the_live_catalog_figures() {
         "sourceSaveVersion",
         "achievementIds",
         "achievementLabels",
+        "achievementDetails",
+        "achievementCategories",
         "careerTitles",
         "carrierLabels",
         "trailerCatalog",
@@ -124,7 +126,7 @@ fn the_fixture_carries_the_live_catalog_figures() {
 
 #[test]
 fn the_public_profile_catalogs_are_derived_from_live_game_catalogs() {
-    use ff_core::achievements::ACHIEVEMENTS;
+    use ff_core::achievements::{ACHIEVEMENTS, CATEGORIES};
     use ff_core::models::career_ladder::CAREER_RANKS;
     use ff_core::models::start_options::all_start_options;
     use ff_core::models::trailers::TRAILER_CATALOG;
@@ -158,7 +160,33 @@ fn the_public_profile_catalogs_are_derived_from_live_game_catalogs() {
             "{} achievement label moved",
             achievement.id
         );
+        // What the profile page says a badge was for, hidden badges included:
+        // a badge on a profile has already been earned.
+        assert_eq!(
+            exported["achievementDetails"][achievement.id]["description"], achievement.description,
+            "{} achievement description moved",
+            achievement.id
+        );
+        assert_eq!(
+            exported["achievementDetails"][achievement.id]["category"], achievement.category,
+            "{} achievement category moved",
+            achievement.id
+        );
+        // The inspiration field is the song behind the badge: a maintainer
+        // note, never public.
+        assert!(
+            exported["achievementDetails"][achievement.id]
+                .get("inspiration")
+                .is_none(),
+            "{} exported its inspiration",
+            achievement.id
+        );
     }
+    let categories: Vec<Value> = CATEGORIES
+        .iter()
+        .map(|category| serde_json::json!({"key": category.id, "title": category.title}))
+        .collect();
+    assert_eq!(exported["achievementCategories"], Value::Array(categories));
 }
 
 /// The shipped code path, end to end: the binary writes the file, and its

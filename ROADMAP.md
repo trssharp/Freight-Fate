@@ -203,6 +203,22 @@ its status or release decision.
       situation; the sandbox turns every live feed on. Driven live: Tonopah,
       relayed Las Vegas load assigned and accepted.
 
+### September 12 profiles and the safety record
+
+- [x] The public profile explains each badge: the invariants export carries
+      every badge's description and category (hidden ones included, since a
+      badge on a profile is earned) and orinks.net dev renders them under
+      the title; the in-game driver profile speaks the description too. The
+      song behind each badge stays out of the export.
+- [x] Two safety-record gaps closed: the chain-law checkpoint citation was
+      charged but never booked on the licence file, and an out-of-service
+      order only ever counted on the trip, never on the career field the
+      scale screening scores. Both reach the record now.
+- [ ] The public safety record lists citations, serious violations, major
+      offenses, claims, terminations and repossessions; out-of-service
+      orders and fatigue events are scored but not shown, by the same rule
+      that keeps fatigue private. Decide whether orders belong on the page.
+
 ## 1.10 planned -- the working week and home
 
 Design doc: `docs/eld-home-terminal-design.md`. The ELD grows from a daily
