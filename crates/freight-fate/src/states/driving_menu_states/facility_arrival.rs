@@ -285,8 +285,11 @@ impl FacilityArrivalState {
                     &SettlementTerms {
                         carrier_key: Some(&profile.carrier_key),
                         owned_trailers: &owned_refs,
-                        reputation: Some(profile.career.reputation),
+                        reputation: Some(profile.standing()),
                         transponder: has_weigh_station_transponder(profile),
+                        record_surcharge: ff_core::models::enforcement::record_insurance_surcharge(
+                            profile,
+                        ),
                     },
                 )
                 .net_before_advance

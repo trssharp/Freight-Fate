@@ -1256,6 +1256,11 @@ fn test_serious_hos_inspection_orders_out_of_service_reset() {
         assert!(approx(p.money, money - hos::HOS_FINES[0]), "{}", p.money);
         assert_eq!(p.hos.driving_min, 481.0);
         assert_eq!(p.hos.since_break_min, 0.0);
+        // The order reaches the career record the safety record scores, not
+        // only the trip tally: it never did, so a scale kept waving a driver
+        // with out-of-service history through as clean.
+        assert_eq!(p.out_of_service_events, 1);
+        assert_eq!(p.driving_record.citations, 1);
     }
     assert!(approx(
         harness.read_drive(|d| d.trip.game_minutes),
@@ -1272,6 +1277,16 @@ fn test_serious_hos_inspection_orders_out_of_service_reset() {
         money - hos::HOS_FINES[0]
     ));
     assert_eq!(harness.read_drive(|d| d.out_of_service_count), 1);
+    assert_eq!(
+        harness
+            .app
+            .ctx
+            .profile
+            .as_ref()
+            .expect("a career")
+            .out_of_service_events,
+        1
+    );
 }
 
 #[test]

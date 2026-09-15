@@ -51,6 +51,7 @@ use crate::states::base::{InputEvent, Key, Menu, MenuItem, SimpleMenuState};
 use crate::states::driving::DrivingState;
 
 mod board;
+mod close_out;
 mod extras;
 mod terminal;
 mod truck_status;
@@ -59,6 +60,7 @@ mod weather;
 pub use board::{
     describe_job, locked_reason, trailer_note, JobBoardState, JobDetailState, JOB_BOARD_INTRO_HELP,
 };
+pub use close_out::CloseOutCareerState;
 pub use extras::{BobtailDestState, PayDebtState};
 pub use terminal::CityMenuState;
 pub use truck_status::TruckStatusState;
@@ -161,6 +163,12 @@ pub fn first_day_guidance_active(profile: &Profile) -> bool {
 }
 
 pub fn first_day_orientation_message(ctx: &GameContext, prefix: &str) -> String {
+    first_day_orientation_lines(ctx, prefix).join(" ")
+}
+
+/// The briefing one sentence per line, for the terminal's re-readable
+/// screen; `first_day_orientation_message` is these joined.
+pub fn first_day_orientation_lines(ctx: &GameContext, prefix: &str) -> Vec<String> {
     let p = profile(ctx);
     let terminal = home_terminal(ctx);
     let option = option_for_profile(p);
@@ -173,25 +181,38 @@ pub fn first_day_orientation_message(ctx: &GameContext, prefix: &str) -> String 
         ctx.world.spoken_city(&p.current_city, None)
     );
     if option.is_owner_operator() {
-        return format!(
-            "{prefix}First-day briefing: leased to {}, parked at {location}. You own a new \
-             truck with a full tank and {} dollars of working capital. Fuel, repairs, truck \
-             wear, trailer programs, and business reserves come out of your cash. First \
-             objective: open the dispatch board and choose an unlocked load with a deadline \
-             you can protect.",
-            option.carrier_name,
-            fmt_grouped(p.money, 0)
-        );
+        return vec![
+            format!(
+                "{prefix}First-day briefing: leased to {}, parked at {location}.",
+                option.carrier_name
+            ),
+            format!(
+                "You own a new truck with a full tank and {} dollars of working capital.",
+                fmt_grouped(p.money, 0)
+            ),
+            "Fuel, repairs, truck wear, trailer programs, and business reserves come out \
+             of your cash."
+                .to_string(),
+            "First objective: open the dispatch board and choose an unlocked load with a \
+             deadline you can protect."
+                .to_string(),
+        ];
     }
-    format!(
-        "{prefix}First-day briefing: welcome aboard {}. Your assigned truck is parked at \
-         {location}. The carrier covers fuel, repairs, insurance, and trailer support. \
-         Dispatch style: {}. As a new hire, dispatch assigns your load and route, and \
-         refusing an assignment goes on your service record. First objective: open the \
-         dispatch board, accept the assigned load, and deliver it cleanly.",
-        option.carrier_name,
-        option.dispatch.summary()
-    )
+    vec![
+        format!(
+            "{prefix}First-day briefing: welcome aboard {}.",
+            option.carrier_name
+        ),
+        format!("Your assigned truck is parked at {location}."),
+        "The carrier covers fuel, repairs, insurance, and trailer support.".to_string(),
+        format!("Dispatch style: {}.", option.dispatch.summary()),
+        "As a new hire, dispatch assigns your load and route, and refusing an assignment \
+         goes on your service record."
+            .to_string(),
+        "First objective: open the dispatch board, accept the assigned load, and deliver \
+         it cleanly."
+            .to_string(),
+    ]
 }
 
 /// What the terminal says about the first-day / career objective on entry
@@ -270,7 +291,7 @@ pub fn dispatch_cache_key(p: &Profile) -> Value {
     // the trust that built it.
     key.insert(
         "trust".into(),
-        Value::from(enforcement::trust_band(p.career.reputation)),
+        Value::from(enforcement::trust_band(p.standing())),
     );
     key.insert(
         "force_dest".into(),
@@ -389,7 +410,7 @@ pub fn open_freight_market(ctx: &mut GameContext) -> Vec<Job> {
                         // down.
                         count: enforcement::board_offers_for_reputation(
                             board_offer_count(p.career.level()) as i64,
-                            p.career.reputation,
+                            p.standing(),
                         )
                         .max(0) as usize,
                         level: p.career.level(),

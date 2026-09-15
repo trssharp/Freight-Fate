@@ -85,7 +85,12 @@ impl Profile {
             Value::from(self.calendar_offset_days),
         );
         d.insert("tutorial_done".into(), Value::from(self.tutorial_done));
-        d.insert("truck".into(), Value::from(self.truck.as_str()));
+        // The tractor the driver is actually in, not the raw field: a company
+        // driver's assignment follows their level and the field only changes
+        // when dispatch writes a slip seat, a spare or a status change into
+        // it, so a promoted driver kept an old yard's truck in the save for
+        // good. Reading it back yields the same key, so this is idempotent.
+        d.insert("truck".into(), Value::from(self.active_truck_key()));
         d.insert("owned_trucks".into(), strings(&self.owned_trucks));
         let conditions: Map<String, Value> = self
             .truck_conditions
@@ -142,10 +147,14 @@ impl Profile {
             "owner_operator_declined".into(),
             Value::from(self.owner_operator_declined),
         );
-        d.insert(
-            "career".into(),
-            serde_json::to_value(&self.career).expect("a career serialises"),
-        );
+        d.insert("career".into(), {
+            let mut career = serde_json::to_value(&self.career).expect("a career serialises");
+            // The number the public profile shows, computed here rather
+            // than kept current in memory: the record and the clock both
+            // move it, and the save is the only reader.
+            career["standing"] = Value::from(self.standing());
+            career
+        });
         d.insert(
             "driving_record".into(),
             serde_json::to_value(&self.driving_record).expect("a driving record serialises"),
@@ -211,13 +220,24 @@ impl Profile {
         // A career from before the enforcement record existed is seeded from
         // whatever offenses the save still holds -- no amnesty -- and hears a
         // one-time explanation of where it stands.
-        let driving_record: DrivingRecord = match d.get("driving_record") {
+        let mut driving_record: DrivingRecord = match d.get("driving_record") {
             Some(Value::Object(_)) => {
                 serde_json::from_value(d["driving_record"].clone()).unwrap_or_default()
             }
             Some(_) => DrivingRecord::new(),
             None => seed_record_from_save(&d),
         };
+        // A save from before the carrier's record review existed: the review
+        // starts counting from this load, so an old serious violation cannot
+        // hold the equipment or end the employment on the first boot of the
+        // build that introduced it. A record that carries the field keeps it.
+        let review_known = d
+            .get("driving_record")
+            .and_then(Value::as_object)
+            .is_some_and(|record| record.contains_key("review_started_h"));
+        if !review_known {
+            driving_record.review_started_h = json_f64(d.get("game_hours"), 0.0);
+        }
         let market: Market = match d.get("market") {
             Some(Value::Object(_)) => {
                 serde_json::from_value(d["market"].clone()).unwrap_or_else(|_| Market::new())

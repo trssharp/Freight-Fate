@@ -680,20 +680,20 @@ impl HosClock {
         if duty_left <= break_left {
             return format!(
                 "ELD status {status}. Hours of service: \
-                 {} hours of driving left, \
-                 {} hours of duty window left.{suffix}",
-                fmt_f(drive_left, 1),
-                fmt_f(duty_left, 1),
+                 {} of driving left, \
+                 {} of duty window left.{suffix}",
+                duration_text(drive_left),
+                duration_text(duty_left),
             );
         }
         format!(
             "ELD status {status}. Hours of service: \
-             {} hours of driving left, \
-             break due in {} hours, \
-             duty window closes in {} hours.{suffix}",
-            fmt_f(drive_left, 1),
-            fmt_f(break_left, 1),
-            fmt_f(duty_left, 1),
+             {} of driving left, \
+             break due in {}, \
+             duty window closes in {}.{suffix}",
+            duration_text(drive_left),
+            duration_text(break_left),
+            duration_text(duty_left),
         )
     }
 
@@ -706,6 +706,30 @@ impl HosClock {
     // clock so the spoken number stays true if the limits ever move.
 
     /// (driving, duty window, break) hours left, floored at zero.
+    /// The summary one limit per line, for the logbook: driving left, the
+    /// break, the duty window, and a pending split. Enforcement off and a
+    /// violation each stay one line, because each is one fact.
+    pub fn summary_lines(&self, mode: &str) -> Vec<String> {
+        if is_non_enforced(mode) || self.in_violation(mode) {
+            return vec![self.summary(mode)];
+        }
+        let (drive_left, duty_left, break_left) = self.hours_left(mode);
+        let mut lines = vec![format!("Driving left: {}.", duration_text(drive_left))];
+        if duty_left <= break_left {
+            lines.push(format!("Duty window left: {}.", duration_text(duty_left)));
+        } else {
+            lines.push(format!("Break due in {}.", duration_text(break_left)));
+            lines.push(format!(
+                "Duty window closes in {}.",
+                duration_text(duty_left)
+            ));
+        }
+        if let Some(pending) = self.split_pending_summary() {
+            lines.push(pending.to_string());
+        }
+        lines
+    }
+
     fn hours_left(&self, mode: &str) -> (f64, f64, f64) {
         let (drive_limit, duty_limit, break_after) =
             limits(mode).expect("HOS mode is realistic or relaxed");
@@ -898,8 +922,8 @@ impl HosClock {
             _ => "break",
         };
         format!(
-            " Your {limit_name} comes about {} hours before you would reach it.",
-            fmt_f(gap_h, 1)
+            " Your {limit_name} comes about {} before you would reach it.",
+            duration_text(gap_h)
         )
     }
 

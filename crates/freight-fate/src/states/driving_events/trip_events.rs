@@ -1147,6 +1147,11 @@ impl DrivingState {
             profile.fatigue = hos::rest_break(profile.fatigue);
         }
         self.out_of_service_count += 1;
+        // The career count the safety record scores (models/safety_record,
+        // OUT_OF_SERVICE_WEIGHT). The trip tally above was the only one ever
+        // kept, in Python and in the port, so no order ever reached the
+        // record and the scale kept waving the driver through.
+        profile_mut_of(ctx).out_of_service_events += 1;
         let snapshot = self.snapshot(ctx);
         profile_mut_of(ctx).active_trip = Some(snapshot);
         ctx.save_profile();

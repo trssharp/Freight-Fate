@@ -159,6 +159,7 @@ time is a view, via `Trip.local_hour`.
 | Speech | -- | `speech.py` |
 | States | `State` and subclasses | `states/` |
 | Playtest levers | -- | `playtest_levers.py` |
+| Keyboard shortcuts and controller buttons | `Action`, `Chord`, `PadChord`, `KeyBindings` | `bindings.rs` (game crate) |
 
 ### Roadside colour
 
@@ -223,6 +224,9 @@ from the words, and synonyms cost them a re-read.
 | Concept | Say | Avoid | Internal name |
 | --- | --- | --- | --- |
 | The haul contract | job | gig, run, assignment | `Job` |
+| A driving control moved to another key | keyboard shortcut (the screen), the key it is on ("Engine on or off: E") | binding, mapping, keybind, hotkey | `bindings::Action`, `KeyBindings` |
+| The same on the pad | controller button; right bumper plus «button» for the second layer | modified button, layer two, chord | `bindings::PadChord` |
+| One booked citation or violation with its reason | citation / serious violation / major offense / safety incident, then day, clock, reason, fine, place | ticket entry, infraction, offense record, strike | `enforcement::RecordEntry`, `DrivingRecord.entries` |
 | The freight itself | cargo, the load | payload, goods | `CargoType`, `Job.cargo` |
 | The board of offers | dispatch board | job list, load board | `JobBoard` |
 | The vehicle | truck | rig (except as noted) | `TruckModel` |
@@ -301,9 +305,15 @@ from the words, and synonyms cost them a re-read.
 | A CB report nobody has verified | unconfirmed | rumor, maybe, possible, unreliable | `_cb_confidence` |
 | The last CB call said again because the driver asked for it | repeat the CB chatter | CB replay, rewind, play back the CB, last CB | `DrivingState::speak_last_cb_chatter` (Alt C) |
 | How much police activity you hear | it is not a setting -- the road's own presence, from region, road class and the clock | enforcement presence (the player setting, removed 2026-08-16), police density, patrol frequency, difficulty | `Trip._post_density_at`, `EnforcementWatchMixin._ambience_scale` |
+| How much dispatch and the shippers trust you: the delivery ledger less what your driving record still costs, 0 to 100 | reputation | standing, trust score, rating, rep (the raw ledger is never spoken; a citation or serious violation shows on this number for one game year, a major offense for good; the carrier's review and the insurer look back the same year; the CDL suspension ladder keeps three) | `Profile::standing`, `enforcement::standing_reputation`, `career.standing` in the save |
 | How interesting you look to an inspector | safety record | ISS, CSA, SMS, score, rating | `Profile.selection_score` |
+| What the licence file holds against you: citations, serious violations, major offenses | driving record; "Record:" in short status | MVR, rap sheet, points, history | `DrivingRecord`, `enforcement.standing_text` |
+| The carrier deciding, from the driving record, whether to keep a company driver and on what equipment | the carrier's record review | MVR check, annual review, insurance screening | `enforcement.record_band`, 49 CFR 391.25 |
+| What an owner-operator's insurer adds to the reserve for the driving record | insurance surcharge; "surcharged for your driving record" on the settlement line | rate hike, premium bump, points surcharge | `enforcement.record_insurance_surcharge` |
 | The CDL being off the road for a set time | CDL suspension; "suspended" in short status | ban, revocation, lockout | `DrivingRecord.suspended` |
-| The permanent version of it, after a second major offense | lifetime disqualification | permaban, career over, blacklist | `DrivingRecord.lifetime_disqualified` |
+| The permanent version of it, after a second major offense | lifetime disqualification | permaban, blacklist | `DrivingRecord.lifetime_disqualified` |
+| What a lifetime disqualification does to the career: the driving stops, the save stays readable | the career is over; "Career ended" on the public profile | game over, permadeath, deleted, wiped | `enforcement.career_ended`, `careerEnded` |
+| The player's own removal of an ended career's save and cloud backups | close out this career | delete career (that is the title-menu action for any career), wipe, purge | `CloseOutCareerState` |
 | An offense heavy enough to disqualify a CDL outright | major offense | felony (as the game's own noun), big one | `DrivingRecord.record_major_offense` |
 | Running off the road asleep | fatigue event | microsleep (that is the warning, not the event), nod-off | `DrivingRecord.record_fatigue_event` |
 | How far dispatch will work with you right now | dispatch trust | standing, rep level, tier | `enforcement.standing_band` |
@@ -330,7 +340,8 @@ from the words, and synonyms cost them a re-read.
 | Losing the truck to speed, usually out of gear on a grade | runaway | overspeed (that is the posted-limit one) | `RUNAWAY_SPEED_MPH` |
 | Backing along a travelled lane, away from the destination | driving the wrong way; backing | reversing (that is the gear), wrong-way driver, going backwards | `WRONG_WAY_WARN_MI` |
 | The lane roadwork has coned off, named by the side of the road it is on | the right lane is closed; the left lane is closed | lane one, the outside/inside lane, the middle lane (a closure is always an edge lane), lane closure | `Zone.closed_side`, `Trip.closed_lane_at` |
-| Where to be instead of the closed lane | merge left / merge right (before the taper); keep left / keep right (inside the work zone) | move over, get out of that lane, stay in the left lane (untrue where the road is three wide) | `Trip._closure_phrases` |
+| The mile of reduced speed ahead of a work zone | reduced speed for construction; "speed limit 55 from one mile out" | taper (that is the short merge at its end, MUTCD Part 6), merge zone, approach zone, transition area | `Zone.reason == "construction merge"`, `CONSTRUCTION_TAPER_MI` |
+| Where to be instead of the closed lane | merge left / merge right (before the work zone); keep left / keep right (inside the work zone) | move over, get out of that lane, stay in the left lane (untrue where the road is three wide) | `Trip._closure_phrases` |
 | What state the freight is in | the load; "freight" where "load" would be ambiguous | cargo condition, product, goods | `TruckState.cargo_damage_pct` |
 | The receiver's note about damaged freight | exception on the bill of lading | OS and D, discrepancy, ding | `CARGO_OUTCOME_EXCEPTION` |
 | What the carrier owes for freight it damaged | freight claim | damages, cargo insurance, write-off | `CargoSettlement.claim_value` |
@@ -396,6 +407,7 @@ from the words, and synonyms cost them a re-read.
 | The page on orinks.net where a player manages their driver name, their sharing, and the computers signed in to the account | driver setup page | account page, dashboard, my account, profile page (that name belongs to the public one) | `online_presence.setup_page_url`, the Online hub's "Open my driver setup page" |
 | The other players out working right now, and the screen that shows them | drivers on duty; the thing itself is the drivers **list** ("this list", "the drivers list") | drivers board (board belongs to dispatch, one row above), drivers online (Online is the hub's name *and* a setting the player toggles, so it reads as "drivers who have online services on"), roster, who's online, live board | `DriversOnlineState`, `getLivePresenceBoard` and the `Drivers on duty` heading on orinks.net |
 | Another driver appearing on or leaving the drivers list, and the optional spoken notice of it | "<driver> is on duty" / "<driver> went off duty"; the Online menu row that turns the notice on is "Say when drivers go on or off duty" | joined, logged in, came online, signed off, left the board, notification (the row says "say when") | `duty_watch.duty_change_text`, `settings.duty_notifications` |
+| Every driver with a public profile, on duty or not, and when each was last on duty; the screen that lists them | driver directory; a row says "On duty" or "Last on duty three days ago", and "Not seen on duty yet" for a driver no session has ended for | roster, member list, all drivers, offline drivers, player list, last seen, last online (the stamp is when they went off DUTY, the board's own word) | `DriverDirectoryState`, `getDriverDirectory`, `GET /api/freight-fate/directory`, the Driver directory page on orinks.net |
 | One driver's public page read aloud in the game -- opened with Enter on the drivers list, or as the player's own from the Online menu | driver profile; the player's own is "Your profile"; a driver whose page is hidden "has no public profile" | profile card, driver page, stats screen, player card, private profile (the game never says why a profile is hidden) | `DriverProfileState`, `GET /api/freight-fate/drivers/<driverId>` |
 | Game sound lowering itself while the road voice speaks | game sounds step back for speech (the Settings > Audio row) | ducking, audio duck, attenuation | `settings.duck_audio_for_speech`, `AudioEngine.set_speech_duck` |
 | Where the game's lines go: spoken, or to the screen reader's braille display with nothing spoken | Output (the Settings > Speech row), with speech and braille / braille only as its values; the display is "your braille display" | speech mode, silent mode, mute speech, braille backend, braille channel | `settings.braille_only`, `SpeechSink::set_braille_only`, `VoiceBackend::braille` |

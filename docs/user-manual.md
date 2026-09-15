@@ -218,10 +218,12 @@ After the home terminal is chosen, the terminal repeats a first-day briefing
 until the first dispatch is accepted. It names the carrier or owner-operator
 setup, the current terminal, who pays normal equipment costs, and the first
 objective: choose an unlocked dispatch, reach the shipper, and start a clean
-record with dispatch.
+record with dispatch. The briefing opens as a screen of lines, so any sentence
+can be read again with the arrows.
 
-After that first dispatch, the terminal adds **Career plan**. This speaks the
-current career objective and how it should shape dispatch choices. Early
+After that first dispatch, the terminal adds **Career plan**. This opens the
+current career objective as a screen of lines, the step first, then how it
+should shape dispatch choices. Early
 company drivers work through probation loads, dispatcher trust, safe service,
 and better carrier lanes. Owner-operators hear reminders about working capital,
 fuel, repairs, trailer costs, and cash reserves before moving toward stronger
@@ -310,11 +312,11 @@ Your terminal is the safe hub between jobs. Public terminal actions include:
 | Business status | Review company-driver or owner-operator status. |
 | Garage | Refuel, repair, service tires, and wash company equipment; owner-operators can also buy upgrades, buy tractors, switch owned tractors, add trailer programs, or buy trailers after own authority. |
 | Request pay advance | Draw cash against your next load when you are broke. |
-| Career stats | Review level, reputation, deliveries, career totals, the endorsements you hold, your dispatch trust, your safety record and CDL status, and any balance you owe. |
+| Career stats | Review level, reputation, deliveries, career totals, the endorsements you hold, your dispatch trust, your safety record and CDL status, and any balance you owe. Its last row, Citations and violations, opens the list newest first: what each was, why, what it cost, when, and where. Citations from before this build are counted but carry no reason. |
 | Endorsement courses | Pay for refrigerated, heavy-haul, high-value, or tank training early; the carrier sponsors each course for free at its unlock level. |
 | Truck status | Review truck model, fuel, tank size, damage and its band, tire wear, and road grime. |
-| Time and weather | Review the clock, career day, and current city weather. |
-| Logbook | Review your recent Record of Duty Status entries. |
+| Time and weather | A screen of lines: the clock, the date and season, the career day, and the weather in the city, with the live reading's age when there is one. |
+| Logbook | Review your Record of Duty Status: what you are doing now, your hours limits, today's totals, and the recent entries. |
 | Sleep 10 hours | Rest at the terminal and reset hours of service. |
 | Save game | Save the current career. |
 | Settings | Open settings categories. |
@@ -523,7 +525,14 @@ direct freight gross, and the row includes a short take-home estimate before
 any pay advance. If you own a matching trailer, the job row says so and
 settlement uses the owned trailer reserve instead of a trailer-program charge.
 
-Deliveries earn money, experience, reputation, and career stats. Every settled
+Deliveries earn money, experience, reputation, and career stats. Your driving
+record counts against reputation too: every citation on the record costs
+four points and every serious violation ten for a game year, a major offense
+twenty for good, so a bad record shows on the number dispatch, the shippers
+and the business gates all read, and the points come back a year of game
+time after each one. The carrier's record review and the insurer look back
+the same year; only the CDL suspension ladder still counts serious
+violations over three years. Every settled
 load teaches a base amount of experience on top of its miles, on-time streaks
 compound the lesson, delivering the cargo undamaged adds a bonus, and specialty
 endorsement freight teaches half again as much per mile. Every level up hands
@@ -598,7 +607,12 @@ position. Otherwise the game uses the simulated forecast.
 
 ## Driving controls
 
-Driving controls are active while the road view is focused:
+Driving controls are active while the road view is focused. The keys and
+buttons below are the defaults. Every one of them can be moved to another key
+or pad button under Settings, Gameplay, Controls, then Keyboard shortcuts or
+Controller buttons. The F1 help, the How to play pages and the spoken prompts
+follow the move. With a controller in use, How to play names the pad button
+wherever the pad has one.
 
 | Key | Action |
 | --- | --- |
@@ -957,10 +971,12 @@ around slower traffic, you hear when the lane you came out of is open again:
 you get past, only while it is still true, and never about a lane roadwork has
 closed. If you missed it, or want to know before you commit, press L.
 
-Construction and traffic zones lower the speed limit. A construction zone may
-begin with a merge or flagger taper before the lower limit inside it, and may
-cone off a lane -- but only where you have another lane on your side for the
-whole signed stretch, taper included. On a road that runs one lane your way,
+Construction and traffic zones lower the speed limit. A construction zone
+begins with a mile of reduced speed before the lower limit inside it, the way
+a real work zone steps its limit down. The merge or the flagger sits at the
+end of that mile. A zone may cone off a lane -- but only where you have
+another lane on your side for the whole signed stretch, approach included. On
+a road that runs one lane your way,
 the work still happens with every lane open. You will never be ordered out of
 a lane you cannot leave.
 
@@ -997,11 +1013,17 @@ badly inside a patrol and a trooper may pull you over: signal with X (the same
 key as an exit), brake to a stop on the shoulder, and sit through a license and
 logbook check that reads your recent duty entries before ending in an
 on-the-spot ticket or a warning.
-Ignoring the lights starts as a failure-to-stop warning, then a final warning.
-Keep driving past that and troopers end the stop with spike strips. A felony
-stop adds truck damage, a major fine, a reputation hit, several hours of
-processing time, and cancels the active loaded run. You are released back to the
-terminal so you can repair, rest, and choose what to do next. Speeding is charged only when a trooper catches it.
+Ignoring the lights starts as a failure-to-stop warning, then a final warning
+that says what running costs you. Slow down, brake, or roll on under thirty
+and troopers box the truck in and stop it: a failure-to-stop citation and a
+serious violation on your record, but not a felony. Hold highway speed or
+accelerate for another twelve seconds after that final warning, with no brake,
+and you are running from the police. Nobody gets there by accident: a touch of
+the brake starts the count over. A pursuit ends in a felony stop that adds
+truck damage, a major fine, a reputation hit, several hours of processing
+time, and cancels the active loaded run. You are released back to the terminal
+so you can repair, rest, and choose what to do next. Speeding is charged only
+when a trooper catches it.
 What each of those costs, and what it puts on your record, is under
 Enforcement, Your Record, And Your CDL.
 Open weigh stations also matter: the game warns you before the scale, and if
@@ -1368,7 +1390,11 @@ The Logbook is the spoken Record of Duty Status behind that clock. It records a
 rolling timeline of driving, on-duty work, off-duty breaks, and sleeper-berth
 rest, with the time, location, and a short note such as fuel stop, loading, or
 out-of-service order. Open **Logbook** from the terminal, or open **Tab** while
-driving and choose **Logbook**, to review today's totals and recent entries.
+driving and choose **Logbook**. The first line is what you are doing now and
+since when. Then come your limits, one per line: driving left, when the break
+is due, and when the duty window closes. Today's totals follow on one line,
+and after them the recent entries, newest first, each led by what you were
+doing.
 
 Fatigue rises while driving, faster at night. Drowsiness adds yawn and rumble
 strip cues and makes hazards harder to react to. Once fatigue is severe you
@@ -1440,7 +1466,7 @@ Escape opens the pause menu during a drive. Public pause choices include:
 | Choice | What It Does |
 | --- | --- |
 | Resume driving | Return to the active drive. |
-| Trip status | Review cargo, objective, route progress, time used, and air status. |
+| Trip status | A screen of lines: the load, where it is going, how far along you are, the hours used, and the air. |
 | Controls and help | Open the how-to-play reference at the driving keys, page by page, without leaving the drive. |
 | Call a roadside mechanic | Patch severe truck damage enough to continue, at a high cost. |
 | Install snow chains | While stopped with chains in the side box: hang the chains. Takes real minutes, more in the dark, logged as on-duty work. |
@@ -1635,6 +1661,8 @@ quiets it, and settling back under the limit disarms it.
 | Automatic direction changes | In an automatic, both styles now change direction the same way: a fresh press held at a standstill. A brake held through a stop just holds the truck. The setting remains for familiarity. |
 | Controller | Accept controller input alongside the keyboard. The keyboard always stays active. |
 | Haptics | Use controller vibration for hazards, hard braking, rumble strips, and road seams. |
+| Keyboard shortcuts | One row per driving control, naming the key it is on. Enter on a row, then press the key you want, with Shift, Control, or Alt held if you want a chord. A key another control already has is refused by name; Escape keeps the current key. The pause key, Enter, F1, the Control keys that stop the voice, plus and minus, the radio dial keys, and the message review keys stay fixed. A last row puts every key back to its default. |
+| Controller buttons | The same for the pad. Enter on a row, then press the button you want, with the right bumper held for the second layer. Press the button the row already has to keep it. Start, Back, the bumpers, the triggers, and the sticks stay fixed. |
 
 ### Audio settings
 
@@ -1675,6 +1703,7 @@ your orinks.net account, cloud backup, and every sharing choice in one place:
 
 | Item | Purpose |
 | --- | --- |
+| Driver directory | Every driver with a public profile, whether they are on duty right now or not. Drivers on duty come first with what they are doing, then everyone else by when they were last on duty, in round figures like three days ago or two weeks ago; a driver the game has never seen on duty says so. The list does not update by itself; Check again asks once more. Press Enter on a driver to read their public profile, the same screen the Drivers on duty list opens. Viewing it shares nothing about you. |
 | Drivers on duty | Reads the public list: each driver's name, what they are doing, and how fresh the report is. The list keeps itself up to date about once a minute while it is open, quietly, holding your place, the same way the list on orinks.net does; there is nothing to press. Viewing it shares nothing about you and does not require sharing to be on. Press Enter on a driver to read their public profile: their name and whether they are on duty, their current career, employment and carrier, level and title, truck, a career resume, their achievements across every career, and their latest road journal lines, one fact per row. A driver whose profile is not public says so. |
 | Say when drivers go on or off duty | Off by default. When on, the game says when another driver sets off or signs off, like Road Star is on duty, wherever you are in the game, including while driving; the line waits its turn behind anything urgent. It checks the public drivers list about once a minute and never mentions you. Works without an orinks.net account and shares nothing about you. |
 | Online services | The master switch for the orinks.net and sharing services. When off, the drivers list, Profile sharing, Cloud backup, Mastodon sharing, and Discord presence all behave as disabled, and each keeps its own setting for when you turn the master switch back on. Real-world weather, traffic, and parking are separate: they follow their own toggles under Settings, Gameplay, World and traffic. |

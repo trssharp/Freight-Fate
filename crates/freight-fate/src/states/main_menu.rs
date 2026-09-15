@@ -43,6 +43,7 @@ mod careers;
 mod settings;
 mod settings_actions;
 mod settings_items;
+mod shortcuts;
 
 pub use achievements::{AchievementCareerState, AchievementCategoryState, AchievementsState};
 pub use careers::{
@@ -51,11 +52,14 @@ pub use careers::{
 pub use settings::{
     GameplaySettingsState, SettingsCategoryState, SettingsState, SETTINGS_LAYOUT_NOTICES,
 };
+pub use shortcuts::{ShortcutDevice, ShortcutsState};
 
 pub use crate::states::main_menu_career::{
     region_menu_name, CareerStartState, HomeCityState, HomeTerminalState,
 };
-pub use crate::states::main_menu_help::{controls_help_page, HelpState, HELP_PAGES};
+pub use crate::states::main_menu_help::{
+    controls_help_page, help_page, help_pages, render_help_line, HelpState, HELP_PAGES,
+};
 pub use crate::states::update::{UpdateCheckState, UpdateChecker, UpdatePromptState};
 
 /// A clearly-named stand-in for a screen another port task still owns.

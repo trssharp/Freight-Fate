@@ -283,8 +283,9 @@ pub struct DrivingState {
     pub pull_over_grace_s: f64,
     // How long the stop has stayed unresolved past the final warning.
     pub pull_over_forced_s: f64,
-    // How long the deliberate run key has been held down.
-    pub pursuit_hold_s: f64,
+    // Real seconds the truck has held speed, unbraked, past the final
+    // warning: the road to a pursuit. Any brake zeroes it.
+    pub pull_over_run_s: f64,
     // Ladder movement spoken during this trip, restated once at the
     // delivery summary so nothing about your standing is heard only
     // on a road the player has already left.
@@ -550,6 +551,11 @@ pub struct DrivingState {
     // (end mile, limit, reason) of a restricted zone cruise has begun
     // slowing for -- a work zone or heavy traffic.
     pub construction_slowdown: Option<(f64, f64, String)>,
+    /// `(barrels mile, taper limit)` while cruise is still on the merge
+    /// taper's number ahead of that zone; cleared the moment the zone's own
+    /// number takes over, so the target never climbs back as the braking
+    /// window shrinks.
+    pub construction_taper_stage: Option<(f64, f64)>,
     /// A lower posted limit adaptive cruise is already easing for:
     /// `(start_mi, limit_mph, reason)`, held until the truck reaches it.
     /// The lookahead is a braking distance that shrinks as cruise slows,
@@ -770,6 +776,7 @@ pub struct DrivingState {
     pub auto_jake_cooldown_s: f64, // rate limit between stage steps
     pub shift_recover_t: f64, // 0->1 recovery progress after an automatic shift ends
     pub shift_hold_rpm: Option<f64>, // engine voice held here through a shift
+    pub manual_engage_clunk_pending: bool, // a manual shift's second clunk, owed at engagement
     // Smooth only the audible engine load. Physics keeps the raw throttle,
     // while small controller and cruise changes blend into the engine bed.
     pub engine_audio_throttle: f64,

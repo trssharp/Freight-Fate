@@ -29,6 +29,14 @@ FIRST_SNAPSHOT_COMPLETE_LIST = (
     "GitHub release page. Read `CHANGELOG.md` in the download for the complete "
     "curated list."
 )
+# A later snapshot can overflow too: a busy stretch, or a rewrite of the
+# curated entries, which makes every bullet read as new to the previous tag.
+SNAPSHOT_COMPLETE_LIST = (
+    "## Complete change list\n\n"
+    "This snapshot carries more player-facing changes than fit on the GitHub "
+    "release page. Read `CHANGELOG.md` in the download for the complete "
+    "curated list."
+)
 SECTION_ORDER = ("Added", "Changed", "Improved", "Fixed", "Removed", "Deprecated", "Security")
 PLAYER_FACING_SECTIONS = SECTION_ORDER + ("Compatibility",)
 INTERNAL_SECTIONS = (
@@ -258,6 +266,47 @@ def excluded_entries_from_notes(path: str) -> set[str]:
     )
 
 
+REPUBLISHED_FILE = Path("tools/release_notes_republished.txt")
+
+
+def republished_entries(released: set[str] | None = None) -> set[str]:
+    """Entries a rewrite republished rather than added.
+
+    A snapshot lists the bullets whose text is not in the changelog at the
+    previous tag, so a commit that rewords every entry makes the next snapshot
+    announce the whole block as new. ``tools/release_notes_republished.txt``
+    names that commit (``ref = <sha>``): everything in the changelog there
+    counts as already published, except the bullets whose bold lead the file
+    lists on ``new = ...`` lines, which were genuinely new when the rewrite
+    landed and still have to go out. Delete the file once a snapshot tag
+    carries the rewritten text; it is harmless but stale after that.
+    """
+    path = ROOT / REPUBLISHED_FILE
+    if not path.exists():
+        return set()
+    ref = ""
+    still_new: list[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if key == "ref":
+            ref = value
+        elif key == "new":
+            still_new.append(normalize_entry(value))
+    if not ref:
+        return set()
+    text = changelog_at(ref)
+    if not text:
+        raise SystemExit(f"{REPUBLISHED_FILE}: commit {ref} is not in this clone")
+    if released is None:
+        released = released_versions()
+    entries = entries_from_sections(nightly_candidate_sections(text, released))
+    return {entry for entry in entries if not any(entry.startswith(lead) for lead in still_new)}
+
+
 def sections_added_since(
     base_ref: str,
     head_text: str,
@@ -269,6 +318,7 @@ def sections_added_since(
     base_entries = entries_from_sections(
         nightly_candidate_sections(changelog_at(base_ref), released)
     )
+    base_entries.update(republished_entries(released))
     if extra_excluded_entries:
         base_entries.update(extra_excluded_entries)
 
@@ -309,8 +359,30 @@ def bounded_first_snapshot_sections(
     sections: list[ChangelogSection],
 ) -> tuple[list[ChangelogSection], bool]:
     """Keep complete recent entries from every section within GitHub's limit."""
+    return bounded_sections(
+        sections,
+        "Changes in this snapshot",
+        FIRST_SNAPSHOT_COMPLETE_LIST,
+        section_heading_level=3,
+    )
+
+
+def bounded_sections(
+    sections: list[ChangelogSection],
+    changes_heading: str,
+    footer: str,
+    *,
+    section_heading_level: int,
+) -> tuple[list[ChangelogSection], bool]:
+    """Keep complete recent entries from every section within GitHub's limit.
+
+    Returns the sections to publish and whether anything was left out; when
+    something was, the caller appends ``footer`` so the page says where the
+    rest is. Entries are taken in file order, round-robin across sections, so
+    the newest of every kind survives rather than all of one section.
+    """
     if first_snapshot_fits(
-        format_nightly_notes(sections, "Changes in this snapshot", section_heading_level=3)
+        format_nightly_notes(sections, changes_heading, section_heading_level=section_heading_level)
     ):
         return sections, False
 
@@ -333,9 +405,9 @@ def bounded_first_snapshot_sections(
             selected[index].append(entry)
             candidate = format_nightly_notes(
                 selected_sections(),
-                "Changes in this snapshot",
-                FIRST_SNAPSHOT_COMPLETE_LIST,
-                section_heading_level=3,
+                changes_heading,
+                footer,
+                section_heading_level=section_heading_level,
             )
             if first_snapshot_fits(candidate):
                 offsets[index] += 1
@@ -366,16 +438,17 @@ def nightly_notes(
     changes_heading = (
         "Changes in this snapshot" if first_snapshot else "Changes since the previous snapshot"
     )
-    footer = ""
-    if first_snapshot:
-        sections, was_bounded = bounded_first_snapshot_sections(sections)
-        if was_bounded:
-            footer = FIRST_SNAPSHOT_COMPLETE_LIST
+    section_heading_level = 3 if first_snapshot else 2
+    complete_list = FIRST_SNAPSHOT_COMPLETE_LIST if first_snapshot else SNAPSHOT_COMPLETE_LIST
+    sections, was_bounded = bounded_sections(
+        sections, changes_heading, complete_list, section_heading_level=section_heading_level
+    )
+    footer = complete_list if was_bounded else ""
     return format_nightly_notes(
         sections,
         changes_heading,
         footer,
-        section_heading_level=3 if first_snapshot else 2,
+        section_heading_level=section_heading_level,
     )
 
 

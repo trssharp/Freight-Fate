@@ -77,6 +77,13 @@ pub struct CatalogInputs {
     pub achievement_ids: Vec<String>,
     /// Achievement key and player-facing title from `ACHIEVEMENTS`.
     pub achievement_labels: Vec<(String, String)>,
+    /// Achievement key, category key and player-facing description from
+    /// `ACHIEVEMENTS`: what the public profile says a badge was for. Hidden
+    /// badges are included -- a badge on a profile has been earned, and the
+    /// hidden flag only guards the locked list in the game.
+    pub achievement_details: Vec<(String, String, String)>,
+    /// Category key and title from `CATEGORIES`, in menu order.
+    pub achievement_categories: Vec<(String, String)>,
     /// Career titles from `CAREER_RANKS`, in exact level order.
     pub career_titles: Vec<String>,
     /// Career-start key and carrier name from `START_OPTIONS`.
@@ -131,7 +138,7 @@ impl CatalogInputs {
     /// moves a constant moves the export with it and the validator on
     /// orinks.net never falls behind the build players are running.
     pub fn current() -> Self {
-        use crate::achievements::ACHIEVEMENTS;
+        use crate::achievements::{ACHIEVEMENTS, CATEGORIES};
         use crate::models::career::{
             Career, DELIVERY_COMPLETION_XP, LEVEL_XP, XP_CLEAN_BONUS, XP_PER_MILE_ON_TIME,
             XP_SPECIALTY_MULT, XP_STREAK_MAX_BONUS,
@@ -179,6 +186,20 @@ impl CatalogInputs {
             achievement_labels: ACHIEVEMENTS
                 .iter()
                 .map(|badge| (badge.id.to_string(), badge.name.to_string()))
+                .collect(),
+            achievement_details: ACHIEVEMENTS
+                .iter()
+                .map(|badge| {
+                    (
+                        badge.id.to_string(),
+                        badge.category.to_string(),
+                        badge.description.to_string(),
+                    )
+                })
+                .collect(),
+            achievement_categories: CATEGORIES
+                .iter()
+                .map(|category| (category.id.to_string(), category.title.to_string()))
                 .collect(),
             career_titles: CAREER_RANKS
                 .iter()
@@ -354,6 +375,26 @@ pub fn invariant_data(data_root: &Path, inputs: &CatalogInputs) -> Result<Value,
         .iter()
         .map(|(key, label)| (key.clone(), Value::from(label.clone())))
         .collect();
+    let achievement_details: Map<String, Value> = inputs
+        .achievement_details
+        .iter()
+        .map(|(key, category, description)| {
+            let mut row = Map::new();
+            row.insert("category".into(), Value::from(category.clone()));
+            row.insert("description".into(), Value::from(description.clone()));
+            (key.clone(), Value::Object(row))
+        })
+        .collect();
+    let achievement_categories: Vec<Value> = inputs
+        .achievement_categories
+        .iter()
+        .map(|(key, title)| {
+            let mut row = Map::new();
+            row.insert("key".into(), Value::from(key.clone()));
+            row.insert("title".into(), Value::from(title.clone()));
+            Value::Object(row)
+        })
+        .collect();
     let carrier_labels: Map<String, Value> = inputs
         .carrier_labels
         .iter()
@@ -427,6 +468,14 @@ pub fn invariant_data(data_root: &Path, inputs: &CatalogInputs) -> Result<Value,
     out.insert(
         "achievementLabels".into(),
         Value::Object(achievement_labels),
+    );
+    out.insert(
+        "achievementDetails".into(),
+        Value::Object(achievement_details),
+    );
+    out.insert(
+        "achievementCategories".into(),
+        Value::Array(achievement_categories),
     );
     out.insert(
         "careerTitles".into(),
@@ -591,6 +640,12 @@ mod tests {
         CatalogInputs {
             achievement_ids: vec!["first_delivery".into(), "antler_polisher".into()],
             achievement_labels: vec![("first_delivery".into(), "First delivery".into())],
+            achievement_details: vec![(
+                "first_delivery".into(),
+                "road".into(),
+                "Your first load, signed for and gone.".into(),
+            )],
+            achievement_categories: vec![("road".into(), "Out on the Road".into())],
             career_titles: vec!["Yard Trainee".into()],
             carrier_labels: vec![("northstar".into(), "Northstar Freight Lines".into())],
             trailers: vec![TrailerRow {
@@ -904,7 +959,10 @@ mod tests {
     #[test]
     fn rendered_invariants_are_sorted_two_space_json() {
         let text = rendered_invariants(&world_data_root(), &inputs()).unwrap();
-        assert!(text.starts_with("{\n  \"achievementIds\": [\n    \"antler_polisher\",\n"));
+        assert!(text.starts_with(
+            "{\n  \"achievementCategories\": [\n    {\n      \"key\": \"road\",\n      \"title\": \"Out on the Road\"\n    }\n  ],\n  \"achievementDetails\": {\n    \"first_delivery\": {\n      \"category\": \"road\",\n"
+        ));
+        assert!(text.contains("\n  \"achievementIds\": [\n    \"antler_polisher\",\n"));
         assert!(text.contains("\n  \"endorsements\": {\n    \"hazmat\": {\n      \"label\": \"hazmat\",\n      \"tier\": \"endorsement\"\n    },\n    \"heavy_haul\": {\n      \"label\": \"heavy-haul\",\n      \"level\": 3,\n      \"tier\": \"certificate\"\n    },"));
         assert!(text.ends_with("}\n"));
     }

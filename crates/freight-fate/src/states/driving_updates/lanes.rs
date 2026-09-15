@@ -8,7 +8,7 @@ use ff_core::speech_pacing::{EventPriority, SpeechCategory};
 use ff_core::speech_text::SpokenMessage;
 
 use crate::app::{GameContext, SayEvent};
-use crate::states::base::Key;
+use crate::bindings::Action;
 use crate::states::driving::DrivingState;
 use crate::states::driving_core::*;
 use crate::states::driving_events::ambient::Ambient;
@@ -21,10 +21,10 @@ impl DrivingState {
     pub fn update_lane(&mut self, ctx: &mut GameContext, dt: f64) {
         let mode = ctx.settings.lane_keeping.clone();
         let mut steer = 0.0;
-        if ctx.input.is_pressed(Key::Left) {
+        if ctx.bindings.pressed(&ctx.input, Action::SteerLeft) {
             steer -= 1.0;
         }
-        if ctx.input.is_pressed(Key::Right) {
+        if ctx.bindings.pressed(&ctx.input, Action::SteerRight) {
             steer += 1.0;
         }
         // The left stick provides analog steering when the keys are idle.
@@ -742,7 +742,13 @@ impl DrivingState {
             Some(post) => format!("A trooper working this {} saw it", post.reason()),
             None => "The work crew called it in".to_string(),
         };
-        let ladder = self.log_enforcement(ctx, fine, true, false);
+        let ladder = self.log_enforcement(
+            ctx,
+            fine,
+            true,
+            false,
+            "Drove through the barrels in a work zone",
+        );
         ctx.audio.play("ui/error");
         let tail = if ladder.is_empty() {
             String::new()

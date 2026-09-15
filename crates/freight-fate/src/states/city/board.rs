@@ -75,11 +75,12 @@ fn settlement_for(p: &Profile, job: &Job, with_reputation: bool) -> BusinessSett
             carrier_key: Some(&p.carrier_key),
             owned_trailers: &owned_refs,
             reputation: if with_reputation {
-                Some(p.career.reputation)
+                Some(p.standing())
             } else {
                 None
             },
             transponder: has_weigh_station_transponder(p),
+            record_surcharge: enforcement::record_insurance_surcharge(p),
         },
     )
 }

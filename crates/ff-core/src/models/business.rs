@@ -84,6 +84,12 @@ pub trait BusinessProfile: CareerProfile {
     fn start_mode(&self) -> &str;
     /// `profile.active_trailer_programs()`.
     fn active_trailer_programs(&self) -> Vec<String>;
+    /// Whether the CDL is valid right now: no live suspension, no lifetime
+    /// disqualification. A lessor does not put a driver who cannot legally
+    /// drive into a truck, so the buy-in waits for it.
+    fn cdl_clear(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -244,7 +250,7 @@ pub fn authority_readiness_eligibility<P: BusinessProfile + ?Sized>(
     if career.deliveries < AUTHORITY_READY_DELIVERIES {
         reasons.push(format!("Complete {AUTHORITY_READY_DELIVERIES} deliveries."));
     }
-    if career.reputation < AUTHORITY_READY_REPUTATION {
+    if profile.career_reputation() < AUTHORITY_READY_REPUTATION {
         reasons.push(format!(
             "Build reputation to {}.",
             fmt_f(AUTHORITY_READY_REPUTATION, 0)
@@ -295,7 +301,7 @@ pub fn authority_activation_eligibility<P: BusinessProfile + ?Sized>(
             "Complete {AUTHORITY_ACTIVATION_DELIVERIES} deliveries."
         ));
     }
-    if career.reputation < AUTHORITY_ACTIVATION_REPUTATION {
+    if profile.career_reputation() < AUTHORITY_ACTIVATION_REPUTATION {
         reasons.push(format!(
             "Build reputation to {}.",
             fmt_f(AUTHORITY_ACTIVATION_REPUTATION, 0)
@@ -333,6 +339,12 @@ pub fn owner_operator_eligibility<P: BusinessProfile + ?Sized>(profile: &P) -> (
     }
     let career = profile.career();
     let mut reasons: Vec<String> = Vec::new();
+    if !profile.cdl_clear() {
+        reasons.push(
+            "Hold a clear CDL: no lessor puts a suspended or disqualified driver in a truck."
+                .to_string(),
+        );
+    }
     if career.level() < OWNER_OPERATOR_LEVEL {
         let rank = rank_for_level(OWNER_OPERATOR_LEVEL);
         reasons.push(format!(
@@ -343,7 +355,7 @@ pub fn owner_operator_eligibility<P: BusinessProfile + ?Sized>(profile: &P) -> (
     if career.deliveries < OWNER_OPERATOR_DELIVERIES {
         reasons.push(format!("Complete {OWNER_OPERATOR_DELIVERIES} deliveries."));
     }
-    if career.reputation < OWNER_OPERATOR_REPUTATION {
+    if profile.career_reputation() < OWNER_OPERATOR_REPUTATION {
         reasons.push(format!(
             "Build reputation to {}.",
             fmt_f(OWNER_OPERATOR_REPUTATION, 0)
@@ -565,17 +577,19 @@ pub fn direct_freight_gross(gross_pay: f64) -> f64 {
     round_py_n(gross_pay, 2)
 }
 
-pub fn owner_operator_charges(job: &Job, gross_pay: f64, transponder: bool) -> Vec<BusinessCharge> {
+pub fn owner_operator_charges(
+    job: &Job,
+    gross_pay: f64,
+    transponder: bool,
+    record_surcharge: f64,
+) -> Vec<BusinessCharge> {
     let miles = job.distance_mi;
     let mut charges = vec![
         BusinessCharge {
             label: "maintenance reserve",
             amount: round_py_n(miles * OWNER_MAINTENANCE_PER_MILE, 2),
         },
-        BusinessCharge {
-            label: "insurance reserve",
-            amount: round_py_n(miles * OWNER_INSURANCE_PER_MILE, 2),
-        },
+        insurance_charge(miles, OWNER_INSURANCE_PER_MILE, record_surcharge),
         BusinessCharge {
             label: "trailer program",
             amount: round_py_n(miles * trailer_program_charge_per_mile(job.cargo.key), 2),
@@ -599,7 +613,7 @@ pub fn owner_operator_charges(job: &Job, gross_pay: f64, transponder: bool) -> V
 }
 
 pub fn independent_authority_charges(job: &Job, gross_pay: f64) -> Vec<BusinessCharge> {
-    independent_authority_charges_for_trailers::<&str>(job, gross_pay, &[], false)
+    independent_authority_charges_for_trailers::<&str>(job, gross_pay, &[], false, 1.0)
 }
 
 pub fn independent_authority_charges_for_trailers<S: AsRef<str>>(
@@ -607,6 +621,7 @@ pub fn independent_authority_charges_for_trailers<S: AsRef<str>>(
     gross_pay: f64,
     owned_trailers: &[S],
     transponder: bool,
+    record_surcharge: f64,
 ) -> Vec<BusinessCharge> {
     let miles = job.distance_mi;
     let owned_trailer_charge = owned_trailer_charge_per_mile(job.cargo.key, owned_trailers);
@@ -625,10 +640,7 @@ pub fn independent_authority_charges_for_trailers<S: AsRef<str>>(
             label: "maintenance reserve",
             amount: round_py_n(miles * OWNER_MAINTENANCE_PER_MILE, 2),
         },
-        BusinessCharge {
-            label: "insurance reserve",
-            amount: round_py_n(miles * AUTHORITY_INSURANCE_PER_MILE, 2),
-        },
+        insurance_charge(miles, AUTHORITY_INSURANCE_PER_MILE, record_surcharge),
         trailer_charge,
         BusinessCharge {
             label: "truck payment reserve",
@@ -666,12 +678,45 @@ fn uncollected(driver_charges: f64, raw_net: f64) -> f64 {
 
 /// The keyword arguments of `build_business_settlement`, each with its
 /// Python default.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SettlementTerms<'a> {
     pub carrier_key: Option<&'a str>,
     pub owned_trailers: &'a [&'a str],
     pub reputation: Option<f64>,
     pub transponder: bool,
+    /// The insurer's multiplier on the insurance reserve for the driver's
+    /// record (`enforcement::record_insurance_surcharge`); 1.0 is a clean
+    /// window, and a company driver is always 1.0.
+    pub record_surcharge: f64,
+}
+
+impl Default for SettlementTerms<'_> {
+    fn default() -> Self {
+        Self {
+            carrier_key: None,
+            owned_trailers: &[],
+            reputation: None,
+            transponder: false,
+            record_surcharge: 1.0,
+        }
+    }
+}
+
+/// The insurance reserve line: the clean per-mile rate, or the surcharged
+/// one under a label that says why, so the settlement readout names the
+/// record every time it costs money.
+fn insurance_charge(miles: f64, per_mile: f64, record_surcharge: f64) -> BusinessCharge {
+    if record_surcharge > 1.0 {
+        BusinessCharge {
+            label: "insurance reserve, surcharged for your driving record",
+            amount: round_py_n(miles * per_mile * record_surcharge, 2),
+        }
+    } else {
+        BusinessCharge {
+            label: "insurance reserve",
+            amount: round_py_n(miles * per_mile, 2),
+        }
+    }
 }
 
 /// `build_business_settlement(status, job, gross_pay, on_time=,
@@ -691,6 +736,7 @@ pub fn build_business_settlement(
             gross_pay,
             terms.owned_trailers,
             terms.transponder,
+            terms.record_surcharge,
         );
         let raw = gross_pay - driver_charges - charges.iter().map(|c| c.amount).sum::<f64>();
         return BusinessSettlement {
@@ -705,7 +751,8 @@ pub fn build_business_settlement(
     }
     if is_owner_operator(status) {
         let gross_pay = owner_operator_gross(gross_pay);
-        let charges = owner_operator_charges(job, gross_pay, terms.transponder);
+        let charges =
+            owner_operator_charges(job, gross_pay, terms.transponder, terms.record_surcharge);
         let raw = gross_pay - driver_charges - charges.iter().map(|c| c.amount).sum::<f64>();
         return BusinessSettlement {
             status: status.to_string(),

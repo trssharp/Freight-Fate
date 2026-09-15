@@ -131,6 +131,16 @@ pub enum Key {
     KpMinus,
     F1,
     F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
     Return,
     Escape,
     Space,
@@ -144,8 +154,13 @@ pub enum Key {
     End,
     PageUp,
     PageDown,
+    Insert,
+    Delete,
     Comma,
     Period,
+    Slash,
+    Backslash,
+    Backquote,
     Equals,
     Plus,
     Minus,
@@ -454,9 +469,9 @@ pub trait State: AsAny {
     /// The on-duty snapshot for the live drivers board, or None.
     ///
     /// Only the active hauling states (driving, pulled over, resting,
-    /// delivering) report themselves; everything else -- including the
-    /// pause menu, which counts as off duty -- returns None so the player
-    /// drops off the public board when they are not actively on a job.
+    /// delivering, and the pause menu over any of them, which reports
+    /// `PAUSED_ACTIVITY`) report themselves; everything else returns None so
+    /// the player drops off the public board when they are not on a job.
     fn online_presence(&self, _ctx: &GameContext) -> Option<PresenceState> {
         None
     }

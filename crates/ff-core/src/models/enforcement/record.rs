@@ -6,10 +6,35 @@ use serde_json::{Map, Value};
 
 use super::{
     FATIGUE_EVENTS_BEFORE_SERIOUS, HOURS_PER_DAY, MAJOR_FIRST_DISQUALIFICATION_DAYS,
-    REPUTATION_FULL_BOARD, SERIOUS_SECOND_SUSPENSION_DAYS, SERIOUS_THIRD_SUSPENSION_DAYS,
-    SERIOUS_WINDOW_DAYS, SUSPENSION_LIFETIME, SUSPENSION_MAJOR, SUSPENSION_SERIOUS,
+    REPUTATION_FULL_BOARD, REVIEW_WINDOW_DAYS, SERIOUS_SECOND_SUSPENSION_DAYS,
+    SERIOUS_THIRD_SUSPENSION_DAYS, SERIOUS_WINDOW_DAYS, SUSPENSION_LIFETIME, SUSPENSION_MAJOR,
+    SUSPENSION_SERIOUS,
 };
 use crate::models::save_migration::{json_f64, json_i64};
+
+/// One line of the record as the driver can read it back: what it was,
+/// why, what it cost, when, and where. The counts and timestamps above are
+/// what the ladder and the review are computed from; these are the reasons
+/// behind them, kept only since this build (owner, 2026-09-14), so a
+/// count can exceed the entries that explain it and the screen says so.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RecordEntry {
+    /// `RECORD_CITATION`, `RECORD_SERIOUS`, `RECORD_MAJOR` or `RECORD_FATIGUE`.
+    pub kind: String,
+    pub reason: String,
+    pub fine: f64,
+    pub game_hours: f64,
+    pub place: String,
+}
+
+pub const RECORD_CITATION: &str = "citation";
+pub const RECORD_SERIOUS: &str = "serious";
+pub const RECORD_MAJOR: &str = "major";
+pub const RECORD_FATIGUE: &str = "fatigue";
+
+/// How many explained entries the record keeps; the oldest fall off first.
+pub const RECORD_ENTRIES_KEPT: usize = 60;
 
 /// What the licence file remembers about this driver, for the whole career.
 ///
@@ -24,6 +49,21 @@ pub struct DrivingRecord {
     pub major_offenses: Vec<f64>,
     /// Every spoken roadside citation, lifetime.
     pub citations: i64,
+    /// Career game hours of each citation booked since the record started
+    /// keeping times, newest last. `citations` is the lifetime tally; this is
+    /// what a carrier's annual review (49 CFR 391.25) and an insurer's
+    /// surcharge actually read, because both count a window, not a life.
+    /// A citation from before this field existed has no time and is never
+    /// inside any window.
+    pub citation_times: Vec<f64>,
+    /// Career hour the carrier's review and the insurer's surcharge started
+    /// counting from. Zero for a career that started under them. A career
+    /// saved before they existed gets the hour it was first loaded under
+    /// them, so a serious violation it already carried -- served through the
+    /// 383.51 ladder the driver was told about at the time -- cannot fire a
+    /// hold or a termination the driver was never warned of on the first
+    /// boot of a new build. The licence ladder itself is not affected.
+    pub review_started_h: f64,
     /// Lifetime enforcement money, all sources.
     pub fines_paid: f64,
     /// Times this driver ran off the road asleep.
@@ -52,6 +92,8 @@ pub struct DrivingRecord {
     /// A career that predates the record loaded with offenses already on it and
     /// has not yet heard the one-time explanation of where it now stands.
     pub notice_pending: bool,
+    /// The explained entries, oldest first (see [`RecordEntry`]).
+    pub entries: Vec<RecordEntry>,
 }
 
 impl DrivingRecord {
@@ -72,6 +114,67 @@ impl DrivingRecord {
 
     pub fn major_count(&self) -> i64 {
         self.major_offenses.len() as i64
+    }
+
+    /// The start of the carrier's review window: a game year back, or the
+    /// hour the review began for this career, whichever is later.
+    fn review_cutoff(&self, game_hours: f64) -> f64 {
+        self.cutoff_days_back(game_hours, REVIEW_WINDOW_DAYS)
+    }
+
+    /// `days` back from now, floored at the hour the review began, so a
+    /// window of any length never reaches a violation the driver was never
+    /// warned counted.
+    fn cutoff_days_back(&self, game_hours: f64, days: i64) -> f64 {
+        (game_hours - days as f64 * HOURS_PER_DAY).max(self.review_started_h)
+    }
+
+    /// Citations inside the last `days`, since the review began.
+    pub fn citations_within(&self, game_hours: f64, days: i64) -> i64 {
+        let cutoff = self.cutoff_days_back(game_hours, days);
+        self.citation_times
+            .iter()
+            .filter(|&&at| at >= cutoff)
+            .count() as i64
+    }
+
+    /// Serious violations inside the last `days`, since the review began.
+    pub fn serious_within(&self, game_hours: f64, days: i64) -> i64 {
+        let cutoff = self.cutoff_days_back(game_hours, days);
+        self.serious_violations
+            .iter()
+            .filter(|&&at| at >= cutoff)
+            .count() as i64
+    }
+
+    /// Citations still inside the window a carrier reviews.
+    pub fn citations_in_window(&self, game_hours: f64) -> i64 {
+        self.citations_within(game_hours, REVIEW_WINDOW_DAYS)
+    }
+
+    /// Serious violations the carrier's review and the insurer count: inside
+    /// the review window AND since the review began. Distinct from
+    /// [`Self::serious_in_window`], which is the 383.51 licence ladder, looks
+    /// back three years and counts every one.
+    pub fn serious_in_review_window(&self, game_hours: f64) -> i64 {
+        self.serious_within(game_hours, REVIEW_WINDOW_DAYS)
+    }
+
+    /// The career hour at which the oldest citation or serious violation
+    /// still in the window leaves it, or `None` when the window is empty.
+    /// This is the date a record-based hold can honestly promise.
+    pub fn window_ages_out_at(&self, game_hours: f64) -> Option<f64> {
+        let window = REVIEW_WINDOW_DAYS as f64 * HOURS_PER_DAY;
+        let cutoff = self.review_cutoff(game_hours);
+        self.citation_times
+            .iter()
+            .chain(self.serious_violations.iter())
+            .filter(|&&at| at >= cutoff)
+            .copied()
+            .fold(None, |oldest: Option<f64>, at| {
+                Some(oldest.map_or(at, |o| o.min(at)))
+            })
+            .map(|oldest| oldest + window)
     }
 
     pub fn suspended(&self, game_hours: f64) -> bool {
@@ -105,9 +208,45 @@ impl DrivingRecord {
 
     // -- writes -------------------------------------------------------------
 
+    /// A citation with no career time: the legacy seeding path, and nothing
+    /// else. Every live stop books through [`Self::record_citation_at`].
     pub fn record_citation(&mut self, fine: f64) {
         self.citations += 1;
         self.fines_paid += fine.max(0.0);
+    }
+
+    /// Keep the reason behind a count just booked. Never changes the counts
+    /// or the ladder; those are the `record_*` methods' business.
+    pub fn note(&mut self, kind: &str, reason: &str, fine: f64, game_hours: f64, place: &str) {
+        self.entries.push(RecordEntry {
+            kind: kind.to_string(),
+            reason: reason.to_string(),
+            fine,
+            game_hours,
+            place: place.to_string(),
+        });
+        let extra = self.entries.len().saturating_sub(RECORD_ENTRIES_KEPT);
+        if extra > 0 {
+            self.entries.drain(..extra);
+        }
+    }
+
+    /// Citations the counts know about that no entry explains: booked before
+    /// reasons were kept, or fallen off the end of the list.
+    pub fn unexplained_citations(&self) -> i64 {
+        let explained = self
+            .entries
+            .iter()
+            .filter(|e| e.kind != RECORD_FATIGUE)
+            .count() as i64;
+        (self.citations - explained).max(0)
+    }
+
+    /// Book a citation at career hour `game_hours`, so the carrier's review
+    /// window and the insurer's surcharge can count it.
+    pub fn record_citation_at(&mut self, fine: f64, game_hours: f64) {
+        self.record_citation(fine);
+        self.citation_times.push(game_hours);
     }
 
     /// Log a serious traffic violation; returns the count in the window.

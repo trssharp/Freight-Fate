@@ -53,6 +53,22 @@ impl CareerObjective {
             self.title, self.terminal_text, self.dispatch_text
         )
     }
+
+    /// The same plan one part per line: the step, what the terminal says
+    /// about it, what dispatch says, and the milestone when there is one.
+    pub fn spoken_lines(&self) -> Vec<String> {
+        let mut lines = vec![format!("{}.", self.title)];
+        for part in [
+            &self.terminal_text,
+            &self.dispatch_text,
+            &self.milestone_text,
+        ] {
+            if !part.trim().is_empty() {
+                lines.push(part.clone());
+            }
+        }
+        lines
+    }
 }
 
 /// Return the current practical career objective without changing saves.
@@ -77,7 +93,7 @@ fn company_driver_objective<P: CareerProfile + ?Sized>(profile: &P) -> CareerObj
             guidance.recommendation_label,
         );
     }
-    if profile.career().reputation < 70.0 {
+    if profile.career_reputation() < 70.0 {
         return CareerObjective::new(
             "Build dispatcher trust",
             format!(

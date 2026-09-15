@@ -127,17 +127,38 @@ impl DrivingState {
         fine: f64,
         serious: bool,
         major: bool,
+        reason: &str,
     ) -> String {
         if ctx.profile.is_none() || self.enforcement_bypassed(ctx) {
             // the debug hours modes freeze the ladder as well as the stop
             return String::new();
         }
-        profile_mut_of(ctx).driving_record.record_citation(fine);
         let hours = record_hours(ctx, self);
+        let place = self.record_place(ctx);
+        let kind = if major {
+            enforcement::RECORD_MAJOR
+        } else if serious {
+            enforcement::RECORD_SERIOUS
+        } else {
+            enforcement::RECORD_CITATION
+        };
+        {
+            let record = &mut profile_mut_of(ctx).driving_record;
+            record.record_citation_at(fine, hours);
+            record.note(kind, reason, fine, hours, &place);
+        }
         let text = if major {
             let kind = profile_mut_of(ctx)
                 .driving_record
                 .record_major_offense(hours);
+            if kind == enforcement::SUSPENSION_LIFETIME {
+                // The career is over. The roadside line says so now; the
+                // terminal reads the full notice once, re-readable, the way
+                // it reads a termination or a repossession.
+                let record = &mut profile_mut_of(ctx).driving_record;
+                record.setback_notice_kind = enforcement::SETBACK_DISQUALIFICATION.to_string();
+                record.setback_notice_lines = enforcement::disqualification_notice_lines();
+            }
             major_offense_text(ctx, kind, hours)
         } else if serious {
             let count = profile_mut_of(ctx)
@@ -155,9 +176,18 @@ impl DrivingState {
     pub fn log_fatigue_event(&mut self, ctx: &mut GameContext) -> String {
         let hours = record_hours(ctx, self);
         let hit = enforcement::FATIGUE_EVENT_REPUTATION_HIT;
-        let (count, serious) = profile_mut_of(ctx)
-            .driving_record
-            .record_fatigue_event(hours);
+        let place = self.record_place(ctx);
+        let (count, serious) = {
+            let record = &mut profile_mut_of(ctx).driving_record;
+            let booked = record.record_fatigue_event(hours);
+            let kind = if booked.1 > 0 {
+                enforcement::RECORD_SERIOUS
+            } else {
+                enforcement::RECORD_FATIGUE
+            };
+            record.note(kind, "Ran off the road asleep", 0.0, hours, &place);
+            booked
+        };
         let text = if count < enforcement::FATIGUE_EVENTS_BEFORE_SERIOUS {
             format!(
                 "Running off the road asleep is a preventable safety incident and it goes on \

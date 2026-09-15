@@ -79,6 +79,17 @@ These steps remain open even where a related implementation bullet is checked:
       release; the place-callouts ladder rides the release merge to dev.
 - [ ] The physical-Mac VoiceOver listening pass on the Mac release
       staging, and the owner voice pass over seven achievement titles.
+- [ ] Cut the stable notes from the rewritten Unreleased block
+      (2026-09-14: 718 bullets at a median of 85 words became 774 at 27,
+      one heading per section). Before cutting: drop the tester-line
+      bullets that are false at release (the staging orinks.net copy, the
+      1.9 tester snapshots, the Update channel developer-snapshots row,
+      the "1.9 updates look for tester builds" fix), and settle the pairs
+      the rewrite could not from the code: fuel counting toward the
+      truck's weight against the 80,000-pound dispatch cap; curve speed
+      assistance "engine brake first" (Added) against "the engine brake
+      is for hills, not corners" (Fixed); the Learn game sounds collision
+      entry, which still explains itself by the retired terse mode.
 
 #### Player-impacting release blockers
 
@@ -211,6 +222,179 @@ its status or release decision.
 - [x] The agent server's `scenario` tool stages the sandbox career in any
       situation; the sandbox turns every live feed on. Driven live: Tonopah,
       relayed Las Vegas load assigned and accepted.
+
+### September 12 profiles and the safety record
+
+- [x] The public profile explains each badge: the invariants export carries
+      every badge's description and category (hidden ones included, since a
+      badge on a profile is earned) and orinks.net dev renders them under
+      the title; the in-game driver profile speaks the description too. The
+      song behind each badge stays out of the export.
+- [x] Two safety-record gaps closed: the chain-law checkpoint citation was
+      charged but never booked on the licence file, and an out-of-service
+      order only ever counted on the trip, never on the career field the
+      scale screening scores. Both reach the record now.
+- [ ] The public safety record lists citations, serious violations, major
+      offenses, claims, terminations and repossessions; out-of-service
+      orders and fatigue events are scored but not shown, by the same rule
+      that keeps fatigue private. Decide whether orders belong on the page.
+- [x] The driving record bites through the carrier and the insurer, and is
+      spoken (owner ask, 2026-09-12). Endorsements stay untied to the record
+      (hazmat is a TSA threat assessment, 49 CFR 1572, criminal and
+      immigration disqualifiers only; tank and doubles are knowledge tests,
+      383.93). Citations now carry career times; the carrier's annual record
+      review (391.25) is a fourth dispatch-trust input for company drivers
+      (guarded over three citations or one serious violation in three years,
+      termination at six or two, floors ASSUMED from common insurer hiring
+      standards) with the age-out date spoken; the owner-operator insurance
+      reserve carries a surcharge (a tenth per citation, a third per serious,
+      capped at double, ASSUMED); the record line and the terminal greeting
+      read the live consequence.
+- [x] A career that is over stays readable (owner ruling 2026-09-12, over
+      automatic deletion): the second major offense lands as a terminal
+      notice, the greeting says the career is over, the buy-in waits for a
+      clear CDL, the public profile carries a Career ended row with the last
+      verified career behind it, and Close out this career (terminal menu,
+      last row, confirmed) is the only thing that removes the save and its
+      cloud backups. Real-life basis: 49 CFR 383.51 Table 1 lifetime
+      disqualification, 49 CFR 384.225 55-year record retention.
+- [ ] Two record gaps from the same research: the scale-house safety
+      record scores lifetime counts where the real carrier score is a
+      time-weighted 24 months, and driving under an out-of-service order is
+      a disqualifying offense (383.51 Table 4) the game does not model.
+
+### September 14 reputation reads the record
+
+- [x] Reputation is the delivery ledger less the driving record inside a
+      ONE-GAME-YEAR window (4 per citation, 10 per serious violation, 20 per
+      major offense for life, capped at 60), read by every gate, the trust
+      band, the pay bonus, the stats screen and the public profile (the save
+      now carries `career.standing`; invariants regenerated on both sides).
+      The raw ledger is untouched, so an aged-out record gives the points
+      back. Owner ruling 2026-09-14 after Jess read 98 beside three serious
+      violations. Cargo claims already hit the ledger directly and were left
+      out of the penalty. The window is a year, not the review's three,
+      because the clock only moves on the road: staging shows about a game
+      day per delivery, so three years outlasts every career played.
+- [x] Audit of every wait keyed to game time (2026-09-14): the hazmat (30
+      days) and TWIC (20 days) background checks and the 60/120 day
+      suspensions are reachable, and a suspension can be waited out at the
+      terminal. The 391.25 carrier review and the insurer surcharge moved to
+      the same one-game-year window as reputation (REVIEW_WINDOW_DAYS), so
+      the equipment hold's age-out date is one a driver can reach; the 383.51
+      licence ladder keeps its three years because it is the law, not the
+      carrier. Lifetime counts (claims, terminations, repossessions, fatigue,
+      out-of-service) stay lifetime by design.
+
+### September 14 screens of lines
+
+- [x] Four screens that answered with one long sentence are lists of lines
+      on the shared readout screen (`SimpleMenuState::readout`): Time and
+      weather, Trip status, Career plan, and the first-day briefing. The
+      logbook drops its duplicated status and its heading row, splits the
+      hours limits one per line, and reads entries newest first, led by the
+      status. Business status rows, action results, and the driving readout
+      keys stay single answers on purpose.
+- [x] Every citation and violation booked at the wheel keeps its reason,
+      fine, game hour and place as a record entry (the last 60), and Career
+      stats opens them newest first. Counts from before this build read as
+      "recorded before reasons were kept". The entries ride inside the
+      record, which the cloud validator already knows as one top-level
+      field, so no validator change was needed.
+- [x] Whole hours are spoken whole ("3 hours", "1 hour") by the one helper
+      every hours answer shares; the hours summary and the logbook read
+      through it too.
+
+### September 14 work zone approach
+
+- [x] Automatic speed control follows the warning's two numbers: cruise
+      eases to the taper's 55 first, then to the zone's 45 once the barrels
+      are inside the larger of its braking window and the keeper's ease
+      distance; the keeper, which takes the taper over at its start, sheds
+      for the barrels from that moment instead of holding the taper's
+      number until its 0.75-mile window opened. Measured at standard
+      pacing: entry 47.2 before, 45.7 after (owner report).
+- [x] The mile ahead of a work zone is spoken as the reduced-speed approach
+      ("speed limit 55 from one mile out, then 45 through the work zone";
+      entry "Reduced speed for construction"), matching how a real
+      interstate work zone steps its limit down through its advance warning
+      area. "Taper" now names only the short merge at its end, as in MUTCD
+      Part 6, where the traffic-squeeze advisory still uses it.
+
+### September 14 keyboard shortcuts and controller buttons
+
+- [x] Every discrete driving control resolves through one table
+      (`crates/freight-fate/src/bindings.rs`) the player edits from
+      Settings, Gameplay, Controls: Keyboard shortcuts and Controller
+      buttons, one row per control, Enter then a press to move it, refusals
+      by name for a taken or fixed key, a reset row. Saved as two text fields
+      in the settings file. The F1 help, the spoken "press X to" prompts, and
+      the mastery counter that retires them all follow the moved key. Fixed
+      by design: Escape, Enter, F1, the Control keys, Shift and the left
+      bumper as the clutch, plus and minus, the radio dial keys, message
+      review, Start and Back on the pad, and every menu key.
+- [x] The How to play pages render every control name from the live table
+      (`{{id}}` placeholders in `main_menu_help.rs`), following the device
+      in use: the pad button when a controller is active and the control
+      has one, else the keyboard key. The Controller page pins pad names.
+- [x] The agent server's `press`, `hold`, `release` and `pedal` tools take a
+      control's shortcut id as well as a key name, resolved against the
+      sandbox player's own table, chord included.
+
+### September 14 pause stays on duty
+
+- [x] Pausing keeps the driver on the drivers list, shown as paused, instead
+      of signing them off after twenty seconds and back on at resume (which
+      read "went off duty" and "is on duty" to everyone's duty watch for a
+      bathroom break). The game posts the pause once and sends no
+      heartbeats while paused; the server holds a paused row for the
+      thirty-minute idle window instead of the six-minute heartbeat one,
+      so a pause left for good ages off like a parked truck, dated at the
+      pause. Server side deployed first; builds before it keep the old
+      behaviour.
+
+### September 13 driver directory
+
+- [x] A driver directory beside Drivers on duty, in the game and on
+      orinks.net: every driver with a public profile, on duty first, then by
+      when they were last on duty in round figures. The server stamps a
+      driver's last-on-duty time once per session end (the sweep that ages
+      a silent game off the board, or the game's own sign-off), never per
+      heartbeat, so the live board stays as cheap as it was. Same audience
+      as the board: public, consented, unflagged. Drivers whose last session
+      ended before the stamp existed read as not seen on duty yet until
+      their next one ends.
+
+- [x] Two owner-supplied instrumentals in the music pack: D-Major Medley
+      in the menu rotation, From Bossa to Blues in the day drive pool (so
+      the Roadhouse plays it). Pack re-pinned at 380 entries and
+      republished.
+
+### September 12 long sessions and speech
+
+- [x] The three-second voice health probe re-published the whole speech
+      snapshot each time, and the snapshot's event-voice options are built by
+      acquiring every Prism backend. Prism 0.18.2's OneCore acquire leaks one
+      USER object, two handles and about 30 KiB per call (measured with
+      `cargo run -p prism --example handle_leak_probe`; NVDA, SAPI and the
+      rest are clean after first use), so the game gained 1,200 USER objects
+      and 2,400 handles an hour: the 10,000-object process limit and the
+      desktop heap, which is the tester's low-memory warning and NVDA failing
+      to restart beside the game. The probe now enumerates only when a voice
+      changed, and the game's registry holds each Prism backend it acquires
+      for the session instead of re-acquiring per request, which also covers
+      a session with no screen reader running, where OneCore is the automatic
+      main voice and the probe re-acquired it on every pass. 1.8 never
+      enumerated outside the settings menu.
+- [ ] Owner verifies the OneCore leak with Prism's author before anything
+      goes upstream; no issue or PR from this side (owner rule 2026-09-12).
+      Hand-off is the probe. Pinned 2026-09-12: the leak is in FREEING an
+      acquired (registry-cached) OneCore instance, not in acquiring it
+      (acquire-and-never-free is flat); prismatoid 0.16.7, which 1.8 runs,
+      frees the same way and is clean, while 0.17.3 and 0.18.2 both leak
+      (`FREIGHT_FATE_PRISM_PATH` points the probe at any build). The Rust
+      game enumerates exactly as 1.8 does; the library under it changed.
+      Holding each instance for the session sidesteps it on every version.
 
 ## 1.10 planned -- the working week and home
 
