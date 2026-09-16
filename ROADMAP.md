@@ -39,13 +39,13 @@ bookmarks usable.
 ## 1.9 in flight (`feat/career-1.9`)
 
 - [x] Keep traffic light approaches and changes brief: Light red, Light yellow,
-      Light green. Shorten the bar countdown to the distance alone.
+      Light green; retain the distance countdown without "to the bar."
 
-- [x] Clear a canceled exit's lane watcher immediately and prevent automatic
-      destination detection from restoring it without another signal.
+- [x] Start the route readout directly with the location or arrival information
+      on facility approaches, city streets, and at the gate.
 
-- [x] Keep the X exit blinker repeating on the right until ramp entry,
-      cancellation, or a missed exit, independently of lane readiness.
+- [x] Keep the exit blinker repeating on the right until ramp entry, cancellation,
+      or a missed exit; stop canceled-exit guidance until the driver signals again.
 
 - [ ] Validate the Windows portable snapshot on a clean Windows installation
       without a separately installed Visual C++ redistributable; the build
@@ -109,8 +109,11 @@ These items are part of the release-gate sweep:
       hazard warnings retain service-braking and reaction time; emergency
       braking has its own stopping estimate.
 
-- [ ] Testers hear sounds quieter at the quiet speech rung; three
-      suspects eliminated, still unexplained.
+- [x] Testers hear sounds quieter at the quiet speech rung -- the Aug 19
+      earcon duck covered say_event; the main say path (cruise/stop
+      confirmations) now ducks the bed the same way when game sounds step
+      back for speech is on. Absolute levels were never low; relative
+      masking under the unducked road bed was.
 - [ ] Departing straight into a hazard at route mile zero -- MOSTLY DONE:
       the real-zone floor and the merge-free opening miles landed
       2026-08-16; what remains is departure chains for the other 72
@@ -352,6 +355,23 @@ its status or release decision.
       so a pause left for good ages off like a parked truck, dated at the
       pause. Server side deployed first; builds before it keep the old
       behaviour.
+
+### September 16 radio range and the cruise floor
+
+- [x] Driving out of a station's range is announced and retuned again. The
+      per-frame settings sync re-pointed the dial at the new position before
+      the reception tick compared, so the tick saw the fallback on both sides:
+      no line, no static, the dead stream left running at full volume, and
+      the drivers board naming the Eagle while the cab played KVSC (owner,
+      Willmar to Owatonna, 2026-09-16; inherited from the Python frame order).
+      The tick and the board now go by the station the playback seam
+      recorded.
+- [x] A hazard that leaves the truck below cruise's holding speed no longer
+      parks the armed session silently. The keeper bridges the crawl on open
+      road, as it does the acceleration lane, and hands to adaptive cruise at
+      20; with the keeper off the cab says once what the session waits for
+      (owner, US-12 near Litchfield, 2026-09-16: "Well done" at 17 mph, then
+      nothing).
 
 ### September 13 driver directory
 
