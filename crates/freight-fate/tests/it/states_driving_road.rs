@@ -572,17 +572,14 @@ fn test_terse_speech_keeps_the_lane_and_drops_the_vehicle() {
     clear_the_box_truck(&mut drive);
     drive.update_lane_gap(&mut app.ctx, 0.1);
 
-    // The rendering is the same one Python asserted; the delivery is not.
-    // Python monkeypatched `say_event` and so bypassed the ladder, but at the
-    // quiet rung STATUS is an EARCON -- the line is cut from the voice and
-    // kept for the review keys, which is exactly where it has to be found.
+    // Quiet keeps the short lane opening in both speech and review.
     let logged: Vec<String> = app.ctx.message_log.messages[logged_before..]
         .iter()
         .map(|message| message.text.clone())
         .filter(|text| text.contains("lane open"))
         .collect();
     assert_eq!(logged, vec!["Right lane open.".to_string()]);
-    assert!(openings(&app).is_empty(), "quiet answers with the earcon");
+    assert_eq!(openings(&app), vec!["Right lane open.".to_string()]);
 }
 
 #[test]
@@ -863,14 +860,14 @@ fn test_zone_violation_warns_before_any_fine() {
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, "Jake");
     let mile = a_zone_mile(&drive);
-    let money = profile_of(&app.ctx).money;
+    let money = profile_of(&app.ctx).money();
     roll_with_jake(&mut drive, mile);
     app.clear_speech();
 
     drive.update_engine_brake_zone(&mut app.ctx, 0.1);
 
     assert_eq!(drive.jake_zone_fines, 0);
-    assert_eq!(profile_of(&app.ctx).money, money);
+    assert_eq!(profile_of(&app.ctx).money(), money);
     let spoken = app.event_lines().join(" ");
     assert!(spoken.contains("No engine brake zone"), "{spoken}");
     assert!(spoken.contains("Buffalo"), "{spoken}");
@@ -881,7 +878,7 @@ fn test_keeping_the_jake_on_past_the_grace_draws_a_fine() {
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, "Jake");
     let mile = a_zone_mile(&drive);
-    let money = profile_of(&app.ctx).money;
+    let money = profile_of(&app.ctx).money();
     roll_with_jake(&mut drive, mile);
     app.clear_speech();
 
@@ -889,7 +886,7 @@ fn test_keeping_the_jake_on_past_the_grace_draws_a_fine() {
     drive.update_engine_brake_zone(&mut app.ctx, JAKE_ZONE_GRACE_S + 1.0); // grace expires
 
     assert_eq!(drive.jake_zone_fines, 1);
-    assert_eq!(profile_of(&app.ctx).money, money - JAKE_ZONE_FINES[0]);
+    assert_eq!(profile_of(&app.ctx).money(), money - JAKE_ZONE_FINES[0]);
     let spoken = app.event_lines().join(" ");
     assert!(spoken.contains("150 dollar"), "{spoken}");
     assert!(spoken.contains("engine braking"), "{spoken}");
@@ -1067,7 +1064,7 @@ fn test_fines_escalate_and_cap() {
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, "Jake");
     let mile = a_zone_mile(&drive);
-    let money = profile_of(&app.ctx).money;
+    let money = profile_of(&app.ctx).money();
     roll_with_jake(&mut drive, mile);
 
     for _ in 0..4 {
@@ -1080,7 +1077,7 @@ fn test_fines_escalate_and_cap() {
 
     assert_eq!(drive.jake_zone_fines, 4);
     let expected: f64 = JAKE_ZONE_FINES.iter().sum::<f64>() + JAKE_ZONE_FINES[2];
-    assert_eq!(profile_of(&app.ctx).money, money - expected);
+    assert_eq!(profile_of(&app.ctx).money(), money - expected);
     assert_eq!(drive.jake_fines_paid, expected);
 }
 
@@ -1518,14 +1515,14 @@ fn test_an_owner_operator_pays_the_roadside_bill_out_of_pocket() {
     app.ctx.profile.as_mut().expect("a profile").business_status =
         LEASED_OWNER_OPERATOR.to_string();
     drive.trip.truck.damage_pct = DAMAGE_OUT_OF_SERVICE_PCT + 5.0;
-    let money = profile_of(&app.ctx).money;
+    let money = profile_of(&app.ctx).money();
     let cost = drive.roadside_repair_cost();
     app.clear_speech();
 
     drive.recover_out_of_service(&mut app.ctx);
 
     assert!(!drive.trip.truck.out_of_service());
-    assert_eq!(profile_of(&app.ctx).money, money - cost);
+    assert_eq!(profile_of(&app.ctx).money(), money - cost);
     assert!(drive.limp_cap_mph.is_none());
     // The recovery line IS the announcement for the band it lands in.
     assert_eq!(drive.damage_band, drive.trip.truck.damage_band());
@@ -1539,13 +1536,13 @@ fn test_a_company_driver_is_grounded_and_pays_nothing() {
     let mut drive = a_drive(&mut app, "Wrench");
     app.ctx.profile.as_mut().expect("a profile").business_status = COMPANY_DRIVER.to_string();
     drive.trip.truck.damage_pct = DAMAGE_OUT_OF_SERVICE_PCT + 5.0;
-    let money = profile_of(&app.ctx).money;
+    let money = profile_of(&app.ctx).money();
     let reputation = profile_of(&app.ctx).career.reputation;
     app.clear_speech();
 
     drive.recover_out_of_service(&mut app.ctx);
 
-    assert_eq!(profile_of(&app.ctx).money, money);
+    assert_eq!(profile_of(&app.ctx).money(), money);
     assert!(profile_of(&app.ctx).career.reputation < reputation);
     let spoken = app.event_lines().join(" ");
     assert!(
@@ -1700,9 +1697,7 @@ fn test_terse_speech_keeps_a_short_form_of_every_band() {
         drive.update_damage_bands(&mut app.ctx, 1.0 / 60.0);
     }
 
-    // The first two bands are STATUS, which the quiet rung answers with an
-    // earcon; the wall is SAFETY and keeps its (terse) words. Both renderings
-    // reach the review log, which is where the Python assertions live now.
+    // Quiet speaks concise status and safety bands and keeps them in review.
     let logged: Vec<String> = app.ctx.message_log.messages[logged_before..]
         .iter()
         .map(|message| message.text.clone())
@@ -1823,7 +1818,7 @@ fn test_company_driver_pays_no_money_but_hours_and_standing() {
     let mut app = TestApp::new();
     let mut drive = a_damage_drive(&mut app, COMPANY_DRIVER, 1);
     damage_rolling(&mut drive, 0.0);
-    let money = profile_of(&app.ctx).money;
+    let money = profile_of(&app.ctx).money();
     let reputation = profile_of(&app.ctx).career.reputation;
     let minutes_before = drive.trip.game_minutes;
     drive.trip.truck.damage_pct = DAMAGE_OUT_OF_SERVICE_PCT;
@@ -1831,7 +1826,7 @@ fn test_company_driver_pays_no_money_but_hours_and_standing() {
 
     drive.update_damage_bands(&mut app.ctx, 1.0 / 60.0);
 
-    assert_eq!(profile_of(&app.ctx).money, money);
+    assert_eq!(profile_of(&app.ctx).money(), money);
     assert_eq!(
         profile_of(&app.ctx).career.reputation,
         reputation - BREAKDOWN_REPUTATION_HIT
@@ -1907,19 +1902,23 @@ fn test_a_driver_with_no_spare_gets_the_road_crew_instead() {
 fn test_recovery_runs_once_however_many_frames_pass() {
     let mut app = TestApp::new();
     let mut drive = a_damage_drive(&mut app, LEASED_OWNER_OPERATOR, 1);
-    app.ctx.profile.as_mut().expect("a profile").money = 50_000.0;
+    app.ctx
+        .profile
+        .as_mut()
+        .expect("a profile")
+        .set_money(50_000.0);
     damage_rolling(&mut drive, 0.0);
     drive.trip.truck.damage_pct = DAMAGE_OUT_OF_SERVICE_PCT;
     let logged_before = app.ctx.message_log.messages.len();
     app.clear_speech();
 
     drive.update_damage_bands(&mut app.ctx, 1.0 / 60.0);
-    let charged = 50_000.0 - profile_of(&app.ctx).money;
+    let charged = 50_000.0 - profile_of(&app.ctx).money();
     for _ in 0..30 {
         drive.update_damage_bands(&mut app.ctx, 1.0 / 60.0);
     }
 
-    assert_eq!(50_000.0 - profile_of(&app.ctx).money, charged);
+    assert_eq!(50_000.0 - profile_of(&app.ctx).money(), charged);
     let walls = logged_since(&app, logged_before)
         .into_iter()
         .filter(|line| line.contains("Out of service"))
@@ -1980,3 +1979,6 @@ fn test_the_worst_band_reached_survives_a_shoulder_repair() {
     assert_eq!(drive.damage_band, DAMAGE_BAND_NONE);
     assert_eq!(drive.worst_damage_band, DAMAGE_BAND_LAST_CALL);
 }
+
+#[path = "states_driving_road/quiet_speech.rs"]
+mod quiet_speech;

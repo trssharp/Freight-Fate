@@ -50,6 +50,48 @@ fn test_every_entry_names_itself_plays_something_and_explains_itself() {
 }
 
 #[test]
+fn test_no_entry_text_carries_a_run_of_spaces() {
+    // Five entries lost their backslash line continuations and shipped
+    // fourteen-space runs to the Learn game sounds screen, which reads them
+    // to speech and braille as written (review I9, 2026-09-19). A literal
+    // split across lines has to be joined with `\`; this catches the next
+    // one that is not.
+    for entry in catalog_entries() {
+        for (what, text) in [
+            ("name", entry.name),
+            ("meaning", entry.meaning),
+            ("when", entry.when),
+        ] {
+            assert!(
+                !text.contains("  "),
+                "{}: its {what} has a run of spaces: {text:?}",
+                entry.name
+            );
+        }
+    }
+}
+
+#[test]
+fn test_engine_lean_when_text_says_what_the_director_does() {
+    // Review I10: the text taught that the lean never happens with the
+    // lane-departure warning off, which was false for every bend. It now
+    // has to name the four facts the code has: turns in every mode, drift
+    // only with the warning on, the tone replacing it, and the reversal.
+    let when = entry_by_name("The engine lean")
+        .expect("The engine lean is catalogued")
+        .when;
+    for fact in [
+        "Every bend and street corner, in every lane keeping mode",
+        "lane departure warning is on",
+        "set to tone",
+        "Steering guide row reverses",
+    ] {
+        assert!(when.contains(fact), "missing {fact:?} in {when:?}");
+    }
+    assert!(!when.contains("never happens"), "{when:?}");
+}
+
+#[test]
 fn test_lane_category_teaches_the_edge_ladder_in_order() {
     let lane = CATALOG
         .iter()
@@ -68,13 +110,13 @@ fn test_lane_category_teaches_the_edge_ladder_in_order() {
 // side IS the information.
 const BOTH_SIDES_ENTRIES: &[&str] = &[
     "Mechanical blinker",
-    "The road lean",
+    "The engine lean",
+    "Where you sit in the lane",
     "Rumble strip, clipped",
     "Rumble strip",
     "Off the pavement",
     "Lane line crossed",
     "Lane locator",
-    "Curve chime",
     "Signal tone",
     "Police car going by",
 ];
@@ -187,13 +229,13 @@ fn test_a_folder_glob_excludes_the_whole_folder() {
 // name here in the same change.
 const SETTINGS_GATED_ENTRIES: &[&str] = &[
     "Mechanical blinker",
-    "The road lean",
+    "The engine lean",
+    "Where you sit in the lane",
     "Rumble strip, clipped",
     "Rumble strip",
     "Off the pavement",
     "Back in the lane",
     "Lane locator",
-    "Curve chime",
     "Overspeed chime",
     "Gear grind",
     "Police car going by",
@@ -302,7 +344,7 @@ fn entry(name: &str) -> &'static SoundEntry {
 }
 
 #[test]
-fn test_the_road_lean_is_taught_as_a_cue_you_steer_toward() {
+fn test_the_engine_lean_is_taught_as_a_cue_you_steer_toward() {
     // The lane guide is a pursuit instrument and the rumble strip is not.
     //
     // Its target is `curve_steer - offset` (sim/lane_guidance), so drifting
@@ -311,8 +353,15 @@ fn test_the_road_lean_is_taught_as_a_cue_you_steer_toward() {
     // being drifted toward and is steered away from. Prose is the only place
     // that difference can live, and getting it backwards would teach a blind
     // driver to steer off the road, so it is pinned here rather than trusted.
-    let lean = entry("The road lean");
+    let lean = entry("The engine lean");
     assert!(lean.meaning.contains("Steer toward the lean"));
+    // And the bed, which the guide used to ride, must NOT read as something
+    // to follow now that it only reports where the truck already is.
+    let seat = entry("Where you sit in the lane");
+    assert!(
+        !seat.meaning.contains("Steer toward"),
+        "the position readout must not be taught as a pursuit cue"
+    );
     for rung in ["Rumble strip, clipped", "Rumble strip"] {
         assert!(
             entry(rung).meaning.to_lowercase().contains("away"),

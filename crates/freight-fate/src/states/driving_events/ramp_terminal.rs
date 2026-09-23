@@ -2,9 +2,11 @@
 //! the cross-traffic bubble, the stop bar's countdown and its held tone, the
 //! route-transition assist, and the crossing itself.
 
+use ff_core::data::world_models::Interchange;
 use ff_core::pyrandom::PyRandom;
 use ff_core::sim::cross_traffic::{cross_sound_lead_s, CrossTraffic, CrossVehicle};
 use ff_core::sim::trip_models::RoadStop;
+use ff_core::sim::trip_route_helpers::INTERCHANGE_IDENTITY_MI;
 use ff_core::speech_pacing::{EventPriority, SpeechCategory};
 use ff_core::units::spoken_feet_or_meters;
 
@@ -48,7 +50,15 @@ impl DrivingState {
             // "Stop sign at ramp end. Limit 70").
             return "none".to_string();
         }
-        let mut control = self.trip.ramp_control_at(stop.at_mi, 0.15);
+        // A stop matched to its interchange at bake time reads that record
+        // and no other. The mile-marker search is only for a stop with no
+        // match: a stop's mile is a projection, a mile or three off as often
+        // as not, so the search found a recorded control for one ramp in
+        // thirty and the dice spoke for the rest as if they were the ramp's.
+        let mut control = match self.served_interchange(stop) {
+            Some(interchange) => interchange.ramp_control.clone(),
+            None => self.trip.ramp_control_at(stop.at_mi, 0.15),
+        };
         if control.is_empty() && self.ramp_meets_a_freeway(stop) {
             // A system interchange: this ramp ends in a merge onto another
             // freeway, and nothing stops traffic there. Decided before the
@@ -83,6 +93,13 @@ impl DrivingState {
         control
     }
 
+    /// The interchange record this stop was matched to at bake time, by
+    /// identity: the stop carries the record's own route mile.
+    fn served_interchange(&self, stop: &RoadStop) -> Option<&Interchange> {
+        self.trip
+            .interchange_at(stop.interchange_mi?, INTERCHANGE_IDENTITY_MI)
+    }
+
     /// Whether this exit's ramp lands on another freeway.
     ///
     /// The baked `ramp_far_end` answers first: it is walked link topology, a
@@ -98,7 +115,10 @@ impl DrivingState {
     /// handed stop signs to roughly half the rural ones -- a stop sign where
     /// an interstate meets an interstate does not exist (owner, 2026-08-17).
     pub fn ramp_meets_a_freeway(&self, stop: &RoadStop) -> bool {
-        let Some(interchange) = self.trip.interchange_at(stop.at_mi, 0.15) else {
+        let interchange = self
+            .served_interchange(stop)
+            .or_else(|| self.trip.interchange_at(stop.at_mi, 0.15));
+        let Some(interchange) = interchange else {
             return false;
         };
         if interchange.ramp_far_end == "motorway" {
@@ -114,9 +134,10 @@ impl DrivingState {
     pub fn begin_ramp_terminal(&mut self, ctx: &GameContext, stop: &RoadStop) {
         let mut rng = PyRandom::new_from_i64((self.trip_seed << 16) ^ (stop.at_mi * 100.0) as i64);
         self.ramp_control = self.ramp_control_for(ctx, stop, Some(&mut rng));
+        let mut profile_rng = PyRandom::new_from_str(&self.ramp_terminal_timing_key(stop));
+        self.ramp_light_profile = profile_rng.randrange(RAMP_LIGHT_PROFILE_COUNT) as u8;
         self.ramp_light_timer = 0.0;
-        self.ramp_light_offset_s =
-            rng.random() * (RAMP_LIGHT_RED_S + RAMP_LIGHT_GREEN_S + RAMP_LIGHT_YELLOW_S);
+        self.ramp_light_offset_s = rng.random() * self.ramp_light_cycle_s();
         self.ramp_light_announced = false;
         self.ramp_light_last_phase = String::new();
         self.ramp_terminal_done = self.ramp_control == "none";
@@ -125,6 +146,7 @@ impl DrivingState {
         self.ramp_gap_milestones_said.clear();
         self.ramp_bar_tick_timer = 0.0;
         self.ramp_assist_said = false;
+        self.ramp_green_roll_said = false;
         self.ramp_assist_brake = 0.0;
         self.ramp_waiting_at_sign = false;
         self.approach_pull_ahead = false;
@@ -144,24 +166,88 @@ impl DrivingState {
             } else {
                 self.ramp_control.as_str()
             };
-            Some(CrossTraffic::new(
+            let mut bubble = CrossTraffic::new(
                 (self.trip_seed << 16) ^ (stop.at_mi * 100.0) as i64 ^ 0x5AFE,
                 control,
                 self.trip.near_city(stop.at_mi),
-            ))
+            );
+            if self.ramp_control == "signal" && self.ramp_light_holds_cross_traffic() {
+                // The pre-roll above begins with the cross street flowing. If
+                // arrival lands in the player's green, yellow, or clearance,
+                // replay enough stopped-cross-street time for anything already
+                // past its bar to leave before that first phase is announced.
+                bubble.player_has_green = true;
+                for _ in 0..(RAMP_LIGHT_RED_CLEARANCE_S / 0.25) as usize {
+                    bubble.update(0.25);
+                }
+            }
+            Some(bubble)
         } else {
             None
         };
     }
 
+    /// Stable identity for the timing profile, independent of a drive's seed.
+    fn ramp_terminal_timing_key(&self, stop: &RoadStop) -> String {
+        let mut leg_start_mi = 0.0;
+        for leg in &self.trip.route.legs {
+            if stop.at_mi <= leg_start_mi + leg.miles + 0.001 {
+                return format!(
+                    "ramp-light|{}|{}|{}|{:.3}|{}|{}|{}",
+                    leg.a,
+                    leg.b,
+                    leg.highway,
+                    stop.at_mi - leg_start_mi,
+                    stop.name,
+                    stop.stop_type,
+                    stop.exit_label,
+                );
+            }
+            leg_start_mi += leg.miles;
+        }
+        format!(
+            "ramp-light|{}|{}|{}|{}",
+            self.trip.route.cities.join(">"),
+            stop.key(),
+            stop.stop_type,
+            stop.exit_label,
+        )
+    }
+
+    /// This terminal's fixed red interval in real seconds.
+    pub fn ramp_light_red_s(&self) -> f64 {
+        RAMP_LIGHT_RED_S + f64::from(self.ramp_light_profile) * RAMP_LIGHT_RED_STEP_S
+    }
+
+    /// This terminal's fixed green interval in real seconds.
+    pub fn ramp_light_green_s(&self) -> f64 {
+        RAMP_LIGHT_GREEN_S + f64::from(self.ramp_light_profile) * RAMP_LIGHT_GREEN_STEP_S
+    }
+
+    /// One complete fixed timing plan in real seconds.
+    pub fn ramp_light_cycle_s(&self) -> f64 {
+        self.ramp_light_red_s() + self.ramp_light_green_s() + RAMP_LIGHT_YELLOW_S
+    }
+
+    fn ramp_light_into_cycle_s(&self) -> f64 {
+        (self.ramp_light_offset_s + self.ramp_light_timer).rem_euclid(self.ramp_light_cycle_s())
+    }
+
+    /// Whether the cross street is held at its bar. The last part of the
+    /// player's red is an internal all-red clearance; it is not a fourth
+    /// player-facing light phase and therefore needs no extra spoken change.
+    fn ramp_light_holds_cross_traffic(&self) -> bool {
+        self.ramp_light_into_cycle_s() >= self.ramp_light_red_s() - RAMP_LIGHT_RED_CLEARANCE_S
+    }
+
     /// `_ramp_light_phase()`.
     pub fn ramp_light_phase(&self) -> &'static str {
-        let cycle = RAMP_LIGHT_RED_S + RAMP_LIGHT_GREEN_S + RAMP_LIGHT_YELLOW_S;
-        let into = (self.ramp_light_offset_s + self.ramp_light_timer).rem_euclid(cycle);
-        if into < RAMP_LIGHT_RED_S {
+        let into = self.ramp_light_into_cycle_s();
+        let red_s = self.ramp_light_red_s();
+        if into < red_s {
             return "red";
         }
-        if into < RAMP_LIGHT_RED_S + RAMP_LIGHT_GREEN_S {
+        if into < red_s + self.ramp_light_green_s() {
             return "green";
         }
         "yellow"
@@ -181,6 +267,9 @@ impl DrivingState {
         // green, red, or stop sign -- carried it through the rest of the run
         // and out into the menus (Shane, 2026-08-03).
         self.update_ramp_bar_ticks(ctx, dt);
+        if self.ramp_mi.is_some() && !self.ramp_terminal_done && self.ramp_control == "signal" {
+            self.ramp_light_timer += dt;
+        }
         self.update_cross_bubble(ctx, dt);
         if self.ramp_mi.is_none() || self.ramp_terminal_done {
             return;
@@ -198,7 +287,6 @@ impl DrivingState {
         if self.ramp_control != "signal" {
             return;
         }
-        self.ramp_light_timer += dt;
         self.update_ramp_queue_guidance(ctx);
         self.update_ramp_gap_countdown(ctx);
         let phase = self.ramp_light_phase();
@@ -314,9 +402,11 @@ impl DrivingState {
             return;
         }
         if self.ramp_control == "signal" {
-            // The cross street runs the orthogonal phase. Yellow counts as
-            // ours: real cross traffic is already stopped by then.
-            let green = self.ramp_light_phase() != "red";
+            // The cross street runs the orthogonal phase. It is held through
+            // the player's green and yellow, plus the final red-clearance
+            // interval before green. That shared red is what lets traffic
+            // already past its bar clear the conflict point.
+            let green = self.ramp_light_holds_cross_traffic();
             if let Some(bubble) = self.cross_bubble.as_mut() {
                 bubble.player_has_green = green;
             }
@@ -447,11 +537,18 @@ impl DrivingState {
         if self.ramp_creep_prompt_said {
             return;
         }
-        self.ramp_creep_prompt_said = true;
         // Name the gap: "creep" for a real 600-foot gap takes minutes and
         // reads as a light stuck in a loop. Far back is a drive, and the red
         // phase is exactly the time to make it.
         let gap_mi = ramp_mi - RAMP_ACCESS_MI;
+        if ctx.settings.route_transition_assist && gap_mi <= RAMP_ASSIST_HOLD_MI {
+            // Inside the hold window the assist owns the stop and says so
+            // itself. This runs first in the frame, so it used to say
+            // "Stopped short of the light" around the assist's own "Stopped
+            // at the red light" (agent drive, 2026-09-22).
+            return;
+        }
+        self.ramp_creep_prompt_said = true;
         if matches!(self.ramp_control.as_str(), "stop" | "yield" | "roundabout") {
             let noun = match self.ramp_control.as_str() {
                 "stop" => "the stop sign",

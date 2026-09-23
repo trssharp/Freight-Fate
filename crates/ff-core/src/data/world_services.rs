@@ -59,12 +59,32 @@ pub fn spoken_road_text(text: &str) -> String {
     if text.is_empty() || !text.contains(';') {
         return text;
     }
-    ROAD_REF_LIST
+    let text = ROAD_REF_LIST
         .replace_all(&text, |caps: &regex::Captures| {
             let first = caps[1].split(';').next().unwrap_or("").trim().to_string();
             format!("({first})")
         })
-        .into_owned()
+        .into_owned();
+    first_of_a_bare_list(&text)
+}
+
+/// The same trim for a list that is not in parentheses: a road with no name
+/// of its own is baked under its refs ("Continue onto I 70 BUS;US 6;US 50."),
+/// and a street the map gives two names carries both ("Ellsworth Street
+/// Southwest;Albany-Corvallis Highway (US 20)"). Keep the first, and keep
+/// whatever follows the list: the parenthetical ref, the cue's full stop.
+fn first_of_a_bare_list(text: &str) -> String {
+    let mut out = text.to_string();
+    while let Some(start) = out.find(';') {
+        let rest = &out[start..];
+        let end = rest
+            .find(" (")
+            .or_else(|| rest.strip_suffix('.').map(str::len))
+            .unwrap_or(rest.len());
+        let kept = out[..start].trim_end().len();
+        out.replace_range(kept..start + end, "");
+    }
+    out
 }
 
 /// Maneuver direction baked in a local segment cue, or "".
@@ -88,26 +108,31 @@ fn local_cue_direction(cue: &str) -> &'static str {
 fn reversed_local_legs(city: &str, legs: &[std::sync::Arc<Leg>]) -> Vec<Leg> {
     let mut out = Vec::with_capacity(legs.len());
     for (i, src) in legs.iter().rev().enumerate() {
-        let cue = if i == 0 {
-            format!("Start on {}.", src.highway)
-        } else {
-            // Outbound, the junction onto this leg is the one the inbound
-            // drive crossed *leaving* it: the cue baked on the leg after it.
-            let inbound = local_cue_direction(&legs[legs.len() - i].local_cue);
-            match inbound {
+        // Outbound, the junction onto this leg is the one the inbound drive
+        // crossed *leaving* it, so everything about that corner -- the hand it
+        // turns and how sharply -- is baked on the leg AFTER this one. The
+        // first leg out is started on, not turned onto, so it has no corner.
+        let inbound = (i > 0).then(|| &legs[legs.len() - i]);
+        let cue = match inbound {
+            None => format!("Start on {}.", src.highway),
+            Some(inbound) => match local_cue_direction(&inbound.local_cue) {
                 "left" => format!("Turn right onto {}.", src.highway),
                 "right" => format!("Turn left onto {}.", src.highway),
                 "ahead" => format!("Continue onto {}.", src.highway),
                 _ => format!("Turn onto {}.", src.highway),
-            }
+            },
         };
-        out.push(Leg::local(
-            city,
-            src.miles,
-            &src.highway,
-            &cue,
-            src.local_speed_mph,
-        ));
+        out.push(
+            Leg::local(city, src.miles, &src.highway, &cue, src.local_speed_mph)
+                // The same corner driven the other way, so its angle is
+                // unchanged -- only the hand it falls on flips, and the cue
+                // above has already flipped that. It has to be read off the
+                // SAME leg the cue was, though: read off `src` instead, every
+                // outbound corner was priced and leaned from its neighbour's
+                // shape, a "Continue onto" inherited a corner's angle, and the
+                // last corner of every departure read as unmeasured.
+                .with_turn_deg(inbound.map_or(0.0, |inbound| inbound.local_turn_deg)),
+        );
     }
     out
 }
@@ -322,6 +347,7 @@ impl World {
                             &spoken_road_text(&segment.cue),
                             segment.speed_mph,
                         )
+                        .with_turn_deg(segment.turn_deg)
                     })
                     .collect();
                 let cities = vec![city.clone(); legs.len() + 1];
@@ -402,11 +428,30 @@ mod tests {
             spoken_road_text("Richard G. Hatcher Boulevard"),
             "Richard G. Hatcher Boulevard"
         );
-        // Prose parentheticals with semicolons only lose text after the semicolon,
-        // never the sentence around them.
+    }
+
+    #[test]
+    fn test_spoken_road_text_keeps_the_first_of_a_list_outside_parentheses() {
+        // A road baked under its refs because it has no name of its own, and
+        // a street the map gives two names. 79 such strings reached the
+        // facility approaches in the 2026-09-17 sweep; read aloud each was
+        // tag soup. This used to assert the opposite on an invented sentence
+        // ("no parens; still fine"), before the data showed the real case.
         assert_eq!(
-            spoken_road_text("no parens; still fine"),
-            "no parens; still fine"
+            spoken_road_text("Continue onto I 70 BUS;US 6;US 50."),
+            "Continue onto I 70 BUS."
+        );
+        assert_eq!(
+            spoken_road_text("I 75 Business; US 41; GA 7"),
+            "I 75 Business"
+        );
+        assert_eq!(
+            spoken_road_text("Ellsworth Street Southwest;Albany-Corvallis Highway (US 20)"),
+            "Ellsworth Street Southwest (US 20)"
+        );
+        assert_eq!(
+            spoken_road_text("Turn right onto Main Street;Old Post Road (US 11;NY 12)."),
+            "Turn right onto Main Street (US 11)."
         );
     }
 
@@ -474,5 +519,49 @@ mod tests {
             ]
         );
         assert_eq!(out[2].local_speed_mph, 25.0);
+    }
+
+    #[test]
+    fn reversed_chain_carries_each_corners_own_angle() {
+        // The angle has to travel with the cue, not with the leg it is baked
+        // on. Read off the wrong leg, the 112-degree corner onto North
+        // Michigan came out on the "Continue onto" that is not a corner at
+        // all, and the real outbound corner read as unmeasured -- so it was
+        // priced and leaned as a square one.
+        let city = "south_bend_in_us";
+        let legs = vec![
+            std::sync::Arc::new(Leg::local(
+                city,
+                0.15,
+                "East Navarre Street",
+                "Start on East Navarre Street.",
+                25.0,
+            )),
+            std::sync::Arc::new(
+                Leg::local(
+                    city,
+                    0.2,
+                    "North Michigan Street",
+                    "Turn left onto North Michigan Street.",
+                    25.0,
+                )
+                .with_turn_deg(112.0),
+            ),
+            std::sync::Arc::new(Leg::local(
+                city,
+                0.5,
+                "South Michigan Street",
+                "Continue onto South Michigan Street.",
+                30.0,
+            )),
+        ];
+
+        let out = reversed_local_legs(city, &legs);
+
+        // Started on, so no corner; the near-straight boundary is not one
+        // either; and the turn back onto East Navarre is the 112 the inbound
+        // drive measured leaving it.
+        let angles: Vec<f64> = out.iter().map(|leg| leg.local_turn_deg).collect();
+        assert_eq!(angles, vec![0.0, 0.0, 112.0]);
     }
 }

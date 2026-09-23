@@ -76,6 +76,8 @@ pub const TRUCK_STOP_CHAINS: &[&str] = &[
     "road ranger",
     "one9",
     "sapp bros",
+    // The map spells it out: "Sapp Brothers Travel Center".
+    "sapp brothers",
     "bosselman",
     "iowa 80",
     "little america",
@@ -526,15 +528,22 @@ pub const FACILITY_APPROACH_ROADS: &[(&str, &str)] = &[
 
 /// `(facility type, ships, receives)`.
 pub const FACILITY_CARGO_ROLES: &[(&str, &[&str], &[&str])] = &[
+    // Placarded and bulk-fuel freight (2026-09-16): a fuel farm, a fleet
+    // island, a quarry's equipment tank and an elevator's farm-diesel plant
+    // all take bulk fuel; assembly plants take placarded batteries, paints
+    // and inflators; ag retailers ship placarded anhydrous ammonia and crop
+    // chemicals; steel mills move industrial gases and acids both ways.
+    // Before that, placarded loads only moved between chemical terminals
+    // and manufacturing plants, and bulk fuel only terminal to terminal.
     (
         "air_cargo",
         &["electronics", "parcel", "general"],
-        &["electronics", "parcel", "general"],
+        &["electronics", "parcel", "general", "fuel_bulk"],
     ),
     (
         "automotive_plant",
         &["automotive", "machinery"],
-        &["steel", "machinery", "electronics", "general"],
+        &["steel", "machinery", "electronics", "general", "hazardous"],
     ),
     (
         "chemical_petroleum_terminal",
@@ -549,12 +558,12 @@ pub const FACILITY_CARGO_ROLES: &[(&str, &[&str], &[&str])] = &[
     (
         "company_yard",
         &["general", "retail", "parcel"],
-        &["general", "retail", "parcel"],
+        &["general", "retail", "parcel", "fuel_bulk"],
     ),
     (
         "construction_materials_yard",
         &["construction", "bulk", "lumber_paper"],
-        &["construction", "bulk", "steel", "lumber_paper"],
+        &["construction", "bulk", "steel", "lumber_paper", "fuel_bulk"],
     ),
     (
         "cross_dock",
@@ -587,8 +596,8 @@ pub const FACILITY_CARGO_ROLES: &[(&str, &[&str], &[&str])] = &[
     ),
     (
         "farm_elevator",
-        &["grain", "bulk"],
-        &["farm_inputs", "general"],
+        &["grain", "bulk", "hazardous"],
+        &["farm_inputs", "general", "fuel_bulk", "hazardous"],
     ),
     (
         "food_terminal",
@@ -656,7 +665,13 @@ pub const FACILITY_CARGO_ROLES: &[(&str, &[&str], &[&str])] = &[
     (
         "mine_quarry",
         &["bulk", "construction"],
-        &["machinery", "chemicals", "farm_inputs", "hazardous"],
+        &[
+            "machinery",
+            "chemicals",
+            "farm_inputs",
+            "hazardous",
+            "fuel_bulk",
+        ],
     ),
     (
         "parcel_hub",
@@ -703,6 +718,8 @@ pub const FACILITY_CARGO_ROLES: &[(&str, &[&str], &[&str])] = &[
             "chemicals",
             "lumber_paper",
             "port_container",
+            "fuel_bulk",
+            "hazardous",
         ],
         &[
             "container",
@@ -711,6 +728,8 @@ pub const FACILITY_CARGO_ROLES: &[(&str, &[&str], &[&str])] = &[
             "chemicals",
             "lumber_paper",
             "port_container",
+            "fuel_bulk",
+            "hazardous",
         ],
     ),
     (
@@ -725,8 +744,8 @@ pub const FACILITY_CARGO_ROLES: &[(&str, &[&str], &[&str])] = &[
     ),
     (
         "steel_industrial",
-        &["steel", "machinery", "bulk"],
-        &["bulk", "chemicals", "construction"],
+        &["steel", "machinery", "bulk", "hazardous"],
+        &["bulk", "chemicals", "construction", "hazardous"],
     ),
     (
         "terminal",
@@ -964,6 +983,9 @@ pub const MARKET_TAG_FACILITY_TYPES: &[(&str, &[&str])] = &[
     ("river_port", &["port_terminal", "farm_elevator"]),
     ("steel", &["steel_industrial"]),
 ];
+
+mod stand_in_markets;
+pub use stand_in_markets::STAND_IN_MARKET_CITY_KEYS;
 
 mod template_gates;
 pub use template_gates::*;

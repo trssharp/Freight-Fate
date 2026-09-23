@@ -181,11 +181,10 @@ pub enum AssistValue {
     Mode(&'static str),
 }
 
-pub const DRIVING_ASSIST_FIELDS: [&str; 10] = [
+pub const DRIVING_ASSIST_FIELDS: [&str; 9] = [
     "automatic_emergency_braking",
     "lane_departure_warning",
     "stop_and_go_assist",
-    "lane_centering_assist",
     "descent_speed_control",
     "exit_speed_assist",
     // Facility stopping assistance is a preset field again (owner, 2026-09-11).
@@ -205,14 +204,13 @@ pub const DRIVING_ASSIST_FIELDS: [&str; 10] = [
 
 use AssistValue::{Flag, Mode};
 
-pub const DRIVING_ASSIST_PRESETS: [(&str, [AssistValue; 10]); 3] = [
+pub const DRIVING_ASSIST_PRESETS: [(&str, [AssistValue; 9]); 3] = [
     (
         "realistic",
         [
             Flag(true),
             Flag(true),
             Flag(true),
-            Flag(false),
             Mode("realistic"),
             Flag(true),
             Flag(false),
@@ -224,7 +222,6 @@ pub const DRIVING_ASSIST_PRESETS: [(&str, [AssistValue; 10]); 3] = [
     (
         "balanced",
         [
-            Flag(true),
             Flag(true),
             Flag(true),
             Flag(true),
@@ -242,7 +239,6 @@ pub const DRIVING_ASSIST_PRESETS: [(&str, [AssistValue; 10]); 3] = [
             Flag(true),
             Flag(true),
             Flag(true),
-            Flag(true),
             Mode("interactive"),
             Flag(true),
             Flag(true),
@@ -254,14 +250,14 @@ pub const DRIVING_ASSIST_PRESETS: [(&str, [AssistValue; 10]); 3] = [
 ];
 
 /// `DRIVING_ASSIST_PRESETS[name]`.
-pub fn driving_assist_preset(name: &str) -> Option<&'static [AssistValue; 10]> {
+pub fn driving_assist_preset(name: &str) -> Option<&'static [AssistValue; 9]> {
     DRIVING_ASSIST_PRESETS
         .iter()
         .find(|(preset, _)| *preset == name)
         .map(|(_, values)| values)
 }
 
-/// The 76 persisted fields, in the Python dataclass's declaration order
+/// The 78 persisted fields, in the Python dataclass's declaration order
 /// (which is the order `save` writes them in). Each row is
 /// `name: type = default => coercion`, the coercion naming how a raw JSON
 /// value lands on the typed field (see `migrate::coerce`).
@@ -403,7 +399,16 @@ settings_fields! {
     /// reading rather than renaming the label to match a setting nobody
     /// chose. Existing players are untouched: their saved value migrates to
     /// whatever they already had.
-    lane_keeping: String = "off" => str_checked,
+    ///
+    /// Ships on PARTIAL (owner, 2026-09-18), which makes a fresh install the
+    /// Balanced preset rather than Realistic. The lane model grew a heading
+    /// that day, so steering turns the truck instead of sliding it, and a
+    /// truck nobody steers genuinely leaves the road -- "off" stopped being
+    /// the mild drift it used to be and became a continuous driving task.
+    /// Partial steers for the error while leaving the driver something to
+    /// feel and to fight, where full holds the lane outright and hands over a
+    /// job a new driver never gets to learn.
+    lane_keeping: String = "partial" => str_checked,
     /// How many more times the Lane keeping row explains that it used to be
     /// called Lane drift. Zero by default: a fresh install has nothing to
     /// explain, and only a load that actually found the old key on disk
@@ -436,14 +441,20 @@ settings_fields! {
     /// The shipped defaults now match the realistic preset field for field
     /// -- lane keeping was the only one that did not, and it is the default
     /// the row has been claiming since before it could see that field.
-    driving_assistance_preset: String = "realistic" => str_checked,
+    /// Moved from "realistic" to "balanced" on 2026-09-18 with `lane_keeping`,
+    /// so the row a fresh install shows is still the truth about the ruleset
+    /// it is running -- the whole point of the 2026-08-09 ruling.
+    driving_assistance_preset: String = "balanced" => str_checked,
     automatic_emergency_braking: bool = true => bool_strict,
     lane_departure_warning: bool = true => bool_strict,
     stop_and_go_assist: bool = true => bool_strict,
-    lane_centering_assist: bool = false => bool_strict,
-    descent_speed_control: String = "realistic" => str_checked,
+    /// Balanced's value: a fresh install is the Balanced preset from
+    /// 2026-09-18, and every field it names has to agree or the row reads
+    /// "custom".
+    descent_speed_control: String = "balanced" => str_checked,
     exit_speed_assist: bool = true => bool_strict,
-    destination_approach_assist: bool = false => bool_strict,
+    /// Balanced's value; see `descent_speed_control` above.
+    destination_approach_assist: bool = true => bool_strict,
     /// An explicit-plan accessibility aid, separate from the realism
     /// presets: T plans a sleep stop, X signals for it, and only then may
     /// this bring the truck to a complete stop at the entrance. Presets
@@ -480,6 +491,14 @@ settings_fields! {
     master_volume: f64 = 1.0 => level,
     sfx_volume: f64 = 0.8 => level,
     music_volume: f64 = 0.5 => level,
+    /// Music source: false plays the full soundtrack; true swaps menu music
+    /// and the Roadhouse for synthesized music -- pieces the game composes
+    /// from `music_seed`, the restored 1.5 tracks and hand-made modules --
+    /// for players who want no AI-made music (owner, 2026-09-21).
+    synth_music: bool = false => bool_truthy,
+    /// Seeds every synthesized piece. Global, not per career, so a seed a
+    /// player likes sounds the same on any career and can be shared.
+    music_seed: i64 = 48213 => int_lenient,
     radio_volume: f64 = 0.25 => level,
     radio_enabled: bool = true => bool_truthy,
     radio_station_id: String = "route_playlist" => str_checked,
@@ -489,6 +508,13 @@ settings_fields! {
     /// mode is the explicit choice a streamer makes. (The former separate
     /// real-streams opt-in folded into this switch, 2026-08-12.)
     radio_streamer_safe: bool = false => bool_truthy,
+    /// Personal playlists play in a random order: every track once before
+    /// any repeats, a fresh order each lap, and a lap never opens on the
+    /// track that just ended. Off plays the file top to bottom and resumes
+    /// where it left off. The Playlists folder was built for M3U stream
+    /// lists and is being used for MP3 collections (Hailey, drivers board,
+    /// 2026-09-18).
+    radio_shuffle_playlists: bool = false => bool_truthy,
     weather_volume: f64 = 0.65 => level,
     engine_volume: f64 = 0.55 => level,
     ui_volume: f64 = 0.9 => level,
@@ -623,6 +649,9 @@ settings_fields! {
     key_bindings: String = "" => str_plain,
     /// The same for pad buttons (`engine=mod+a;horn=paddle_1`).
     pad_bindings: String = "" => str_plain,
+    /// Steer AWAY from the engine's lean instead of toward it, for
+    /// drivers who learned that habit in audio racing games.
+    steering_guide_inverted: bool = false => bool_strict,
 }
 
 impl Settings {
@@ -666,12 +695,11 @@ impl Settings {
     }
 
     /// The preset fields' current values, in DRIVING_ASSIST_FIELDS order.
-    pub fn assist_values(&self) -> [AssistValue; 10] {
+    pub fn assist_values(&self) -> [AssistValue; 9] {
         [
             Flag(self.automatic_emergency_braking),
             Flag(self.lane_departure_warning),
             Flag(self.stop_and_go_assist),
-            Flag(self.lane_centering_assist),
             Mode(static_mode(&self.descent_speed_control)),
             Flag(self.exit_speed_assist),
             Flag(self.destination_approach_assist),
@@ -696,7 +724,6 @@ impl Settings {
             ("automatic_emergency_braking", Flag(v)) => self.automatic_emergency_braking = v,
             ("lane_departure_warning", Flag(v)) => self.lane_departure_warning = v,
             ("stop_and_go_assist", Flag(v)) => self.stop_and_go_assist = v,
-            ("lane_centering_assist", Flag(v)) => self.lane_centering_assist = v,
             ("descent_speed_control", Mode(v)) => self.descent_speed_control = v.to_string(),
             ("exit_speed_assist", Flag(v)) => self.exit_speed_assist = v,
             ("destination_approach_assist", Flag(v)) => self.destination_approach_assist = v,

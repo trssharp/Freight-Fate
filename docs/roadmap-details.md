@@ -312,7 +312,10 @@ repository root; Markdown links are relative to this document.
       drivers) -- the hang that forced non-launch verification was the boot
       probes, gone since they moved to worker threads -- so a Mac zip that
       cannot start fails the build instead of shipping. VoiceOver through
-      Prism still needs a listening pass on a physical Mac.
+      Prism has never had a listening pass on a physical Mac, and that
+      pass was dropped as a release gate on 2026-09-20 -- there is no Mac
+      to run it on. Prism reaches VoiceOver through the same backend seam
+      as every other reader; the risk is accepted, not verified.
 - [x] **Rust port: Linux builds, boots on seven distributions, and ships in
       the nightly (2026-09-02).** `tools/fetch_bass.py` now pins un4seen's
       `-linux` x86_64 builds (no AAC add-on exists upstream, as on macOS);
@@ -687,9 +690,10 @@ repository root; Markdown links are relative to this document.
       because the zip was already deflating that JSON to 10.3 MB. `--smoke`
       is wired and the staged build boots and exits 0 on it -- and it is a
       real check: with the container moved aside the same run panics on
-      "the shipped world data loads" rather than passing. Left to do: the
-      macOS `.app` bundle is now complete; a physical-Mac VoiceOver listening
-      pass remains.
+      "the shipped world data loads" rather than passing. The macOS `.app`
+      bundle is complete; the physical-Mac VoiceOver listening pass that
+      used to be listed here was dropped as a gate on 2026-09-20 (no
+      physical Mac to test on).
 
 - [x] **Rust port: a launch takes the same time every time, and the session
       log says where it goes (2026-08-24).** Three runs of the packaged
@@ -1071,6 +1075,32 @@ repository root; Markdown links are relative to this document.
       Mainline merge symmetry (NPCs yielding to the player from on-ramps)
       stays out of scope with the parked merge-yield AI feel item.
 
+- [x] **An assist's held brake application must be re-asserted every frame,
+      never only on the frames its controller runs (third occurrence, FIXED
+      2026-09-18).** `update_frame`'s input pass ramps `truck.brake` down on
+      every frame nobody commands it, and it runs before any assist. An
+      assist that writes the pedal only from inside its own controller is
+      therefore not HOLDING an application across a frame it sits out -- it
+      is dropping one and making a fresh one, and `consume_brake_air` charges
+      `air_loss_primary_per_application_psi` on every rising edge. The hazard
+      assist had it (`apply_hazard_brake`), the arrival's pedals had it, the
+      facility lane hold learned it on Shelby's downgrade; the speed keeper's
+      snub did not, and on a facility street chain it was re-made nine times
+      a second -- eight psi a second against the four the compressor makes at
+      idle, spring brakes in twenty seconds, truck stranded short of the gate
+      with the delivery unfinishable. Now `apply_keeper_snub`, called from
+      `update_frame` beside the others. The next assist that holds a pedal
+      belongs in that same list -- and with the same companion rule, because
+      re-asserting alone deadlocks: an assist whose LATCH is only re-judged
+      on the frames its controller runs must release that latch when it hands
+      the pedals over, or it holds a brake nothing can let go of. The keeper
+      now releases its snub when the driver is on the accelerator, which is
+      the rule it already applied to its own throttle. Pinned by
+      `test_the_approach_assist_still_has_its_air_at_the_gate`, which measures
+      the tanks the whole way in rather than only where the truck ended up --
+      arriving cannot tell "stopped at the gate" from "stopped by its own
+      spring brakes on the gate".
+
 - [x] **Destination approach assistance brings the truck to a stop at the
       arrival point.** Shipped 2026-08-20 after three failed attempts, all
       of which passed a test built on stand-in objects while the real game
@@ -1337,11 +1367,11 @@ repository root; Markdown links are relative to this document.
       speed and the setting existed only to silence it. It now arms at 7 --
       above cruise's pace, below `OBSERVE_LEEWAY_MPH`'s 9 -- and the
       `overspeed_warning` setting is gone (owner ruling 2026-08-15).
-- [ ] **Lane centering assistance is still a promise, not a feature.**
-      `lane_centering_assist` is a real settings row the presets write, and
-      nothing in the driving code reads it; the help text now says so plainly
-      instead of describing steering help that never arrives. Either
-      implement the steering help or retire the row before 1.9 ships.
+- [x] **Lane centering assistance retired (2026-09-16).** The settings row,
+      help, and preset writes are gone; old saves drop the key on the next
+      save. Lane keeping full already holds center; lane-departure warning
+      and the lane_centered chime are untouched. Owner chose retire over
+      implement for 1.9.
 - [x] **Headless-measured startup: four fixes for ~0.46s off the
       launch-to-main-menu path -- SHIPPED 2026-08-12.** A profiling pass
       pinned headless startup at a 2.166s median and isolated four
@@ -3995,8 +4025,16 @@ repository root; Markdown links are relative to this document.
       The advisory still stays quiet for a crawling truck; the clock no
       longer does.
 
-- [ ] **Corner speed from real geometry, not a clamp (researched 2026-08-21,
-      owner asked for real numbers).** Today `_turn_speed_mph` is the street's
+- [x] **Corner speed from real geometry, not a clamp (SHIPPED 2026-09-18;
+      researched 2026-08-21, owner asked for real numbers).** A turn's speed
+      is now `ff_core::data::corners`: its measured angle picks TxDOT's design
+      radius, and the radius is priced at the lateral a loaded combination
+      holds. The 15 mph floor is gone, so a truck the keeper is holding at
+      14-15 is over every corner and hears all of them. The angle itself is
+      baked by `tools/build_local_geometry.py`, which computed and discarded
+      it before; a route with no measured angle is priced as a square corner
+      and the bake reports that ratio on stdout and in the layer's coverage.
+      The old behaviour, for the record: `_turn_speed_mph` was the street's
       posted limit clamped between `FACILITY_GATE_LIMIT_MPH` (15) and
       `TURN_CORNER_MAX_MPH` (20). Both ends are assumed constants with no
       cited basis, and the 15 floor is why the assist stayed SILENT on the
@@ -4033,19 +4071,34 @@ repository root; Markdown links are relative to this document.
           target, and mostly passenger cars, so a loaded truck belongs at or
           under the bottom of that band.
 
-      THE OPEN DECISION, and why this is not landed yet: which radius
-      governs. `V = sqrt(15 R (e+f))` with e = 0 at an at-grade intersection
-      gives 22-24 mph off TxDOT's 125 ft edge curve for a 90 deg turn --
-      FASTER than today's clamp, and plainly wrong for a loaded semi. Off the
-      vehicle's own 41 ft path it gives about 10 mph at 0.15 g, which matches
-      CDL practice (5-10 mph through a corner) and the bottom of the TTI
-      band. The edge curve is what the swept path uses; the vehicle radius is
-      what the tractor tracks. Picking one, or the smaller of the two, is a
-      real modelling choice and wants deciding on purpose rather than by
-      whichever makes the number look right -- which AGENTS.md forbids.
+      THE OPEN DECISION IS DECIDED, and the answer was a third radius
+      neither option named. TxDOT Table 13-7 gives three designs per angle,
+      not one: the simple curve (125 ft at 90 deg, which prices at 22-24 mph
+      and is plainly wrong for a loaded semi), a tapered curve, and a
+      3-CENTERED COMPOUND whose MIDDLE radius is the tightest arc the corner
+      actually contains -- 440-65-440 at 90 deg, so 65 ft. That is the one
+      used. What settles it is the table's own 120 deg row, whose middle
+      radius is 45 ft: the WB-67's minimum design turning radius, i.e. the
+      design has the truck at full lock, which is what a 120 deg corner means.
+      The 41 ft centreline figure is that same full-lock number and belongs to
+      a parking-lot maneuver, not a corner taken at speed.
 
-      Whatever lands: the 15 mph FLOOR has to go, or the advisory stays
-      silent at exactly the speeds that need it.
+      The LATERAL is derived rather than picked, on a stated principle: a
+      truck driver holds the same margin below their vehicle's rollover
+      threshold that a car driver holds below theirs. TTI's own regression
+      (Table 23, `V85 = 14.87 + 0.06 CR` mph at a raised island) puts a car
+      at 18.8 mph through a 65 ft corner, which is 0.361 g against a passenger
+      car's 1.41 g static stability factor (NHTSA sales-weighted average) --
+      about a quarter of what would roll it. The same quarter of the truck's
+      0.35 g is 0.090 g, and the model is `V = sqrt(15 R f)` from there.
+
+      WHAT IT PRODUCES: 60 deg 11.6 mph, 75 deg 10.0, 90 deg 9.4, 105 deg 8.2,
+      120 deg 7.8, against a measured 18.8 for a car at 90 deg. The
+      calibration gate the brief set BEFORE the model existed -- a 90 deg
+      corner inside 5-12 mph, never above the measured car speed -- passes on
+      both counts, and passes without a constant having been moved: CDL
+      practice was never an input, so its agreement is a check rather than a
+      fit.
 
 - [x] **T plans the next sleep stop at any distance (FIXED 2026-08-22).**
       The planner's candidate filter was bounded by `_exit_window_mi()` -- the
@@ -6049,7 +6102,10 @@ repository root; Markdown links are relative to this document.
       typed enforcement posts replacing `PatrolWindow` with an observation
       model (geometry, line of sight, weather, traffic cover, severity);
       the full inspection ladder (Levels I/II/V, vehicle out-of-service,
-      roadside repair, scale weighing and overweight); staged pursuit with
+      roadside repair, scale weighing and overweight -- the Level I lane,
+      the routine Level III, out-of-service repair, the decal and the
+      walk-around landed 2026-09-16, see ROADMAP; Level II/V on the road
+      and the CMV-unit posts inspecting are still open); staged pursuit with
       a surrender branch and telegraphed spike deployment; urban units
       giving the engine-brake citation a body; ports of entry. Phase 0
       (data + RNG split + pull-over persistence + control hints) and the
@@ -6955,20 +7011,12 @@ repository root; Markdown links are relative to this document.
       thin (no wastegate, no blow-off, no diesel turbo anywhere), so
       the shift sound gets built from a GMC 6000 gear clunk plus a
       pitched-down transmission clunk plus an air release.
-- [ ] **Provenance audit of shipped sound assets (owner, 2026-07-22).**
-      The Duff-shared cues cannot ship -- he holds no license for the
-      material he passed along (owner ruling, 2026-07-22), so every
-      Duff row is a replacement, not a check. Audit ran 2026-07-22
-      (git history of every unlabeled row): the 2026-06-18 batch
-      (weather, event cues, POI/ambience loops) is all project-clean
-      ElevenLabs/procedural work, never swapped since -- weather
-      re-sourcing from Splice is now a quality upgrade, not a
-      compliance fix. One mislabel found and corrected:
-      `ambient/night.ogg` was credited "original" but came from
-      Darren's sound pack. Replacements owed: vehicle/horn.ogg,
-      driver/yawn.ogg, ambient/night.ogg (Splice); the engine-voice
-      rebuild retires idle/start/shutdown, gear_shift, and both
-      parking-brake cues.
+- [x] **Provenance audit of shipped sound assets (owner, 2026-07-22).**
+      N/A 2026-09-16 (owner): Duff-shared cues are not applicable; drop
+      from the release gate. Historical note: the 2026-07-22 audit found
+      the 2026-06-18 batch project-clean; replacements that had been owed
+      (horn, yawn, night ambience, engine-voice rebuild) are no longer a
+      gate.
 - [x] **Bobtail means no trailer at all (forum report, SRD625
       2026-07-17).** Shipped 2026-07-22: `trailer_attached` on the truck
       drops the dry van's 6.4 t from the tare on reposition and
@@ -7202,15 +7250,25 @@ city service drives below.)
       keep-right-except-to-pass CB nags, and right-lane exit gating.
 - [x] **Signalized ramp terminals grounded in OSM.** Baked
       `traffic_signals`/`stop` nodes on 6,295 of 13,504 exit ramp links
-      (heuristic elsewhere): a red/green cycle at the stop bar, grace
+      (heuristic elsewhere): a green-yellow-red cycle at the stop bar, grace
       distance, cross-traffic clips for running it -- now with dedicated
       red and green light earcons alongside the spoken callouts.
       Reworked 2026-07-14 after a log-proven playtest crash: lights now
-      run a real green-yellow-red cycle (15 s green crossable from a
-      stop, 4 s yellow, entering on yellow legal like the law), and
+      run a real green-yellow-red cycle, and
       every phase change on the approach is spoken -- the old one-flip
       announce cap could say green, silently flip red, and punish the
       driver for obeying the last thing they heard.
+      Re-tuned 2026-09-12 from the universal 31-second cycle to a stable
+      60-, 66-, 72-, or 78-second plan selected for each intersection:
+      26-32 seconds green, 4 seconds yellow, and 30-42 seconds red. The
+      final 7 seconds of red hold cross traffic so every modeled vehicle
+      clears the conflict area before green. The profiles use the
+      [FHWA Traffic Signal Timing Manual](https://ops.fhwa.dot.gov/publications/fhwahop08024/chapter6.htm)'s
+      60-second simple-intersection example and under-120-second planning
+      guidance, while keeping yellow within the
+      [MUTCD 11th edition Section 4F.17](https://mutcd.fhwa.dot.gov/pdfs/11th_Edition/part4.pdf#page=120)
+      3-to-6-second range. They are gameplay pacing profiles, not
+      field-engineered timing plans for the represented sites.
 - [x] **Congestion grounded in FHWA HPMS volume.** Real AADT baked per leg
       drives clock-gated jams on a commuter curve: metro stretches jam at
       rush hour and flow free at midnight; entering a live jam injects slow
@@ -7252,12 +7310,66 @@ city service drives below.)
       per-state progress. Still open below: widening the high-confidence
       facility-type set for turn geometry (grain elevators, cold storage).
 - [ ] **Turn geometry for more facility types.** The turn-level route pass
-      still limits itself to the original high-confidence type set (yards,
-      cross-docks, warehouses, plants, ramps, parcel hubs). Grain
-      elevators, cold storage, and food processors now have source-backed
-      endpoints at scale -- extend `HIGH_CONFIDENCE_TYPES` in
-      `tools/build_facility_approaches.py` after judging spoken-name
-      quality on a sample.
+      used to limit itself to the original high-confidence type set (yards,
+      cross-docks, warehouses, plants, ramps, parcel hubs). On 2026-09-16
+      `HIGH_CONFIDENCE_TYPES` in `tools/build_facility_approaches.py` grew
+      to cold storage, food processors, grocery DCs, grain elevators, ports
+      and port terminals after reading the type-excluded endpoint names
+      (Americold, Dot Foods, US Foods read as the business they are).
+      Steel, automotive and chemical/petroleum terminals stay out: their
+      endpoints were name-substring matches ("Steele Street", "Assembly of
+      God", "Refinery Ballpark"), and a share of port endpoints are rail
+      subdivisions and bus terminals the endpoint sweep matched on
+      "terminal" -- both want an endpoint re-sweep before a street chain
+      guides the truck to them. The builder also merges a state batch into
+      the checked-in file by default (`--merge-existing`): a prior chain is
+      never demoted, facilities the batch did not attempt keep their rows
+      (the 419 estimated-near-city residuals included), and
+      `generated.regeocode_far_pins` survives. A 24-state Geofabrik route
+      sweep on 2026-09-16 moved the file from 1,415 to 1,647 chains of
+      5,037 facilities (28 to 33 percent) and pinned coverage counts with
+      it; 92 newly eligible types now have turn-level streets. A
+      California, New York and Texas sweep the same day (419 routable
+      targets: 185, 58, 176) took it to 1,713 chains (34 percent) with the
+      Python and Rust coverage pins moved to match: California 103 to 130
+      of 316, New York 37 to 46 of 76, Texas 81 to 111 of 412; 287 new
+      chains, no prior chain demoted, facilities outside the batch
+      untouched. `generated.states` now lists all 49 (48 plus DC), so
+      extract coverage is complete. Still open: path failures in swept
+      states (the CA/NY/TX batch alone left 88 source-backed endpoints
+      with no connected public-road path and 44 whose only path is a
+      single segment under `MIN_CHAIN_ROUTE_MI`, both kept as fallbacks),
+      endpoint re-sweep for steel/auto/chemical name matches, and the
+      deferred 419 estimated-near-city residuals.
+      Leftovers worked 2026-09-17 (details in ROADMAP.md): the search
+      budget now follows the endpoint being routed to, trunk roads and
+      link ways are routable, a long path keeps the streets at the yard,
+      one street under several route refs is spoken once, and the builder
+      screens each endpoint's own OSM tags before routing to it
+      (`tools/facility_endpoint_screen.py`, `--no-endpoint-screen` to turn
+      it off). All 49 extracts re-swept: 1,713 to 1,913 chains (38
+      percent), 200 new, 227 refreshed, none demoted. 567 of the 2,779
+      sourced endpoints are freight sites, so the endpoint sweep itself
+      is the next piece of work.
+      Endpoint re-sweep done the same day (details in ROADMAP.md):
+      `tools/facility_endpoint_match.py` reads an object's own tags and
+      whole words of its name behind the same screen, and
+      `tools/build_facility_endpoints.py` merges a state at a time
+      (passing endpoints kept, failing ones replaced or labelled). 1,939
+      of 2,934 sourced endpoints are freight sites now, 1,224 were
+      replaced, 995 are labelled refused. Chains rebuilt toward the new
+      endpoints: 1,913 to 2,364 (47 percent), 1,722 of them to a freight
+      site, 82 kept with a `stale_endpoint` note because no public road
+      reaches the new site.
+      Yard roads, same day, by owner ruling: a chain may begin on the
+      facility's own `access=private` road, at the facility end only and
+      spoken as "a service road" (`tools/yard_roads.py`; the public search
+      never sees a private way, so nothing cuts through another site, and
+      the chain floor is held against public miles alone). 89 of the 142
+      disconnected rows gained a chain: 2,416 chains (48 percent), 1,811 to
+      a freight site, 45 stale. The private stretches run 0.03 to 0.85
+      miles, then a gap to 1.49; the cut is one mile, with three sites
+      allowed past it by name.
 - [x] **Street cue pacing and clean spoken names.** Street cues pace one
       maneuver at a time with a block-scale lookahead (a departure used to
       read the whole itinerary in one burst), and spoken street names trim
@@ -8112,12 +8224,14 @@ section below and the Unreleased changelog; the release-line view:
       ten new Roadhouse daytime instrumentals, four new night beds, and
       two Night Line-only vocal ballads. Second takes of the 24 vocal
       songs are kept outside the repo as auditionable spares.
-- [x] **Menu rotation borrows radio instrumentals.** Six curated radio
+- [x] **Menu rotation borrows radio instrumentals.** Seven curated radio
       instrumentals joined the menu music pools: Steel String Sunday,
-      Dobro Dusk, and Glass Highway rotate behind the daytime milestone
-      bed; Freight Yard Moon, Midnight Siding, and Low Beams behind the
-      night piano theme. Menus stay instrumental (no vocals or host
-      breaks) so music never competes with menu speech.
+      Dobro Dusk, Glass Highway, and Lights Over Superior rotate behind
+      the daytime milestone bed; Freight Yard Moon, Midnight Siding, and
+      Low Beams behind the night piano theme. Borrowing does not move a
+      track off its station -- each still plays on the dial. Menus stay
+      instrumental (no vocals or host breaks) so music never competes
+      with menu speech.
 - [x] **Map-refresh utility shipped (v1, report-only) --
       tools/refresh_map_data.py, 2026-07-14.** The owner-run drift
       checker: --radio plays every supported real stream through the
@@ -10028,7 +10142,9 @@ fit for an audio-first game.
       and dispatcher standing private.
 - [x] Profile integrity, client half: `profile_invariants.py` runs the hard, version-stable sanity rules (ranges, counter relations, upgrade tiers) as defense in depth behind the Ed25519 signature on every cloud restore, refusing with a plain spoken reason; `docs/profile-invariants.md` is the maintained validation list for the server gate. Follow-up: the append-only event ledger that upgrades server validation from plausibility to recomputation
 - [x] Packed save container: careers live in signed `.ffsave` files (magic header + deflated JSON) that text editors cannot open; legacy plain-JSON saves convert on load with a `.json.bak` rollback copy. A failed local signature now marks the profile `integrity_modified` (sticky, signed-in, spoken once) instead of quarantining — local play continues, shared features read the mark. `tools/dump_save.py` prints the JSON inside a save for bug reports.
-- [ ] Retire legacy plain-JSON save loading (and its unsigned amnesty) once converted installs are the norm — one or two releases after the container ships; the amnesty is the last casual editing door
+- [x] Unsigned amnesty retired on the 1.9 line (2026-09-17): a save with no signature loads marked `integrity_modified` whether it is packed or plain JSON. Saves from before the line are refused by the load gate and every 1.9 build signs what it writes, so the only unsigned JSON left was written by hand, and the game was signing it on load. Found when a staging driver uploaded a one-delivery career holding about 1e18 dollars with `integrity_modified` false.
+- [x] Load-gate money ceiling (2026-09-17): a balance no career could hold marks the save even under a valid signature, which is what a balance rewritten in memory looks like. The ceiling is derived, not tuned (`models/profile/plausibility.rs`): richest start, lifetime earnings, the pay advance limit, and the equity share of the whole tractor and trailer catalog. It is deliberately looser than the server's to-the-dollar rule, which refuses uploads but never marks a career.
+- [ ] Retire signed plain-JSON save loading once no install still holds one; the loader is all that is left of the legacy shape
 - [ ] Ship a stable release carrying the packed save container, so players are not split across two save formats. Until one exists, a career backed up from a developer snapshot cannot be restored onto 1.8.3: the snapshot writes the newer format, and the stable build drops the fields it does not recognise. Moving forward (stable career onto a snapshot) is fine. Fixing the backwards direction in the client was considered and deliberately declined — too many edge cases for the value; the stable release is the fix. Told players so on issue #97, without naming a date.
 - [x] Cloud backup accepts every shipped save shape, not just the newest build's: the orinks.net validator matches uploads against a superset allow-list and a supported version range, and only requires the fields it actually reads. It had demanded an exact match with whichever build the invariants export was last generated from, which refused newer and older saves in turn — most recently every save from 1.8.3, the stable release, leaving those players unable to back up at all (issue #97)
 - [ ] Server absolution for `integrity_modified`: a profile that passes full server validation may have the client mark cleared on the next verified restore, so honest cross-machine movers are not marked forever (`docs/server-integrity-handoff.md`)

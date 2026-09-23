@@ -21,21 +21,21 @@ fn test_local_approach_data_covers_supported_map() {
     let data = read_json("local_approaches.json");
     let coverage = &data["coverage"];
 
-    assert_eq!(coverage["approaches"], 6910);
-    assert_eq!(coverage["osm_road"], 6901);
+    assert_eq!(coverage["approaches"], 6157);
+    assert_eq!(coverage["osm_road"], 1315);
     // Every road-snapped target carries a real road name where OSM has one:
     // the snap prefers the nearest *named* road, so "unnamed public road"
     // only survives where OSM truly has no named street inside the radius.
-    assert_eq!(coverage["named_road"], 6900);
-    assert_eq!(coverage["fallback"], 9);
-    assert_eq!(coverage["estimated"], 5602);
+    assert_eq!(coverage["named_road"], 1315);
+    assert_eq!(coverage["fallback"], 4842);
+    assert_eq!(coverage["estimated"], 4842);
     assert_eq!(
         coverage["by_type"]["city_service"],
-        serde_json::json!({"estimated": 695, "fallback": 0, "named_road": 1869, "osm_road": 1869, "total": 1869})
+        serde_json::json!({"estimated": 695, "fallback": 695, "named_road": 1174, "osm_road": 1174, "total": 1869})
     );
     assert_eq!(
         coverage["by_type"]["facility"],
-        serde_json::json!({"estimated": 4907, "fallback": 9, "named_road": 5031, "osm_road": 5032, "total": 5041})
+        serde_json::json!({"estimated": 4147, "fallback": 4147, "named_road": 141, "osm_road": 141, "total": 4288})
     );
 
     // The coverage block records the sweep's own inventory. The map has grown
@@ -99,7 +99,13 @@ fn test_local_approach_records_are_clean_and_marked() {
         assert!(!RAW_MARKERS.iter().any(|m| spoken.contains(m)));
         if record["fallback"].as_bool().unwrap() {
             assert!(!record["fallback_reason"].as_str().unwrap().is_empty());
-            assert_eq!(record["source_type"], "fallback_context");
+            // A facility the world generated is approached by a generated
+            // road: no snapped street stands in for a site that is not
+            // there (2026-09-20).
+            assert!(matches!(
+                record["source_type"].as_str().unwrap(),
+                "fallback_context" | "representative_target_generated_context"
+            ));
         } else {
             assert!(record["distance_to_road_mi"].as_f64().unwrap() <= SEARCH_RADIUS_MI);
             assert!(matches!(
@@ -123,16 +129,34 @@ fn test_facility_routes_use_local_approach_layer() {
         .unwrap()
         .expect("Chicago's first facility has a local approach");
     let facility_endpoint = world.facility_endpoint("Chicago", &facility.name).unwrap();
-    match facility_endpoint {
-        Some(endpoint) if endpoint.source_backed => {
-            assert_eq!(facility_route.miles(), endpoint.approach_miles);
+    // A facility with its own street chain is measured by the chain, not by
+    // either estimate: Cicero Rail Hub gained one on 2026-09-20 when the
+    // approach builder started routing the intermodal family, and its routed
+    // 2.14 miles is a shorter and truer number than the endpoint sweep's 3.6.
+    if facility_route
+        .legs
+        .iter()
+        .any(|leg| leg.local_speed_mph > 0.0)
+    {
+        // A chain names every street it uses, and ends on the facility's own
+        // ground, which is why the last road is the service road the local
+        // approach layer had been standing in for all along.
+        assert!(facility_route.miles() > 0.0);
+        let streets = facility_route.highways();
+        assert!(streets.len() > 1, "{streets:?}");
+        assert_eq!(streets.last(), Some(&facility_approach.road));
+    } else {
+        match facility_endpoint {
+            Some(endpoint) if endpoint.source_backed => {
+                assert_eq!(facility_route.miles(), endpoint.approach_miles);
+            }
+            _ => assert_eq!(facility_route.miles(), facility_approach.approach_miles),
         }
-        _ => assert_eq!(facility_route.miles(), facility_approach.approach_miles),
+        assert_eq!(
+            facility_route.highways(),
+            vec![facility_approach.road.clone()]
+        );
     }
-    assert_eq!(
-        facility_route.highways(),
-        vec![facility_approach.road.clone()]
-    );
 }
 
 #[test]

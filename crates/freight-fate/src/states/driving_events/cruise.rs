@@ -375,10 +375,42 @@ impl DrivingState {
             return;
         }
         if accelerating {
-            return; // manual override; the keeper resumes when the key lifts
+            // Manual override; the keeper resumes when the key lifts -- and it
+            // lets its snub off on the way out. The keeper already refuses to
+            // brake against its OWN throttle (`apply_keeper_snub`); it had no
+            // such rule for the driver's, so a held snub stayed latched under
+            // the driver's foot and was re-made every frame they lifted. Every
+            // other exit from keeper control (`clear_keeper`, `cancel_keeper`)
+            // already releases it; this one is the odd man out.
+            self.keeper_snub = 0.0;
+            return;
         }
         if clutch_disengaged {
             self.trip.truck.throttle = 0.0;
+            // A held snub still has to be let go under the number. The
+            // controller below is what releases it, and this return is above
+            // it, so on an automatic's shift the hold lasts the shift and on
+            // a MANUAL driver holding the clutch -- coasting, picking a gear,
+            // rolling up to a queue -- it lasted as long as their foot did,
+            // braking the truck to a stop with nothing said and no way to
+            // release it but letting the clutch out (review finding,
+            // 2026-09-19). The rule is the keeper's own, just applied on a
+            // frame it cannot run.
+            // Against the number the snub is HOLDING, not the number the
+            // keeper is set to. Read against the set speed, this released on
+            // every shift frame of any approach -- the truck eased to a 10 mph
+            // corner is a mile an hour under its 45 mph setting by a mile an
+            // hour of margin and thirty-four more besides -- and an automatic
+            // hunting gears at 10 mph shifts constantly. Press, shift,
+            // release, press: 392 applications and the tanks on the floor at
+            // Albany Company Yard's service road (approach sweep,
+            // 2026-09-20).
+            if self.keeper_snub > 0.0
+                && self.trip.truck.speed_mph()
+                    <= self.keeper_snub_target_mph - KEEPER_SNUB_UNDER_MPH
+            {
+                self.keeper_snub = 0.0;
+            }
             return;
         }
         if zone_reason.is_none() && self.departure_ramp_mi.is_some() {
@@ -715,9 +747,9 @@ impl DrivingState {
             self.keeper_snub = wanted;
         }
         if self.keeper_snub > 0.0 {
-            self.trip.truck.throttle = 0.0; // never brake against our own throttle
-            self.trip.truck.brake = self.trip.truck.brake.max(self.keeper_snub);
+            self.keeper_snub_target_mph = target_mph;
         }
+        self.apply_keeper_snub();
         // Pressing everything it has and still riding well over the number:
         // say so. An assist that quietly holds the wrong speed is the one
         // thing a driver who cannot see the speedometer cannot catch.
@@ -746,5 +778,39 @@ impl DrivingState {
                 &format!("Speed keeper cannot hold {held}{because}. Apply service brakes."),
             );
         }
+    }
+
+    /// Put the keeper's held snub back on the pedal before physics.
+    ///
+    /// The same repair, for the same reason, that `apply_hazard_brake` and the
+    /// destination arrival's pedals already carry: the input pass ramps the
+    /// service brake down every frame nobody is on it, and it runs at the TOP
+    /// of `update_frame`, ahead of `update_keeper`. So on any frame the keeper
+    /// returns early -- a driver on the accelerator, an open driveline
+    /// mid-shift -- its held application is not paused, it is dropped, and the
+    /// next frame the keeper reaches its controller it is re-made from zero.
+    /// The air system charges a whole application every time the pedal RISES,
+    /// which is exactly what makes ONE held snub affordable and what makes a
+    /// re-made one ruinous.
+    ///
+    /// Measured on the Aberdeen Company Yard chain (2026-09-18): the keeper
+    /// latched a 0.20 snub, the automatic shifted and the driver rode the
+    /// accelerator against it, and the same application was re-made nine times
+    /// a second -- about eight psi a second against the four the compressor
+    /// makes at idle. A hundred and twenty-five psi to the spring-brake trip
+    /// in twenty seconds, the parking brakes on, and the truck stranded half a
+    /// mile short of the gate with the delivery unfinishable. FMCSA's CDL
+    /// manual names the same thing on a real truck -- fanning the brakes
+    /// spends reservoir air the compressor cannot replace, and the spring
+    /// brakes come on.
+    ///
+    /// Re-asserted here beside the other assists' floors, one held snub costs
+    /// one application however many frames the keeper spends overridden.
+    pub fn apply_keeper_snub(&mut self) {
+        if self.keeper_snub <= 0.0 {
+            return;
+        }
+        self.trip.truck.throttle = 0.0; // never brake against our own throttle
+        self.trip.truck.brake = self.trip.truck.brake.max(self.keeper_snub);
     }
 }

@@ -141,7 +141,7 @@ fn slot_with_local_save(
     let guard = install_identity(app, Some(&identity()));
     install_cloud(app, transport, true);
     let mut profile = ff_core::models::profile::Profile::named(name);
-    profile.money = 3294.0;
+    profile.set_money(3294.0);
     profile.save().unwrap();
     let state = CloudSlotState::new(&mut app.ctx, name, vec![a_revision()], None, None);
     (push(app, state), guard)
@@ -267,7 +267,7 @@ fn test_a_conflict_names_both_copies_so_the_choice_can_be_answered() {
     let mut app = TestApp::new();
     // This computer's copy: a real save, described by backup_summary.
     let mut profile = ff_core::models::profile::Profile::named("armstrong45");
-    profile.money = 3294.0;
+    profile.set_money(3294.0);
     profile.save().unwrap();
     let expected_mine =
         freight_fate::cloud_saves::backup_summary(&Value::Object(profile.to_dict()));
@@ -407,4 +407,28 @@ fn test_the_restore_cancel_points_back_at_the_upload_choice() {
         .find(|(t, _)| t.starts_with("No"))
         .unwrap();
     assert!(help.contains("Keep this computer's save and back it up"));
+}
+
+/// Restoring a career deleted from this computer replaces nothing, so the
+/// result must not promise a fallback copy of a save that never existed.
+#[test]
+fn test_restoring_a_career_this_computer_no_longer_has_claims_no_fallback() {
+    let mut app = TestApp::new();
+    let _guard = install_identity(&app, Some(&identity()));
+    install_cloud(&mut app, FakeTransport::revisions(), true);
+    let mut state = CloudSlotState::new(&mut app.ctx, "Gone Local", vec![a_revision()], None, None);
+    state.threaded = false;
+    let slot = push(&mut app, state);
+    app.clear_speech();
+    with_state::<CloudSlotState, _>(&slot, |s| {
+        s.busy = true;
+        s.outcome.post("restored".to_string());
+        s.update(&mut app.ctx, 0.0);
+    });
+    let said = app.main_lines().join(" ");
+    assert!(
+        said.contains("Gone Local is back on this computer"),
+        "{said}"
+    );
+    assert!(!said.contains("fallback"), "{said}");
 }

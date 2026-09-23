@@ -1,12 +1,15 @@
 //! The spoken route POI menu: actions come from the corridor metadata
 //! (`RestStopState`).
 
+use ff_core::achievements::increment_stat;
 use ff_core::data::amenities::{classify_brand, spoken_amenities};
 use ff_core::data::buffs::{buffs_for_stop, Buff};
 use ff_core::models::solvency;
-use ff_core::pyfmt::{fmt_f, fmt_grouped, round_py_n};
+use ff_core::pyfmt::{fmt_f, fmt_grouped, round_py_int, round_py_n};
 use ff_core::sim::hos;
+use ff_core::sim::roadside_inspection::InspectionLevel;
 use ff_core::sim::trip_models::RoadStop;
+use ff_core::sim::vehicle::TruckState;
 use serde_json::json;
 
 use crate::app::{GameContext, Say};
@@ -19,9 +22,9 @@ use crate::states::driving_core::{
     advance_rest_clock, clock_text, deadline_text, hos_mut_of, hos_of, pay_advance_grant,
     pay_advance_unavailable_reason, player_pays_operating_costs, poi_ambient_key, profile_mut_of,
     profile_of, record_inspection, road_repair_cost, shut_down_engine, wake_air_instruction,
-    RigBuff, FIELD_REPAIR_DAMAGE_PCT, INSPECTION_MIN, MECHANIC_CALLOUT_FEE, MECHANIC_WAIT_MIN,
+    FacilityEngine, RigBuff, FIELD_REPAIR_DAMAGE_PCT, MECHANIC_CALLOUT_FEE, MECHANIC_WAIT_MIN,
     MOTEL_COST, ROAD_BRAKE_COST_PER_PCT, ROAD_BRAKE_MIN, ROAD_TIRE_COST_PER_PCT, ROAD_TIRE_MIN,
-    ROAD_TIRE_SPECIALIST_COST_PER_PCT, ROAD_TIRE_SPECIALIST_MIN, WAVE_THROUGH_MIN,
+    ROAD_TIRE_SPECIALIST_COST_PER_PCT, ROAD_TIRE_SPECIALIST_MIN, WALK_AROUND_MIN, WAVE_THROUGH_MIN,
 };
 use crate::states::driving_menu_states::{keep_rows, DriveRef};
 use crate::states::driving_rest_states::fuel_pump::FuelPump;
@@ -182,11 +185,14 @@ impl RestStopState {
         }
 
         if has("fuel") {
+            // Kill switch while parked: the road's engine key is out of reach
+            // under this menu, and the fuel island refuses a running tractor.
+            items.push(self.facility_engine_item_for(d.trip.truck.engine_on));
             let label = self.fuel_label(ctx, d);
             items.push(
                 MenuItem::new(label, |s: &mut Self, ctx| s.refuel(ctx)).help(
                     "Fills the tank at the regional diesel price plus a 35 dollar service fee. \
-                     Short on cash, it buys what you can afford.",
+                     Short on cash, it buys what you can afford. The engine must be off.",
                 ),
             );
         }
@@ -353,6 +359,15 @@ impl RestStopState {
                 .help("Records the inspection check-in."),
             );
         }
+        items.push(
+            MenuItem::new("Walk around the truck", |s: &mut Self, ctx| {
+                s.walk_around(ctx)
+            })
+            .help(
+                "A pre-trip walk-around: what an inspector would find on the tractor and the \
+                 trailer. Fifteen minutes on duty.",
+            ),
+        );
         if has("save") {
             items.push(
                 MenuItem::new("Save at this stop", |s: &mut Self, ctx| {
@@ -378,7 +393,7 @@ impl RestStopState {
 
     fn pay_advance_label(&self, ctx: &GameContext) -> String {
         let p = profile_of(ctx);
-        let grant = pay_advance_grant(p.money, p.pay_advance, p.pay_advance_used_for_load);
+        let grant = pay_advance_grant(p.money(), p.pay_advance, p.pay_advance_used_for_load);
         if grant > 0.0 {
             return format!("Request pay advance: {} dollars", fmt_grouped(grant, 0));
         }
@@ -387,15 +402,19 @@ impl RestStopState {
 
     fn pay_advance_available(&self, ctx: &GameContext) -> bool {
         let p = profile_of(ctx);
-        pay_advance_grant(p.money, p.pay_advance, p.pay_advance_used_for_load) > 0.0
+        pay_advance_grant(p.money(), p.pay_advance, p.pay_advance_used_for_load) > 0.0
     }
 
     fn request_pay_advance(&mut self, ctx: &mut GameContext) {
         let (grant, reason) = {
             let p = profile_of(ctx);
             (
-                pay_advance_grant(p.money, p.pay_advance, p.pay_advance_used_for_load),
-                pay_advance_unavailable_reason(p.money, p.pay_advance, p.pay_advance_used_for_load),
+                pay_advance_grant(p.money(), p.pay_advance, p.pay_advance_used_for_load),
+                pay_advance_unavailable_reason(
+                    p.money(),
+                    p.pay_advance,
+                    p.pay_advance_used_for_load,
+                ),
             )
         };
         if grant <= 0.0 {
@@ -405,10 +424,10 @@ impl RestStopState {
         }
         let (money, advance) = {
             let p = profile_mut_of(ctx);
-            p.money += grant;
+            p.earn(grant);
             p.pay_advance = round_py_n(p.pay_advance + grant, 2);
             p.pay_advance_used_for_load = true;
-            (p.money, p.pay_advance)
+            (p.money(), p.pay_advance)
         };
         self.save_here(ctx, true);
         ctx.audio.play("ui/notify");
@@ -452,6 +471,12 @@ impl RestStopState {
         ctx.audio.play("ui/notify");
         ctx.say(&text);
         ctx.award_achievement("break_taken");
+        // Twenty-five proper breaks. The 30-minute one is the break that
+        // counts -- the 15-minute food and coffee stop eases fatigue but
+        // resets nothing, so it is not one of these.
+        if increment_stat(profile_mut_of(ctx), "breaks_taken") >= 25 {
+            ctx.award_achievement("coffee_regular");
+        }
     }
 
     fn food_break(&mut self, ctx: &mut GameContext) {
@@ -589,7 +614,7 @@ impl RestStopState {
     /// Lodging is personal money even for company drivers -- the carrier pays
     /// for the truck, not the room.
     fn motel_sleep(&mut self, ctx: &mut GameContext) {
-        let money = profile_of(ctx).money;
+        let money = profile_of(ctx).money();
         if money < MOTEL_COST {
             ctx.audio.play("ui/error");
             ctx.say(&format!(
@@ -599,7 +624,7 @@ impl RestStopState {
             ));
             return;
         }
-        profile_mut_of(ctx).money -= MOTEL_COST;
+        profile_mut_of(ctx).spend(MOTEL_COST);
         let Some(text) = self.driving.clone().with(ctx, |d, ctx| {
             // A motel bed is still a real sleep: no truck idles all night
             // just because the driver is not in it. Every other sleep option
@@ -609,7 +634,7 @@ impl RestStopState {
             advance_rest_clock(d, ctx, hos::SLEEP_MIN, None, "");
             hos_mut_of(ctx).sleep();
             profile_mut_of(ctx).fatigue = 0.0;
-            let money = profile_of(ctx).money;
+            let money = profile_of(ctx).money();
             format!(
                 "{engine_off}You took a motel room for {} dollars and slept a full ten hours. It \
                  is {}. Hours of service reset and you wake fresh. You have {} dollars. {}{}",
@@ -674,7 +699,7 @@ impl RestStopState {
         let carrier = !player_pays_operating_costs(&profile_of(ctx).business_status);
         if !carrier {
             let cost = ff_core::models::economy::Economy::repair_cost(damage);
-            if profile_of(ctx).money < cost {
+            if profile_of(ctx).money() < cost {
                 ctx.audio.play("ui/error");
                 ctx.say(&format!(
                     "Repair costs {} dollars. You cannot afford it.",
@@ -682,12 +707,12 @@ impl RestStopState {
                 ));
                 return;
             }
-            profile_mut_of(ctx).money -= cost;
+            profile_mut_of(ctx).spend(cost);
             let Some(text) = self.driving.clone().with(ctx, |d, ctx| {
                 d.trip.truck.damage_pct = 0.0;
                 advance_rest_clock(d, ctx, 60.0, None, "");
                 hos_mut_of(ctx).on_duty(60.0);
-                let money = profile_of(ctx).money;
+                let money = profile_of(ctx).money();
                 format!(
                     "Truck repaired for {} dollars. It is {}. You have {} dollars. {}",
                     fmt_grouped(cost, 0),
@@ -737,7 +762,7 @@ impl RestStopState {
         let cost = road_repair_cost(damage, FIELD_REPAIR_DAMAGE_PCT, MECHANIC_CALLOUT_FEE);
         let carrier_paid = !player_pays_operating_costs(&profile_of(ctx).business_status);
         if !carrier_paid {
-            profile_mut_of(ctx).money -= cost;
+            profile_mut_of(ctx).spend(cost);
         }
         let Some(text) = self.driving.clone().with(ctx, |d, ctx| {
             d.trip.truck.damage_pct = damage.min(FIELD_REPAIR_DAMAGE_PCT);
@@ -864,7 +889,7 @@ impl RestStopState {
         }
         let carrier = !player_pays_operating_costs(&profile_of(ctx).business_status);
         let cost = round_py_n(wear * cost_per_pct, 2);
-        if !carrier && profile_of(ctx).money < cost {
+        if !carrier && profile_of(ctx).money() < cost {
             ctx.audio.play("ui/error");
             ctx.say(&format!(
                 "{} costs {} dollars here. You cannot afford it.",
@@ -874,7 +899,7 @@ impl RestStopState {
             return;
         }
         if !carrier {
-            profile_mut_of(ctx).money -= cost;
+            profile_mut_of(ctx).spend(cost);
         }
         let duty_note = duty_note.to_string();
         let Some(text) = self.driving.clone().with(ctx, |d, ctx| {
@@ -893,7 +918,7 @@ impl RestStopState {
                     deadline_text(d, ctx)
                 )
             } else {
-                let money = profile_of(ctx).money;
+                let money = profile_of(ctx).money();
                 format!(
                     "{done_say} {} dollars. It is {}. You have {} dollars. {}",
                     fmt_grouped(cost, 0),
@@ -918,12 +943,33 @@ impl RestStopState {
         buff.price
     }
 
+    /// Spoken cost for a buff row or purchase line.
+    ///
+    /// Free showers after fuel keep the fuel wording; catalog-free items (Wall
+    /// Drug ice water) just say free. Sub-dollar prices speak in cents so
+    /// five-cent coffee is not rounded to "0 dollars".
+    fn format_buff_price_amount(price: f64) -> String {
+        if price < 1.0 {
+            let cents = round_py_int(price * 100.0).max(1);
+            if cents == 1 {
+                "1 cent".to_string()
+            } else {
+                format!("{cents} cents")
+            }
+        } else {
+            format!("{} dollars", fmt_grouped(price, 0))
+        }
+    }
+
     fn buff_label(&self, buff: &Buff) -> String {
         let price = self.buff_price(buff);
         if price <= 0.0 {
-            return format!("{}: free with your fuel purchase", buff.label);
+            if buff.free_with_fuel {
+                return format!("{}: free with your fuel purchase", buff.label);
+            }
+            return format!("{}: free", buff.label);
         }
-        format!("{}: {} dollars", buff.label, fmt_grouped(price, 0))
+        format!("{}: {}", buff.label, Self::format_buff_price_amount(price))
     }
 
     /// Apply a consumable buff purchase (`data/buffs.rs`).
@@ -943,18 +989,18 @@ impl RestStopState {
         let rig_buff = buff.group == "engine" || buff.group == "tire";
         let carrier_pays =
             rig_buff && !player_pays_operating_costs(&profile_of(ctx).business_status);
-        if !carrier_pays && profile_of(ctx).money < price {
+        if !carrier_pays && profile_of(ctx).money() < price {
             ctx.audio.play("ui/error");
             ctx.say(&format!(
-                "The {} costs {} dollars and you have {}.",
+                "The {} costs {} and you have {} dollars.",
                 buff.label.to_lowercase(),
-                fmt_grouped(price, 0),
-                fmt_grouped(profile_of(ctx).money, 0)
+                Self::format_buff_price_amount(price),
+                fmt_grouped(profile_of(ctx).money(), 0)
             ));
             return;
         }
         if !carrier_pays {
-            profile_mut_of(ctx).money -= price;
+            profile_mut_of(ctx).spend(price);
         }
         let Some(text) = self.driving.clone().with(ctx, |d, ctx| {
             if rig_buff {
@@ -1002,12 +1048,16 @@ impl RestStopState {
             let billing = if carrier_pays {
                 "Billed to the carrier.".to_string()
             } else if price <= 0.0 {
-                "Free with your fuel purchase.".to_string()
+                if buff.free_with_fuel {
+                    "Free with your fuel purchase.".to_string()
+                } else {
+                    "Free.".to_string()
+                }
             } else {
                 format!(
-                    "{} dollars. You have {} dollars.",
-                    fmt_grouped(price, 0),
-                    fmt_grouped(profile_of(ctx).money, 0)
+                    "{}. You have {} dollars.",
+                    Self::format_buff_price_amount(price),
+                    fmt_grouped(profile_of(ctx).money(), 0)
                 )
             };
             format!(
@@ -1027,31 +1077,57 @@ impl RestStopState {
 
     fn inspect(&mut self, ctx: &mut GameContext) {
         let stop = self.stop.clone();
-        let Some(text) = self.driving.clone().with(ctx, |d, ctx| {
+        let Some((text, waved)) = self.driving.clone().with(ctx, |d, ctx| {
             ctx.audio.play("ui/notify");
+            // A valid decal is waved through on sight (CVSA Operational
+            // Policy 5), unless the record is targeted.
+            if d.decal_waves_through(ctx) {
+                advance_rest_clock(d, ctx, WAVE_THROUGH_MIN, None, "");
+                hos_mut_of(ctx).on_duty(WAVE_THROUGH_MIN);
+                return (
+                    format!(
+                        "Inspection check-in complete at {}. The inspection decal on the \
+                         windshield gets you waved straight back onto the highway. It is {}. {}",
+                        stop.spoken_name(),
+                        clock_text(d.trip.local_hour()),
+                        deadline_text(d, ctx)
+                    ),
+                    true,
+                );
+            }
             // Whether the screening lane waves you through or pulls you in is
             // the safety record's job. A clean career is waved through nearly
             // every time; a career carrying citations, out-of-service history
             // and a beaten-up truck is pulled in at every open scale.
-            let selected = d.scale_selects_driver(ctx, &stop);
-            let minutes = if selected {
-                INSPECTION_MIN
-            } else {
-                WAVE_THROUGH_MIN
-            };
-            advance_rest_clock(d, ctx, minutes, None, "");
-            hos_mut_of(ctx).on_duty(minutes);
-            let outcome = if selected {
-                "Officers pull you into the inspection lane."
-            } else {
-                "Officers wave you straight back onto the highway."
-            };
-            format!(
-                "Inspection check-in complete at {}. {outcome} {} It is {}. {}",
-                stop.spoken_name(),
-                d.safety_record_line(ctx),
-                clock_text(d.trip.local_hour()),
-                deadline_text(d, ctx)
+            if !d.scale_selects_driver(ctx, &stop) {
+                advance_rest_clock(d, ctx, WAVE_THROUGH_MIN, None, "");
+                hos_mut_of(ctx).on_duty(WAVE_THROUGH_MIN);
+                return (
+                    format!(
+                        "Inspection check-in complete at {}. Officers wave you straight back \
+                         onto the highway. {} It is {}. {}",
+                        stop.spoken_name(),
+                        d.safety_record_line(ctx),
+                        clock_text(d.trip.local_hour()),
+                        deadline_text(d, ctx)
+                    ),
+                    true,
+                );
+            }
+            // The lane is a real Level 1: driver, paperwork, walk-around and
+            // under the truck, settled where it stands.
+            let report = d.inspection_report(ctx, InspectionLevel::Full);
+            let outcome = d.settle_inspection(ctx, &report);
+            (
+                format!(
+                    "Inspection check-in complete at {}. Officers pull you into the inspection \
+                     lane. {outcome} {} It is {}. {}",
+                    stop.spoken_name(),
+                    d.safety_record_line(ctx),
+                    clock_text(d.trip.local_hour()),
+                    deadline_text(d, ctx)
+                ),
+                false,
             )
         }) else {
             return;
@@ -1060,7 +1136,79 @@ impl RestStopState {
         self.refresh(ctx, true);
         ctx.say(&text);
         ctx.say_with(self.current_text(ctx), Say::queued().review(false));
-        record_inspection(ctx);
+        if waved {
+            record_inspection(ctx);
+        }
+    }
+
+    /// The driver's own pre-trip: what an inspector would find on the
+    /// tractor and the hooked trailer, before an inspector does.
+    fn walk_around(&mut self, ctx: &mut GameContext) {
+        let Some(text) = self.driving.clone().with(ctx, |d, ctx| {
+            let lines = d.walk_around_lines(ctx);
+            advance_rest_clock(
+                d,
+                ctx,
+                WALK_AROUND_MIN,
+                Some("on_duty_not_driving"),
+                "pre-trip walk-around",
+            );
+            hos_mut_of(ctx).on_duty(WALK_AROUND_MIN);
+            let body = if lines.is_empty() {
+                "Nothing to write up: tires, brakes, lights and the trailer would all pass."
+                    .to_string()
+            } else {
+                lines.join(" ")
+            };
+            format!(
+                "Walk-around done, {} minutes. {body} It is {}. {}",
+                fmt_f(WALK_AROUND_MIN, 0),
+                clock_text(d.trip.local_hour()),
+                deadline_text(d, ctx)
+            )
+        }) else {
+            return;
+        };
+        ctx.audio.play("ui/notify");
+        ctx.say(&text);
+        ctx.say_with(self.current_text(ctx), Say::queued().review(false));
+    }
+
+    /// [`FacilityEngine::facility_engine_item`] with engine state already in hand
+    /// (rows build inside a DriveRef borrow).
+    fn facility_engine_item_for(&self, engine_on: bool) -> MenuItem<Self> {
+        if engine_on {
+            MenuItem::new(
+                crate::states::driving_core::FACILITY_ENGINE_SHUT_DOWN_ITEM,
+                |s: &mut Self, ctx| s.toggle_facility_engine(ctx),
+            )
+            .help("Engine off while parked, no fuel burned. Required before the fuel island.")
+        } else {
+            MenuItem::new(
+                crate::states::driving_core::FACILITY_ENGINE_START_ITEM,
+                |s: &mut Self, ctx| s.toggle_facility_engine(ctx),
+            )
+            .help("Starts the engine. The parking brake needs 100 psi of air.")
+        }
+    }
+}
+
+impl FacilityEngine for RestStopState {
+    fn facility_engine_on(&self, _ctx: &GameContext) -> bool {
+        self.driving
+            .read(|d| d.trip.truck.engine_on)
+            .unwrap_or(false)
+    }
+
+    fn with_facility_truck<R>(
+        &mut self,
+        ctx: &mut GameContext,
+        f: impl FnOnce(&mut GameContext, &mut TruckState) -> R,
+    ) -> R {
+        self.driving
+            .clone()
+            .call(self, ctx, |_s, ctx, d| f(ctx, &mut d.trip.truck))
+            .expect("the rest stop keeps the drive under it")
     }
 }
 

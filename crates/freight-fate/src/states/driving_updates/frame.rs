@@ -44,12 +44,9 @@ impl DrivingState {
         if ahead <= 0.0 || speed <= curve.advisory_mph as f64 + PACENOTE_MARGIN_MPH {
             return;
         }
-        let pan = if curve.direction == 'L' {
-            -PACENOTE_CUE_PAN
-        } else {
-            PACENOTE_CUE_PAN
-        };
-        ctx.audio.play_with("vehicle/curve_bink", 0.9, pan);
+        // The pacenote speaks; the chime that preceded it does not (owner,
+        // 2026-09-18). The spoken call carries the side and the number, and
+        // the engine's lean carries the shape.
         let text = self.pacenote_text(ctx, &curve, ahead, speed);
         let mut opts = SayEvent::new().category(SpeechCategory::Navigation);
         // The refreshed call checks the bend before speaking; the rescue
@@ -272,12 +269,29 @@ impl DrivingState {
         // held floor on top of that.
         let braking_ramp =
             (key_down && !backing) || (accelerating && self.trip.truck.velocity_mps < -0.1);
+        // The floor an assist is holding right now. The ramp decays the
+        // pedal toward zero every frame the driver is not braking, and the
+        // assists re-press their application further down the frame, so the
+        // PHYSICS felt a steady pedal -- but the air model charges by the
+        // RISE, and it saw 0.09 climb back to 0.20 sixty times a second. One
+        // held snub was billed as six applications a second, which is the
+        // Aberdeen stranding (2026-09-18) surviving its own fix one layer
+        // down and stranding Albany Company Yard the same way (approach
+        // sweep, 2026-09-20). A pedal an assist is holding is not a pedal
+        // the driver let go of, so the decay stops there. Their own brake
+        // key still cancels the assist, which is what drops the floor.
+        let assist_floor = self
+            .keeper_snub
+            .max(self.aeb_brake)
+            .max(self.destination_assist_brake)
+            .max(self.curve_servo.as_ref().map_or(0.0, |servo| servo.brake))
+            .clamp(0.0, 1.0);
         {
             let t = &mut self.trip.truck;
             if braking_ramp {
                 t.brake = 1.0f64.min(t.brake + ramp * 1.5);
             } else {
-                t.brake = 0.0f64.max(t.brake - ramp * 3.0);
+                t.brake = assist_floor.max(t.brake - ramp * 3.0);
             }
             if pad_brake > 0.05 && !backing {
                 t.brake = t.brake.max(pad_brake);
@@ -439,6 +453,12 @@ impl DrivingState {
         self.resume_speed_control_if_ready(ctx, braking);
         self.update_cruise(ctx, dt, braking, hand_accelerating, clutch_disengaged);
         self.update_keeper(ctx, dt, braking, hand_accelerating, clutch_disengaged);
+        // The keeper's held snub, for the same reason and by the same rule:
+        // `update_keeper` returns early on an overridden or shifting frame,
+        // and the input ramp above has already bled the pedal it left behind
+        // -- so without this the one application is re-made, and re-charged,
+        // every time round. See apply_keeper_snub.
+        self.apply_keeper_snub();
         // The hazard assist's held application belongs here with the other
         // assists' floors, ahead of the physics -- see apply_hazard_brake.
         // update_hazard, which decides it, runs at the end of the frame.
@@ -451,7 +471,7 @@ impl DrivingState {
         // while the assist's own bookkeeping said 0.40. Every earlier fix to
         // this assist tuned a number against a pedal the truck never felt.
         self.update_destination_approach_assist(ctx);
-        // Curve speed assistance's approach servo, for the same reason: its
+        // Curve assistance's approach servo, for the same reason: its
         // pedal has to be set where the physics will see it, and after cruise
         // and the keeper so the max it applies is the one that stands.
         self.update_curve_speed_servo(ctx);
@@ -523,7 +543,17 @@ impl DrivingState {
         self.check_gate_approach_warning(ctx, dt);
         self.update_turn_commitment(ctx, dt);
         let moved_mi = self.trip.last_moved_mi;
+        // Advance and announce an already-active signal before adjudicating
+        // this frame's stop-bar crossing. Otherwise a yellow-to-red boundary
+        // uses the previous phase even though the real-time clock has moved.
+        let ramp_was_active = self.ramp_mi.is_some();
+        self.update_ramp_light(ctx, dt);
         self.update_exit_with_input(ctx, moved_mi, dt, hand_accelerating);
+        if !ramp_was_active && self.ramp_mi.is_some() {
+            // An exit can create its terminal above. Announce its seeded
+            // starting phase now without charging this frame's time twice.
+            self.update_ramp_light(ctx, 0.0);
+        }
         self.update_departure_ramp(ctx, moved_mi);
         // Immediately after the exit watch, which is what turns a signaled
         // scale exit into a ramp. Only now can a scale crossing be told apart
@@ -543,7 +573,6 @@ impl DrivingState {
         self.update_audio(ctx, dt);
         self.update_announcements(ctx, dt);
         self.update_ambient_events(ctx, dt);
-        self.update_ramp_light(ctx, dt);
         self.update_critical_respeak(ctx, dt);
         self.update_hazard(ctx, dt);
         self.update_grade_advisory(ctx);

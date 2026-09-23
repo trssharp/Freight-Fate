@@ -1,7 +1,9 @@
 //! The hub screen while parked at a company terminal or yard
 //! (`CityMenuState`).
 
-use ff_core::models::business::{is_owner_operator, status_label, COMPANY_DRIVER};
+use ff_core::models::business::{
+    display_rank_for, is_owner_operator, status_label, COMPANY_DRIVER,
+};
 use ff_core::models::career_objectives::career_objective;
 use ff_core::models::career_training::{
     is_company_training_profile, training_guidance, TrainingStage,
@@ -13,6 +15,7 @@ use ff_core::models::solvency;
 use ff_core::music::{select_menu_music_sequence, MenuMusicProfile};
 use ff_core::pyfmt::{fmt_f, fmt_grouped, round_py_n};
 use ff_core::sim::hos::{clock_text, time_of_day};
+use ff_core::sim::roadside_inspection::walk_around;
 use ff_core::sim::timezones::{city_zone, to_local, TimeZone, EASTERN};
 
 use crate::app::{GameContext, Say};
@@ -181,7 +184,7 @@ impl CityMenuState {
 
     fn pay_advance_label(ctx: &GameContext) -> String {
         let p = profile(ctx);
-        let grant = pay_advance_grant(p.money, p.pay_advance, p.pay_advance_used_for_load);
+        let grant = pay_advance_grant(p.money(), p.pay_advance, p.pay_advance_used_for_load);
         if grant > 0.0 {
             return format!("Request pay advance: {} dollars", fmt_grouped(grant, 0));
         }
@@ -198,7 +201,7 @@ impl CityMenuState {
         if !solvency::advance_refused_reason(p).is_empty() {
             return false;
         }
-        pay_advance_grant(p.money, p.pay_advance, p.pay_advance_used_for_load) > 0.0
+        pay_advance_grant(p.money(), p.pay_advance, p.pay_advance_used_for_load) > 0.0
     }
 
     /// `_request_pay_advance`.
@@ -212,8 +215,12 @@ impl CityMenuState {
         let (grant, reason) = {
             let p = profile(ctx);
             (
-                pay_advance_grant(p.money, p.pay_advance, p.pay_advance_used_for_load),
-                pay_advance_unavailable_reason(p.money, p.pay_advance, p.pay_advance_used_for_load),
+                pay_advance_grant(p.money(), p.pay_advance, p.pay_advance_used_for_load),
+                pay_advance_unavailable_reason(
+                    p.money(),
+                    p.pay_advance,
+                    p.pay_advance_used_for_load,
+                ),
             )
         };
         if grant <= 0.0 {
@@ -223,10 +230,10 @@ impl CityMenuState {
         }
         let (money, advance) = {
             let p = profile_mut(ctx);
-            p.money += grant;
+            p.earn(grant);
             p.pay_advance = round_py_n(p.pay_advance + grant, 2);
             p.pay_advance_used_for_load = true;
-            (p.money, p.pay_advance)
+            (p.money(), p.pay_advance)
         };
         ctx.save_profile();
         ctx.audio.play("ui/notify");
@@ -252,6 +259,47 @@ impl CityMenuState {
     fn time_weather(&mut self, ctx: &mut GameContext) {
         let lines = time_and_weather_lines(ctx);
         ctx.push_state(SimpleMenuState::readout("Time and weather", lines));
+    }
+
+    /// The driver's own pre-trip on the tractor, before a load is hooked:
+    /// the same items a Level 1 inspector reads, fifteen minutes on duty.
+    fn walk_around(&mut self, ctx: &mut GameContext) {
+        let (start, lines) = {
+            let p = profile(ctx);
+            (
+                p.game_hours,
+                walk_around(
+                    p.tire_wear_pct(),
+                    p.brake_wear_pct(),
+                    p.truck_damage_pct(),
+                    None,
+                ),
+            )
+        };
+        let end = {
+            let p = profile_mut(ctx);
+            p.game_hours += crate::states::driving_core::WALK_AROUND_MIN / 60.0;
+            p.hos.on_duty(crate::states::driving_core::WALK_AROUND_MIN);
+            p.game_hours
+        };
+        record_city_duty(
+            ctx,
+            "on_duty_not_driving",
+            start,
+            end,
+            "pre-trip walk-around",
+        );
+        ctx.save_profile();
+        let body = if lines.is_empty() {
+            "Nothing to write up: tires, brakes and the body would all pass.".to_string()
+        } else {
+            lines.join(" ")
+        };
+        ctx.audio.play("ui/notify");
+        ctx.say(&format!(
+            "Walk-around done, 15 minutes. {body} No trailer is hooked yet; walk around it again \
+             at the first stop after pickup."
+        ));
     }
 
     /// `_sleep`: a full night in the terminal bunk room.
@@ -631,7 +679,7 @@ impl Menu for CityMenuState {
                 .unwrap_or_else(|_| (p.current_city.clone(), String::new()));
             let terminal = home_terminal(ctx);
             let business = status_label(&p.business_status);
-            let rank = p.career.rank();
+            let rank = display_rank_for(p);
             let first_day = terminal_objective_clause(p);
             // A licence that is not clear is said here, every time, because it
             // decides what the rest of this screen can do. A career that is
@@ -664,7 +712,7 @@ impl Menu for CityMenuState {
                 crate::states::city::py_capitalize(business),
                 rank.level,
                 rank.title,
-                fmt_grouped(p.money, 0)
+                fmt_grouped(p.money(), 0)
             )
         };
         ctx.say_with(line, Say::new().interrupt(interrupt));
@@ -759,6 +807,15 @@ impl Menu for CityMenuState {
         items.push(
             MenuItem::new("Truck status", |s: &mut Self, ctx| s.truck_status(ctx))
                 .help("Assignment, eligibility, fuel, condition, wear, grime, and snow chains."),
+        );
+        items.push(
+            MenuItem::new("Walk around the truck", |s: &mut Self, ctx| {
+                s.walk_around(ctx)
+            })
+            .help(
+                "A pre-trip walk-around: what a roadside inspector would find on the tractor. \
+                 Fifteen minutes on duty.",
+            ),
         );
         items.push(
             MenuItem::new("Time and weather", |s: &mut Self, ctx| s.time_weather(ctx))

@@ -345,6 +345,12 @@ impl SettingsCategoryState {
         self.announce(ctx);
     }
 
+    pub(super) fn toggle_steering_guide_inverted(&mut self, ctx: &mut GameContext, _d: i64) {
+        ctx.settings.steering_guide_inverted = !ctx.settings.steering_guide_inverted;
+        save_settings(&ctx.settings);
+        self.announce(ctx);
+    }
+
     pub(super) fn toggle_lane_guide_tone(&mut self, ctx: &mut GameContext, _d: i64) {
         ctx.settings.lane_guide_tone = !ctx.settings.lane_guide_tone;
         save_settings(&ctx.settings);
@@ -391,9 +397,42 @@ impl SettingsCategoryState {
         self.announce(ctx);
     }
 
+    /// Flip between the full soundtrack and the synthesized, no-AI music.
+    pub(super) fn toggle_music_source(&mut self, ctx: &mut GameContext, _d: i64) {
+        ctx.settings.synth_music = !ctx.settings.synth_music;
+        save_settings(&ctx.settings);
+        ctx.restart_music();
+        self.announce(ctx);
+    }
+
+    /// Roll a new, different music seed and restart synthesized music with it.
+    pub(super) fn roll_music_seed(&mut self, ctx: &mut GameContext, _d: i64) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        let mut rng = ff_core::music_synth::rng::Rng::new(nanos ^ ctx.settings.music_seed as u64);
+        let mut seed = ctx.settings.music_seed;
+        while seed == ctx.settings.music_seed {
+            seed = 10_000 + rng.below(90_000) as i64;
+        }
+        ctx.settings.music_seed = seed;
+        save_settings(&ctx.settings);
+        ctx.restart_music();
+        ctx.say(&format!(
+            "New music seed, {seed}. Every synthesized piece is new."
+        ));
+    }
+
     pub(super) fn toggle_radio_streamer_safe(&mut self, ctx: &mut GameContext, _d: i64) {
         ctx.settings.radio_streamer_safe = !ctx.settings.radio_streamer_safe;
         ctx.apply_active_radio_settings();
+        self.announce(ctx);
+    }
+
+    pub(super) fn toggle_radio_shuffle_playlists(&mut self, ctx: &mut GameContext, _d: i64) {
+        ctx.settings.radio_shuffle_playlists = !ctx.settings.radio_shuffle_playlists;
+        save_settings(&ctx.settings);
         self.announce(ctx);
     }
 

@@ -49,6 +49,7 @@ use ff_core::sim::lane_guidance::LaneGuidance;
 use ff_core::sim::pedal_latch::PedalLatch;
 use ff_core::sim::trip::Trip;
 use ff_core::sim::trip_models::RoadStop;
+use ff_core::sim::turn_guide::TurnGuide;
 use ff_core::sim::vehicle::TruckState;
 use ff_core::sim::weather::WeatherSystem;
 
@@ -73,6 +74,16 @@ pub type DestinationExitScan = (f64, Option<(f64, String, String)>);
 /// group's fields are listed in the order `__init__` (or the module's own
 /// `_reset_*`/`_*_init` helper) assigned them. Leading underscores are
 /// dropped (`self._cruise_mph` -> `cruise_mph`).
+/// One lap of a shuffled personal playlist: every entry index once, in the
+/// order this lap plays them, and the cursor into that order.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PlaylistShuffleLap {
+    pub order: Vec<usize>,
+    pub cursor: usize,
+    /// Which lap this is, so each one seeds a different order.
+    pub lap: u64,
+}
+
 pub struct DrivingState {
     // ---- driving.py: identity -----------------------------------------------------------
     pub job: Job,
@@ -127,6 +138,9 @@ pub struct DrivingState {
     pub radio_break_pos: usize,
     pub radio_break_count: usize,
     pub radio_tracks_since_break: usize,
+    // Synthesized Roadhouse: the (synthesized, seed) last applied, and the playing track's length.
+    pub synth_music_applied: Option<(bool, i64)>,
+    pub radio_track_len: Option<(String, f64)>,
     // How long the stations have been on the air this drive, in real seconds.
     // A station keeps broadcasting while the driver is listening to another
     // one (or to nothing at all), so tuning back in has to land where it got
@@ -136,6 +150,9 @@ pub struct DrivingState {
     // and a hold between entries so neither a fade-in nor a stream still
     // connecting ever reads as a finished track.
     pub playlist_positions: HashMap<String, usize>,
+    // With shuffle on, the order this lap plays each playlist's entries in
+    // and how far along it is; rebuilt for the next lap when it runs out.
+    pub playlist_shuffle: HashMap<String, PlaylistShuffleLap>,
     pub playlist_wait_s: f64,
     pub playlist_stream_tries: u32,
     pub playlist_stream_skips: u32,
@@ -400,6 +417,9 @@ pub struct DrivingState {
     pub exit_lane_alignment: f64,
     pub exit_lane_prompt_said: bool,
     pub exit_lane_ready_said: bool,
+    /// How long the exit lane has been lost since "Exit lane set." was said.
+    /// Debounces the line that takes it back; see `update_exit_preparation`.
+    pub exit_lane_lost_s: f64,
     pub exit_commit_said: bool,
     pub exit_cancel_armed: bool,
     pub exit_right_hold_s: f64,
@@ -418,8 +438,9 @@ pub struct DrivingState {
     // ramp joins the surface road, and the light's cycle state if a signal.
     // "signal" | "stop" | "yield" | "roundabout" | "none" | "" (no ramp)
     pub ramp_control: String,
+    pub ramp_light_profile: u8, // seeded fixed timing plan for this terminal
     pub ramp_light_offset_s: f64, // seeded phase into the light cycle
-    pub ramp_light_timer: f64,    // real seconds since the ramp was taken
+    pub ramp_light_timer: f64,  // real seconds since the ramp was taken
     pub ramp_light_announced: bool,
     pub ramp_light_last_phase: String, // "red" | "yellow" | "green", once announced
     pub ramp_terminal_done: bool,
@@ -435,6 +456,7 @@ pub struct DrivingState {
     pub ramp_bar_tick_timer: f64,
     pub bar_solid_on: bool, // the bar's continuous final-zone tone
     pub ramp_assist_said: bool,
+    pub ramp_green_roll_said: bool, // "slowing for the green" spoken this terminal
     // The pedal route-transition assistance is currently holding for the
     // terminal, so it can follow the demand up without letting go and
     // re-making the application every few frames.
@@ -478,6 +500,10 @@ pub struct DrivingState {
     pub ladder_leg_index: i64,
     // (position when computed, scan result) -- see _destination_exit_details
     pub destination_exit_cache: Option<DestinationExitScan>,
+    /// Whether this trip's route has a labeled destination exit at all, keyed
+    /// by `trip_generation`: only a route without one may fall back to the
+    /// estimated exit before the end.
+    pub destination_exit_labeled: Option<(u64, bool)>,
 
     // ---- driving_events.py / driving_speed_control.py: cruise and the keeper -----------
     pub cruise_mph: Option<f64>,
@@ -508,8 +534,16 @@ pub struct DrivingState {
     // A trailer refused at the shipper: the yard swapped it, so the box
     // under the truck is sound and no scale house should say otherwise.
     pub trailer_refused: bool,
-    pub nice_speed_mi: f64,   // distance held at a very particular speed
-    pub jake_descent_mi: f64, // downgrade held on the engine alone
+    // The hooked trailer's defect was fixed on the shoulder after an
+    // inspector parked the truck for it: no later inspection finds it again.
+    pub trailer_repaired: bool,
+    // The hooked trailer's visible defect for the enforcement watch, read
+    // from the pickup plan once per half mile rather than every frame:
+    // (defect or empty, mile it was read at).
+    pub visible_trailer_defect: (String, f64),
+    pub nice_speed_mi: f64,    // distance held at a very particular speed
+    pub double_nickel_mi: f64, // and at the limit Congress retired in 1995
+    pub jake_descent_mi: f64,  // downgrade held on the engine alone
     pub radio_states_station: String, // station the state tally belongs to
     pub radio_states_held: HashSet<String>,
     pub cruise_descent_mph: Option<f64>, // interactive descent ceiling, while it lasts
@@ -618,6 +652,10 @@ pub struct DrivingState {
     // and how long it has been out of authority with the truck still over
     // the number -- past which it owns up rather than riding it out.
     pub keeper_snub: f64,
+    /// The number the held snub is bringing the truck down to -- the
+    /// keeper's WORKING target, which on an approach is the corner or zone
+    /// ahead and not the set speed. The release rule reads this.
+    pub keeper_snub_target_mph: f64,
     // And the mirror of that on the other side of the number: how long the
     // keeper has been flat out and still losing the grade, plus the
     // say-once latch and the per-hill cooldown for owning up to it.
@@ -678,6 +716,11 @@ pub struct DrivingState {
     pub turn_advised: HashSet<String>,
     pub turn_missed: HashSet<String>,
     pub turn_resolved: HashSet<String>,
+    /// Corners whose call actually reached the voice. The turn earcon is
+    /// played off this at the moment the corner is taken, so a driver who
+    /// was told nothing about a corner is not chimed at for it either
+    /// (owner, 2026-09-20).
+    pub turn_announced: HashSet<String>,
     pub turn_grace_s: f64,
 
     // ---- driving.py: air, brakes, engine (driving_updates / driving_controls) ----------
@@ -702,6 +745,11 @@ pub struct DrivingState {
     // facility. None once the lane is behind the truck (or when the run
     // never started at a facility at all).
     pub departure_ramp_mi: Option<f64>,
+    /// The posted speed of the road the departure ramp feeds, read when the
+    /// acceleration lane is armed. The closing line at the taper is about
+    /// the traffic the truck has to merge WITH, which is this road -- not
+    /// whatever zone happens to sit under the wheels at the taper.
+    pub departure_merge_road_mph: f64,
     // Cruise takes the acceleration lane at this traffic-relative speed only
     // when this exact truck's predicted drivetrain/load/grade capability can
     // reach it. Otherwise the keeper stays flat out through the taper.
@@ -742,12 +790,28 @@ pub struct DrivingState {
     pub next_joint_distance_m: f64,
     pub lane_guidance: LaneGuidance,
     pub edge_loop_key: Option<String>, // active edge-ladder rung loop
-    pub road_pan_applied: f64,         // last pursuit-guide pan set on the road bed
+    /// Last lane-position pan set on the road bed; `None` until this drive
+    /// has written one, so its first frame always writes.
+    pub road_pan_applied: Option<f64>,
     // The opt-in guide tone: whether its loop is running, and where it
     // is panned. Separate from the bed's tracker so switching the
     // setting mid-drive cannot leave either one stuck off center.
     pub lane_guide_tone_on: bool,
     pub lane_guide_pan_applied: f64,
+    /// The engine's lean through a turn: how much wheel the driver still owes.
+    pub turn_guide: TurnGuide,
+    /// Last pan written to the ENGINE for the steering guide.
+    ///
+    /// Its own field, not shared with `lane_guide_pan_applied`: that one
+    /// belongs to the opt-in guide TONE, and while both wrote it each frame
+    /// they clobbered the other's tracker and both channels re-panned forever.
+    ///
+    /// `None` until this drive has written one. The backend keeps the engine's
+    /// pan across stops and across drives, so a tracker that started at 0.0
+    /// claimed a centre nobody had set: a drive that ended leaning left the
+    /// next one's engine panned down a straight road, on the channel that
+    /// means "steer this way" (review I7, 2026-09-19).
+    pub engine_guide_pan_applied: Option<f64>,
     // Dead-man's-curve strips: fixed road furniture ahead of each hairpin.
     pub transverse_strip_miles: Vec<f64>,
     /// `set[float]` of the strips already played.
@@ -848,6 +912,16 @@ impl DrivingState {
         // TX-31, 2026-09-01: "speed keeper didn't build up to traffic
         // speed"). The corner latches reset on the same generation bump.
         self.keeper_ease_target = None;
+        // The curve servo is the same kind of memory and needs the same
+        // treatment: its start and hold mileposts belong to the road just
+        // swapped out. A servo armed for a bend near a destination exit is
+        // never past its hold point on a short street chain, so it stayed
+        // armed for the whole approach -- braking the surface streets down to
+        // a highway bend's advisory, and, since it now pins the clock and
+        // holds a downgrade, doing both of those on a road it never saw
+        // (review finding, 2026-09-19).
+        self.curve_servo = None;
+        self.trip.curve_shed_active = false;
         std::mem::replace(&mut self.trip, trip)
     }
 }

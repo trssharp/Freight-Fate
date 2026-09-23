@@ -4,6 +4,7 @@
 use ff_core::models::enforcement::CHAIN_LAW_FINE;
 use ff_core::pyfmt::fmt_grouped;
 use ff_core::pyrandom::PyRandom;
+use ff_core::sim::vehicle::MIN_STOPPING_DECEL_MPS2;
 use ff_core::speech_pacing::{EventPriority, SpeechCategory};
 
 use crate::app::{GameContext, SayEvent};
@@ -183,7 +184,18 @@ impl DrivingState {
         // the comfort rate, not the firmer rate the servo below will brake at:
         // triggering on the firm rate meant starting at the last metre that
         // could possibly work, and a throttle still decaying ate the margin.
-        let a = APPROACH_DECEL_MPS2;
+        // NET OF THE SURGE. A tank the liquid can move in gives some of the
+        // rate back at the worst moment, so a profile priced at the dry-van
+        // comfort rate starts too late and arrives over the number. The
+        // penalty is the truck's own -- a property of the tank and how full
+        // it is, which is why a stopping distance built on it is a number the
+        // driver can learn -- and the ramp bar has used it since it was
+        // written. It reaches the facility arrival here for the same reason
+        // every CDL manual gives: with a liquid load you brake earlier
+        // (owner, 2026-09-20; FMCSA Cargo Tank Incidents Study on partial
+        // loads and surge).
+        let a = (APPROACH_DECEL_MPS2 - self.trip.truck.surge_decel_penalty_mps2())
+            .max(MIN_STOPPING_DECEL_MPS2);
         let lag = APPROACH_ASSIST_REACTION_S;
         let cap_mps = -a * lag + ((a * lag).powi(2) + 2.0 * a * remaining_m).sqrt();
         if !self.destination_arrival_active {
@@ -456,8 +468,13 @@ impl DrivingState {
         self.destination_assist_brake = 0.0;
         // ROUTE, not the ambient default: an automation just released the
         // pedals (the automation-handoff rule, 2026-08-20).
+        let whither = if self.ramp_continues_to_destination_streets(ctx) {
+            "onto the streets"
+        } else {
+            "to the entrance"
+        };
         ctx.say_event_with(
-            "Facility stopping assistance released; pull ahead to the entrance.",
+            format!("Facility stopping assistance released; pull ahead {whither}."),
             SayEvent::queued()
                 .priority(EventPriority::Route)
                 .category(SpeechCategory::Confirmation),
@@ -491,7 +508,7 @@ impl DrivingState {
             self.trip.truck.chains_just_snapped = false;
             ctx.say_event_with(
                 "A tire chain let go. The set is scrap; you are running on rubber again.",
-                SayEvent::new().category(SpeechCategory::Money),
+                SayEvent::new().category(SpeechCategory::Safety),
             );
         }
         let chains_fast =
@@ -560,8 +577,8 @@ impl DrivingState {
         );
         let money = {
             let p = profile_mut_of(ctx);
-            p.money -= fine;
-            p.money
+            p.spend(fine);
+            p.money()
         };
         self.ticket_fines_paid += fine;
         // On the record like every other citation: this one was charged and

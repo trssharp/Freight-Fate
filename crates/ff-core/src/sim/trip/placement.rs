@@ -3,13 +3,15 @@
 //! plus the per-tick checks that walk those schedules (the placement half of
 //! `trip.py`).
 
-use crate::data::billboards::{corridor_signs, random_billboard, SignAnchor};
+use crate::data::billboards::{corridor_signs, random_billboard, regional_genre_signs, SignAnchor};
 use crate::data::curves::{route_curves, RouteCurve};
 use crate::pyfmt::{fmt_f, py_str_float};
 use crate::pyrandom::PyRandom;
 use crate::sim::road_event_pacing::CHATTER_GAP_REAL_S;
 use crate::sim::trip_models::*;
-use crate::sim::trip_route_helpers::{leg_heading, nearest_exit_label, stop_offset_for_direction};
+use crate::sim::trip_route_helpers::{
+    leg_heading, served_interchange, stop_exit_label, stop_offset_for_direction,
+};
 use crate::speech_text::SpokenMessage;
 use crate::units::spoken_distance;
 
@@ -91,7 +93,12 @@ impl Trip {
                 }
                 let offset = stop_offset_for_direction(stop.at_mi, leg.miles, forward);
                 let at = start + offset;
-                let exit_label = nearest_exit_label(leg, stop.at_mi, 2.0);
+                let exit_label = stop_exit_label(leg, stop, 2.0);
+                // The served interchange in the route's frame, by the same
+                // arithmetic the interchange lookups use, so it matches one
+                // exactly.
+                let interchange_mi = served_interchange(leg, stop)
+                    .map(|ix| start + stop_offset_for_direction(ix.at_mi, leg.miles, forward));
                 out.push(RoadStop {
                     name: stop.name.clone(),
                     at_mi: at,
@@ -102,6 +109,7 @@ impl Trip {
                     exit_label,
                     parking_spaces: stop.parking_spaces,
                     vehicle_access: stop.effective_vehicle_access().to_string(),
+                    interchange_mi,
                 });
             }
             start += leg.miles;
@@ -125,6 +133,9 @@ impl Trip {
                 Some(twin) => {
                     if twin.exit_label.is_empty() && !stop.exit_label.is_empty() {
                         twin.exit_label = stop.exit_label.clone();
+                    }
+                    if twin.interchange_mi.is_none() {
+                        twin.interchange_mi = stop.interchange_mi;
                     }
                 }
             }
@@ -328,7 +339,7 @@ impl Trip {
                     continue;
                 }
                 let offset = stop_offset_for_direction(stop.at_mi, leg.miles, forward);
-                let exit_label = nearest_exit_label(leg, stop.at_mi, 2.0);
+                let exit_label = stop_exit_label(leg, stop, 2.0);
                 let at_part = if exit_label.is_empty() {
                     String::new()
                 } else {
@@ -471,10 +482,18 @@ impl Trip {
         let mut used: Vec<&'static str> = Vec::new();
         let mut at = BILLBOARD_LEAD_IN_MI + rng.uniform(0.0, BILLBOARD_MIN_GAP_MI);
         while at < self.total_miles() - 5.0 {
+            // Scenic America / FHWA: ME, VT, AK, and HI opted out of commercial
+            // billboards entirely. Keep the mile cadence but place nothing there
+            // so I-95 Maine cannot carry a joke board.
+            if self.commercial_billboards_banned_at(at) {
+                at += rng.uniform(BILLBOARD_MIN_GAP_MI, BILLBOARD_MAX_GAP_MI);
+                continue;
+            }
             let (leg_i, _) = self.leg_at_mile(at);
             let pool = corridor_signs(&self.route.legs[leg_i].highway);
             let fresh_corridor: Vec<&'static str> = pool
                 .iter()
+                .chain(regional_genre_signs().iter())
                 .filter(|sign| !used.contains(&sign.text) && self.sign_belongs_at(&sign.anchor, at))
                 .map(|sign| sign.text)
                 .collect();
@@ -538,6 +557,15 @@ impl Trip {
                     })
             }
         }
+    }
+
+    /// Maine, Vermont, Alaska, and Hawaii ban commercial billboards (Scenic
+    /// America / FHWA). Pool jokes and corridor ads stay silent there.
+    fn commercial_billboards_banned_at(&self, at: f64) -> bool {
+        matches!(
+            self.state_code_at(at).as_deref(),
+            Some("ME") | Some("VT") | Some("AK") | Some("HI")
+        )
     }
 
     /// The two-letter state code at a trip milepost, or None where the bake is
@@ -610,6 +638,27 @@ impl Trip {
                 continue;
             }
             return Some(ahead);
+        }
+        None
+    }
+
+    /// The nearest mainline bend inside `lead_mi`, with how far ahead its
+    /// start is. Unlike `next_curve_approach` this applies no speed test: the
+    /// steering guide leans for the SHAPE of the road whatever the truck is
+    /// doing, where a spoken warning only fires for a bend taken too fast.
+    pub fn next_curve_within(&self, lead_mi: f64) -> Option<(f64, RouteCurve)> {
+        for cr in &self.curves {
+            let ahead = cr.start_mi - self.position_mi;
+            if ahead <= 0.0 {
+                continue;
+            }
+            if ahead > lead_mi {
+                break;
+            }
+            if cr.connector {
+                continue;
+            }
+            return Some((ahead, *cr));
         }
         None
     }

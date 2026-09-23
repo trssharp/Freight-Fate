@@ -102,7 +102,7 @@ pub(crate) fn award_arrival_achievements(
     if level >= 3 {
         push(&mut ids, "level_three");
     }
-    let money = profile_of(ctx).money;
+    let money = profile_of(ctx).money();
     if money >= 25_000.0 {
         push(&mut ids, "twenty_five_grand");
     }
@@ -444,6 +444,12 @@ pub(crate) fn award_arrival_achievements(
     if (3.0..6.0).contains(&d.trip.start_hour) {
         push(&mut ids, "dawn_run");
     }
+    // Better than eight miles to the gallon over the whole run. The model is
+    // calibrated for 6.5-7 at cruise, so this is a light foot, not a freebie;
+    // a run with no fuel burned at all (a resumed trip) cannot earn it.
+    if d.trip.fuel_used_gal > 0.0 && d.trip.position_mi / d.trip.fuel_used_gal > 8.0 {
+        push(&mut ids, "thrifty_run");
+    }
     if d.trip.truck.fuel_fraction() < 0.08 {
         push(&mut ids, "fuel_fumes");
     }
@@ -467,6 +473,11 @@ pub(crate) fn award_arrival_achievements(
     }
     if is_friday_the_thirteenth(calendar_hours) && trip_damage <= 1.0 {
         push(&mut ids, "friday_thirteenth");
+    }
+    // Ten-four day: the date reads as the acknowledgment every driver on the
+    // channel has been saying all year.
+    if arrival_date == "October 4" {
+        push(&mut ids, "ten_four_day");
     }
     if job.distance_mi >= 1_000.0 {
         push(&mut ids, "five_hundred_mile_run");

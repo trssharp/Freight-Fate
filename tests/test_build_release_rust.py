@@ -68,7 +68,7 @@ def make_profile_dir(profile_dir: Path, exe_name: str) -> None:
     """What ``cargo build --release`` leaves behind on Windows."""
     profile_dir.mkdir(parents=True)
     (profile_dir / exe_name).write_bytes(b"MZ")
-    for name in ("SDL2.dll", "bass.dll", "bassopus.dll", "basshls.dll", "prism.dll"):
+    for name in ("SDL2.dll", "bass.dll", "bassopus.dll", "basshls.dll"):
         (profile_dir / name).write_bytes(b"dll")
     (profile_dir / "freightfate.pdb").write_bytes(b"pdb")
     (profile_dir / "libfreight_fate.rlib").write_bytes(b"rlib")
@@ -92,7 +92,7 @@ def track_everything(root: Path) -> None:
 @pytest.fixture
 def planned(tmp_path, monkeypatch):
     build_release = load_build_release_module()
-    package_dir = tmp_path / "src" / "freight_fate"
+    package_dir = tmp_path / "repo"
     make_package_tree(package_dir, build_release)
     track_everything(tmp_path)
     # Left on the disk after git was told what the project ships: the 254 MB
@@ -206,7 +206,7 @@ def test_plan_leaves_uncommitted_sounds_on_the_builders_disk(planned):
 def test_plan_stages_only_top_level_runtime_libraries(planned):
     _, plan, _, _ = planned
     dests = destinations(plan)
-    for name in ("SDL2.dll", "bass.dll", "bassopus.dll", "basshls.dll", "prism.dll"):
+    for name in ("SDL2.dll", "bass.dll", "bassopus.dll", "basshls.dll"):
         assert name in dests
     assert "freightfate.pdb" not in dests
     assert "libfreight_fate.rlib" not in dests
@@ -218,7 +218,7 @@ def test_plan_stages_only_top_level_runtime_libraries(planned):
 
 def test_plan_refuses_a_profile_dir_without_the_binary(tmp_path):
     build_release = load_build_release_module()
-    package_dir = tmp_path / "src" / "freight_fate"
+    package_dir = tmp_path / "repo"
     make_package_tree(package_dir, build_release)
     profile_dir = tmp_path / "target" / "release"
     profile_dir.mkdir(parents=True)
@@ -234,7 +234,7 @@ def test_plan_refuses_a_checkout_missing_a_loose_runtime_data_file(tmp_path, mon
     is what registering a new runtime data file looks like.
     """
     build_release = load_build_release_module()
-    package_dir = tmp_path / "src" / "freight_fate"
+    package_dir = tmp_path / "repo"
     make_package_tree(package_dir, build_release)
     monkeypatch.setattr(build_release, "RUST_DATA_FILES", ("late_addition.json",))
     profile_dir = tmp_path / "target" / "release"
@@ -248,7 +248,7 @@ def test_plan_refuses_a_checkout_missing_a_loose_runtime_data_file(tmp_path, mon
 
 def test_bake_refuses_a_checkout_without_a_data_tree(tmp_path, monkeypatch):
     build_release = load_build_release_module()
-    monkeypatch.setattr(build_release, "PACKAGE_DIR", tmp_path / "src" / "freight_fate")
+    monkeypatch.setattr(build_release, "PACKAGE_DIR", tmp_path / "repo")
     with pytest.raises(RuntimeError, match="Runtime data tree is missing"):
         build_release.bake_world_data(out=tmp_path / "world.ffdata")
 
@@ -276,9 +276,14 @@ def test_music_download_config_uses_public_defaults(monkeypatch):
     build_release = load_build_release_module()
     monkeypatch.delenv("FREIGHT_FATE_MUSIC_URL", raising=False)
     monkeypatch.delenv("FREIGHT_FATE_MUSIC_SHA256", raising=False)
+    # Production, once FREIGHT_FATE_MUSIC_BLOB_URL existed on that scope and
+    # the route was seen answering 307 (2026-09-20). An earlier move to this
+    # host, made while the variable was Preview-only, 503d every platform of
+    # the snapshot build -- so if this pin ever has to move back, check the
+    # route with curl rather than checking that its file deployed.
     assert build_release.music_download_config() == (
-        "https://dev.orinks.net/downloads/music.pak",
-        "19e6d11cf9402484f712cbc037167055804cee3c71fd403fb0f7303fa66d57b2",
+        "https://www.orinks.net/downloads/music.pak",
+        "5d72f39a56320a147e0061122c3426ab9e920c388ac0bb1f67ed1ce72e976fc0",
     )
 
 
@@ -516,7 +521,8 @@ def test_windows_release_wrapper_is_the_complete_beginner_command():
     assert readme_heading.removeprefix("## ") in script
     assert "Get-Command rustc" in script
     assert "Get-Command uv" in script
-    assert "uv sync --group dev --group build" in script
+    assert "uv sync --group dev" in script
+    assert "--group build" not in script
     assert "uv run python tools/build_release.py --rust --smoke" in script
     assert "Start-Process" not in script
 
@@ -605,7 +611,6 @@ def make_macos_profile(profile_dir: Path) -> None:
         "libbasshls.dylib",
         "libbassopus.dylib",
         "libbassflac.dylib",
-        "libprism.dylib",
     ):
         (profile_dir / name).write_bytes(b"dylib")
 
@@ -613,11 +618,11 @@ def make_macos_profile(profile_dir: Path) -> None:
 def test_macos_stage_is_a_player_ready_app_bundle(tmp_path, monkeypatch):
     """A bare executable folder cannot be opened like a normal Mac app."""
     build_release = load_build_release_module()
-    package_dir = tmp_path / "src" / "freight_fate"
+    package_dir = tmp_path / "repo"
     make_package_tree(package_dir, build_release)
     track_everything(tmp_path)
-    (package_dir / "sounds.pak").write_bytes(b"FFPK1 sounds")
-    (package_dir / "music.pak").write_bytes(b"FFPK1 music")
+    (package_dir / "assets" / "sounds.pak").write_bytes(b"FFPK1 sounds")
+    (package_dir / "assets" / "music.pak").write_bytes(b"FFPK1 music")
     profile_dir = tmp_path / "target" / "release"
     make_macos_profile(profile_dir)
     baked = make_container(tmp_path / "world.ffdata", build_release)
@@ -662,7 +667,6 @@ def test_macos_stage_is_a_player_ready_app_bundle(tmp_path, monkeypatch):
         "libbasshls.dylib",
         "libbassopus.dylib",
         "libbassflac.dylib",
-        "libprism.dylib",
     ):
         assert (frameworks / name).is_file()
     with (app / "Contents" / "Info.plist").open("rb") as stream:
@@ -681,7 +685,7 @@ def test_macos_stage_is_a_player_ready_app_bundle(tmp_path, monkeypatch):
 def test_macos_stage_refuses_missing_player_libraries(tmp_path, monkeypatch):
     """A silent or Homebrew-dependent app must never become a release."""
     build_release = load_build_release_module()
-    package_dir = tmp_path / "src" / "freight_fate"
+    package_dir = tmp_path / "repo"
     make_package_tree(package_dir, build_release)
     track_everything(tmp_path)
     profile_dir = tmp_path / "target" / "release"
@@ -723,11 +727,11 @@ def test_macos_stage_refuses_a_dynamically_linked_sdl(tmp_path, monkeypatch):
     fail the build, not bundle the shim ("failed to load sdl3", 2026-08-30).
     """
     build_release = load_build_release_module()
-    package_dir = tmp_path / "src" / "freight_fate"
+    package_dir = tmp_path / "repo"
     make_package_tree(package_dir, build_release)
     track_everything(tmp_path)
-    (package_dir / "sounds.pak").write_bytes(b"FFPK1 sounds")
-    (package_dir / "music.pak").write_bytes(b"FFPK1 music")
+    (package_dir / "assets" / "sounds.pak").write_bytes(b"FFPK1 sounds")
+    (package_dir / "assets" / "music.pak").write_bytes(b"FFPK1 music")
     profile_dir = tmp_path / "target" / "release"
     make_macos_profile(profile_dir)
     baked = make_container(tmp_path / "world.ffdata", build_release)
@@ -749,8 +753,8 @@ def test_macos_stage_refuses_a_dynamically_linked_sdl(tmp_path, monkeypatch):
 
 
 def make_linux_profile(profile_dir: Path) -> None:
-    """What ``cargo build --release`` leaves behind on Linux: the executable,
-    BASS and its decoders, and Prism with one of its renamed dependencies."""
+    """What ``cargo build --release`` leaves behind on Linux: the executable
+    and BASS with its decoders (Prism is linked in)."""
     profile_dir.mkdir(parents=True)
     (profile_dir / "freightfate").write_bytes(b"ELF")
     for name in (
@@ -758,24 +762,20 @@ def make_linux_profile(profile_dir: Path) -> None:
         "libbassopus.so",
         "libbasshls.so",
         "libbassflac.so",
-        "libprism.so",
-        "libspeechd-900e1c56.so.2.6.0",
-        "libglib-2-1eb48d3f.so.0.8800.1",
     ):
         (profile_dir / name).write_bytes(b"so")
     (profile_dir / "freightfate.d").write_text("deps", encoding="utf-8")
     (profile_dir / "libfreight_fate.rlib").write_bytes(b"rlib")
 
 
-def test_linux_stage_ships_bass_and_prism_with_its_renamed_dependencies(tmp_path, monkeypatch):
-    """Prism's Linux build finds glib and speech-dispatcher beside itself, so
-    the versioned sonames must be staged even though their suffix is a number."""
+def test_linux_stage_ships_bass_and_its_decoders(tmp_path, monkeypatch):
+    """The Linux payload carries BASS and its decoders beside the executable."""
     build_release = load_build_release_module()
-    package_dir = tmp_path / "src" / "freight_fate"
+    package_dir = tmp_path / "repo"
     make_package_tree(package_dir, build_release)
     track_everything(tmp_path)
-    (package_dir / "sounds.pak").write_bytes(b"FFPK1 sounds")
-    (package_dir / "music.pak").write_bytes(b"FFPK1 music")
+    (package_dir / "assets" / "sounds.pak").write_bytes(b"FFPK1 sounds")
+    (package_dir / "assets" / "music.pak").write_bytes(b"FFPK1 music")
     profile_dir = tmp_path / "target" / "release"
     make_linux_profile(profile_dir)
     baked = make_container(tmp_path / "world.ffdata", build_release)
@@ -793,22 +793,18 @@ def test_linux_stage_ships_bass_and_prism_with_its_renamed_dependencies(tmp_path
 
     assert build_dir == tmp_path / "build" / "FreightFate"
     assert (build_dir / "FreightFate").is_file()
-    for name in (
-        *build_release.LINUX_REQUIRED_LIBRARIES,
-        "libspeechd-900e1c56.so.2.6.0",
-        "libglib-2-1eb48d3f.so.0.8800.1",
-    ):
+    for name in build_release.LINUX_REQUIRED_LIBRARIES:
         assert (build_dir / name).is_file(), name
     assert not (build_dir / "freightfate.d").exists()
     assert not (build_dir / "libfreight_fate.rlib").exists()
     assert (build_dir / "freight_fate" / "data" / "world.ffdata").is_file()
 
 
-@pytest.mark.parametrize("missing_name", ["libbass.so", "libprism.so"])
+@pytest.mark.parametrize("missing_name", ["libbass.so", "libbassopus.so"])
 def test_linux_stage_refuses_missing_player_libraries(tmp_path, monkeypatch, missing_name):
     """A mute or speechless tarball must never become a release."""
     build_release = load_build_release_module()
-    package_dir = tmp_path / "src" / "freight_fate"
+    package_dir = tmp_path / "repo"
     make_package_tree(package_dir, build_release)
     track_everything(tmp_path)
     profile_dir = tmp_path / "target" / "release"
@@ -857,11 +853,11 @@ def test_linux_stage_refuses_a_dynamically_linked_sdl(tmp_path, monkeypatch):
     """Every distribution ships a different libSDL2-2.0.so.0; a tarball
     linked against the builder's would not start on the others."""
     build_release = load_build_release_module()
-    package_dir = tmp_path / "src" / "freight_fate"
+    package_dir = tmp_path / "repo"
     make_package_tree(package_dir, build_release)
     track_everything(tmp_path)
-    (package_dir / "sounds.pak").write_bytes(b"FFPK1 sounds")
-    (package_dir / "music.pak").write_bytes(b"FFPK1 music")
+    (package_dir / "assets" / "sounds.pak").write_bytes(b"FFPK1 sounds")
+    (package_dir / "assets" / "music.pak").write_bytes(b"FFPK1 music")
     profile_dir = tmp_path / "target" / "release"
     make_linux_profile(profile_dir)
     baked = make_container(tmp_path / "world.ffdata", build_release)
@@ -896,7 +892,7 @@ def write_linux_tarball(path: Path, names: list[str], build_release) -> None:
             tar.addfile(info, io.BytesIO(data))
 
 
-@pytest.mark.parametrize("missing_name", ["libbass.so", "libbassopus.so", "libprism.so"])
+@pytest.mark.parametrize("missing_name", ["libbass.so", "libbassopus.so", "libbassflac.so"])
 def test_linux_archive_verifier_rejects_a_rust_tarball_missing_a_library(tmp_path, missing_name):
     build_release = load_build_release_module()
     names = [
@@ -955,13 +951,13 @@ def test_linux_archive_verifier_checks_the_arm64_rust_tarball_too(tmp_path):
         "freight_fate/sounds.pak",
         "freight_fate/music.pak",
         build_release.RUST_BAKED_FILE_ENTRY,
-        *(name for name in build_release.LINUX_REQUIRED_LIBRARIES if name != "libprism.so"),
+        *(name for name in build_release.LINUX_REQUIRED_LIBRARIES if name != "libbass.so"),
     ]
     out = tmp_path / "FreightFate-1.9-tester-20260902-linux-arm64.tar.gz"
     write_linux_tarball(out, names, build_release)
-    with pytest.raises(RuntimeError, match="FreightFate/libprism.so"):
+    with pytest.raises(RuntimeError, match="FreightFate/libbass.so"):
         build_release.verify_archive(out)
-    write_linux_tarball(out, [*names, "libprism.so"], build_release)
+    write_linux_tarball(out, [*names, "libbass.so"], build_release)
     build_release.verify_archive(out)
 
 
@@ -991,23 +987,6 @@ def test_appimage_tooling_refuses_an_architecture_it_has_no_tools_for():
     build_appimage = load_build_appimage_module()
     with pytest.raises(RuntimeError, match="riscv64"):
         build_appimage.appimage_architecture("riscv64")
-
-
-def test_linux_archive_verifier_leaves_the_nuitka_tarball_alone(tmp_path):
-    """The Python build's tarball has no baked container and no flat BASS;
-    the Rust library list must not be demanded of it."""
-    build_release = load_build_release_module()
-    names = [
-        "FreightFate",
-        "build_info.json",
-        "LICENSE.txt",
-        "USER_MANUAL.md",
-        "freight_fate/sounds.pak",
-        "freight_fate/music.pak",
-    ]
-    out = tmp_path / "FreightFate-nightly-20260902-linux-x64.tar.gz"
-    write_linux_tarball(out, names, build_release)
-    build_release.verify_archive(out)
 
 
 def test_macos_linked_libraries_ignores_fat_macho_slice_headers(tmp_path, monkeypatch):
@@ -1191,7 +1170,6 @@ def test_full_macos_bundle_verification_reads_packs_from_resources(tmp_path, mon
         "libbassopus.dylib",
         "libbasshls.dylib",
         "libbassflac.dylib",
-        "libprism.dylib",
         "libSDL2-2.0.0.dylib",
     ):
         (frameworks / name).write_bytes(b"dylib")
@@ -1242,7 +1220,6 @@ def test_full_macos_bundle_verification_reads_packs_from_resources(tmp_path, mon
         ("libbassopus.dylib", "libbassopus.dylib"),
         ("libbasshls.dylib", "libbasshls.dylib"),
         ("libbassflac.dylib", "libbassflac.dylib"),
-        ("libprism.dylib", "libprism.dylib"),
     ],
 )
 def test_macos_staged_payload_rejects_each_missing_runtime_library(
@@ -1291,7 +1268,6 @@ def write_macos_archive(
     path: Path,
     payload_root: str,
     include_icon: bool = True,
-    include_prism: bool = True,
 ) -> None:
     entries = {
         "FreightFate.app/Contents/MacOS/FreightFate": b"Mach-O",
@@ -1306,11 +1282,10 @@ def write_macos_archive(
         f"{payload_root}/USER_MANUAL.md": b"manual",
         f"{payload_root}/freight_fate/sounds.pak": b"sounds",
         f"{payload_root}/freight_fate/music.pak": b"music",
+        f"{payload_root}/freight_fate/data/world.ffdata": b"FFDATA",
     }
     if include_icon:
         entries["FreightFate.app/Contents/Resources/FreightFate.icns"] = b"icon"
-    if include_prism:
-        entries["FreightFate.app/Contents/Frameworks/libprism.dylib"] = b"prism"
     with zipfile.ZipFile(path, "w") as archive:
         for name, content in entries.items():
             info = zipfile.ZipInfo(name)
@@ -1318,32 +1293,11 @@ def write_macos_archive(
             archive.writestr(info, content)
 
 
-def test_archive_verifier_keeps_legacy_macos_payload_in_macos_when_resources_has_only_icon(
-    tmp_path,
-):
-    build_release = load_build_release_module()
-    archive = tmp_path / "FreightFate-1.8.8-macos.zip"
-    write_macos_archive(archive, "FreightFate.app/Contents/MacOS")
-    build_release.verify_archive(archive)
-
-
 def test_archive_verifier_detects_new_rust_payload_by_resources_build_info(tmp_path):
     build_release = load_build_release_module()
     archive = tmp_path / "FreightFate-1.9-tester-20260830-macos.zip"
     write_macos_archive(archive, "FreightFate.app/Contents/Resources")
     build_release.verify_archive(archive)
-
-
-def test_macos_archive_verifier_rejects_a_bundle_without_prism(tmp_path):
-    build_release = load_build_release_module()
-    archive = tmp_path / "FreightFate-broken-macos.zip"
-    write_macos_archive(
-        archive,
-        "FreightFate.app/Contents/Resources",
-        include_prism=False,
-    )
-    with pytest.raises(RuntimeError, match="libprism.dylib"):
-        build_release.verify_archive(archive)
 
 
 @pytest.mark.parametrize(

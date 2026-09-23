@@ -127,16 +127,29 @@ fn on_ramp(d: &mut DrivingState, control: &str, red: bool, mph: f64) {
 /// the patch, too: `ramp_meets_a_freeway` and the exit machinery see a real
 /// interchange rather than a lambda that only one call site consulted.
 fn bake_ramp_control(d: &mut DrivingState, at_mi: f64, control: &str) {
+    bake_ramp_controls(d, &[(at_mi, control)]);
+    assert_eq!(
+        d.trip.ramp_control_at(at_mi, 0.15),
+        control,
+        "the baked control has to be the one the trip reads back"
+    );
+}
+
+/// The same, for a leg with several exits: one `(at_mi, control)` each.
+fn bake_ramp_controls(d: &mut DrivingState, exits: &[(f64, &str)]) {
     let leg = &d.trip.route.legs[0];
     let mut detail: CorridorDetail = leg.corridor().clone();
-    detail.interchanges = vec![Interchange {
-        at_mi,
-        exit_ref: "7".to_string(),
-        highway: leg.highway.clone(),
-        source: "test".to_string(),
-        ramp_control: control.to_string(),
-        ..Default::default()
-    }];
+    detail.interchanges = exits
+        .iter()
+        .map(|(at_mi, control)| Interchange {
+            at_mi: *at_mi,
+            exit_ref: "7".to_string(),
+            highway: leg.highway.clone(),
+            source: "test".to_string(),
+            ramp_control: control.to_string(),
+            ..Default::default()
+        })
+        .collect();
     let rebuilt = Leg::new(
         &leg.a,
         &leg.b,
@@ -152,11 +165,6 @@ fn bake_ramp_control(d: &mut DrivingState, at_mi: f64, control: &str) {
         cities: d.trip.route.cities.clone(),
         legs,
     };
-    assert_eq!(
-        d.trip.ramp_control_at(at_mi, 0.15),
-        control,
-        "the baked control has to be the one the trip reads back"
-    );
 }
 
 /// An `Audio` that records what it was asked to sound, through the real
@@ -293,6 +301,34 @@ fn test_baked_interchange_control_beats_the_heuristic() {
 }
 
 #[test]
+fn test_a_stop_matched_to_its_interchange_reads_that_ramp_and_no_other() {
+    // A stop's mile is a projection and is routinely a mile or three off,
+    // so the exit nearest it by mile marker is often a neighbour. The bake
+    // matches the stop to the interchange that serves it, and that record
+    // answers however far off the stop's own mile sits.
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    bake_ramp_controls(&mut d, &[(30.1, "signal"), (33.0, "stop"), (36.0, "")]);
+
+    let mut stop = a_stop(30.0);
+    assert_eq!(d.ramp_control_for(&app.ctx, &stop, None), "signal");
+    stop.interchange_mi = Some(33.0);
+    assert_eq!(d.ramp_control_for(&app.ctx, &stop, None), "stop");
+    d.begin_ramp_terminal(&app.ctx, &stop);
+    assert_eq!(d.ramp_control, "stop");
+
+    // Matched to an exit the map records no control for: the neighbour's
+    // light is not borrowed, and the seeded guess stands in as before.
+    let mut unrecorded = a_stop(30.0);
+    unrecorded.interchange_mi = Some(36.0);
+    bake_ramp_controls(&mut d, &[(30.1, "roundabout"), (36.0, "")]);
+    assert_ne!(
+        d.ramp_control_for(&app.ctx, &unrecorded, None),
+        "roundabout"
+    );
+}
+
+#[test]
 fn test_ramp_control_is_knowable_before_the_ramp() {
     // The signal-on announcement a mile out and the ramp itself must always
     // agree: ramp_control_for is a pure preview of the decision
@@ -366,7 +402,7 @@ fn test_stop_sign_full_stop_clears() {
 /// before the run.
 fn blow_the_terminal(app: &mut TestApp, control: &str, seed: i64, mph: f64) -> (bool, f64, f64) {
     let mut d = a_drive(app);
-    let money_before = app.ctx.profile.as_ref().expect("a career").money;
+    let money_before = app.ctx.profile.as_ref().expect("a career").money();
     d.trip_seed = seed;
     d.cross_bubble = None; // the restored-save case: no bubble built yet
     on_ramp(&mut d, control, control == "signal", mph);
@@ -462,7 +498,7 @@ fn test_running_the_red_light_risks_a_citation_on_a_seeded_roll() {
     let expected = citation_fine(RED_LIGHT_FINE, 0, false, None);
     assert!((fine - expected).abs() < 0.01, "{fine}");
     let p = app.ctx.profile.as_ref().expect("a career");
-    assert!((p.money - (money_before - expected)).abs() < 0.01);
+    assert!((p.money() - (money_before - expected)).abs() < 0.01);
     assert_eq!(p.driving_record.citations, 1);
     let cited: Vec<String> = logged(&app)
         .into_iter()
@@ -481,7 +517,7 @@ fn test_running_the_red_light_risks_a_citation_on_a_seeded_roll() {
     let (_, fine, money_before) = blow_the_terminal(&mut app, "signal", missed, 30.0);
     assert_eq!(fine, 0.0);
     assert_eq!(
-        app.ctx.profile.as_ref().expect("a career").money,
+        app.ctx.profile.as_ref().expect("a career").money(),
         money_before
     );
     assert!(!logged(&app).iter().any(|s| s.contains("is a citation")));
@@ -2005,9 +2041,9 @@ fn test_route_transition_assistance_brakes_for_a_late_yellow_on_the_tyler_ramp()
             forced = true;
             harness.with_drive(|d, _| {
                 d.ramp_control = "signal".to_string();
-                let cycle = RAMP_LIGHT_RED_S + RAMP_LIGHT_GREEN_S + RAMP_LIGHT_YELLOW_S;
+                let cycle = d.ramp_light_cycle_s();
                 d.ramp_light_offset_s =
-                    (RAMP_LIGHT_RED_S + RAMP_LIGHT_GREEN_S - 5.0 - d.ramp_light_timer)
+                    (d.ramp_light_red_s() + d.ramp_light_green_s() - 5.0 - d.ramp_light_timer)
                         .rem_euclid(cycle);
                 d.ramp_light_last_phase = "green".to_string();
             });

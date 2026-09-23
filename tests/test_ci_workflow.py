@@ -1,13 +1,12 @@
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
-BUILD_WORKFLOW = ROOT / ".github" / "workflows" / "build.yml"
+# The packaging workflow, which is where an LFS fetch would do the damage.
+# This was build.yml until the 1.9 cutover deleted it with the 1.8 line.
+BUILD_WORKFLOW = ROOT / ".github" / "workflows" / "build-career-1.9.yml"
 GITATTRIBUTES = ROOT / ".gitattributes"
 
 
@@ -66,45 +65,11 @@ def test_the_test_job_gets_the_sound_pack_from_a_plain_checkout() -> None:
     )
 
 
-def test_nightly_recovery_is_not_a_pull_request_check() -> None:
+def test_ci_does_not_dispatch_the_retired_build_workflow() -> None:
+    """build.yml went with the 1.8 line, so a CI job dispatching `Build`
+    can only fail, and it failed every push to dev. Nightly recovery is
+    retry-failed-nightly.yml's job, against the Career 1.9 snapshot."""
     workflow = _load_ci_workflow()
 
-    assert "recover-nightly" not in workflow["jobs"]
-    build = workflow["jobs"]["build"]
-    assert build["needs"] == ["test", "changelog"]
-    assert "needs.test.result == 'success'" in build["if"]
-
-
-def test_build_keeps_dev_push_nightly_recovery() -> None:
-    workflow = _load_ci_workflow()
-    steps = workflow["jobs"]["build"]["steps"]
-    recovery = next(step for step in steps if step.get("name") == "Retry today's failed snapshot")
-
-    condition = recovery["if"]
-    assert "github.event_name == 'push'" in condition
-    assert "github.ref == 'refs/heads/dev'" in condition
-    assert "needs.changelog.result == 'success'" in condition
-    assert "!cancelled()" in condition
-
-    script = recovery["run"]
-    assert 'gh run list --repo "$GITHUB_REPOSITORY"' in script
-    assert "--workflow Build --event schedule" in script
-    assert '"$CONCLUSION" != "failure"' in script
-    assert 'gh workflow run Build --repo "$GITHUB_REPOSITORY" --ref dev -f dry_run=false' in script
-
-
-def test_secret_store_probe_can_import_release_flags_with_its_job_environment() -> None:
-    job = _load_ci_workflow()["jobs"]["secret-store-packaging"]
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from tools.build_release import KEYRING_NUITKA_ARGS; assert KEYRING_NUITKA_ARGS",
-        ],
-        cwd=ROOT,
-        env={**os.environ, **job.get("env", {})},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
+    assert "build" not in workflow["jobs"]
+    assert "--workflow Build" not in CI_WORKFLOW.read_text(encoding="utf-8")

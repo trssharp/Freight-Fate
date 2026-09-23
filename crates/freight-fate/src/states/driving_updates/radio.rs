@@ -2,6 +2,7 @@
 //! playlists, the dial keys, and the badges the dial earns.
 
 use ff_core::music::RADIO_TRACKS_PER_HOST_BREAK;
+use ff_core::pyrandom::PyRandom;
 use ff_core::radio::{
     effective_range_miles, is_stream_entry, signal_volume_factor, station_identity,
     truck_elevation_ft, truck_position, RadioAction, RadioPlaybackError, RadioReception,
@@ -13,13 +14,37 @@ use ff_core::speech_pacing::SpeechCategory;
 
 use crate::app::{GameContext, SayEvent};
 use crate::audio::{VolumeUpdate, CH_RADIO_FX, RADIO_TUNE_FADE_MS};
-use crate::states::driving::DrivingState;
+use crate::states::driving::{DrivingState, PlaylistShuffleLap};
 use crate::states::driving_core::*;
 use crate::states::driving_updates::{
     FM_DEFAULT_MHZ, FRINGE_BED_MAX_VOLUME, FRINGE_BED_SIGNAL, PICKET_DUCK, PICKET_MAX_RATE_HZ,
     PICKET_MIN_RATE_HZ, PICKET_SIGNAL, PLAYLIST_CONNECT_HOLD_S, PLAYLIST_CONNECT_TRIES,
     PLAYLIST_FADE_HOLD_S, PLAYLIST_RETRY_S, RADIO_VOLUME_STEP,
 };
+
+/// One lap's order for a shuffled playlist: `random.shuffle` on the entry
+/// indices, then, when `avoid` is the track that just ended, the first slot
+/// swapped away from it so a new lap never repeats it back to back.
+fn shuffled_lap(
+    trip_seed: i64,
+    station_id: &str,
+    lap: u64,
+    len: usize,
+    avoid: Option<usize>,
+) -> Vec<usize> {
+    let mut rng =
+        PyRandom::new_from_str(&format!("{trip_seed}:playlist-shuffle:{station_id}:{lap}"));
+    let mut order: Vec<usize> = (0..len).collect();
+    // CPython's random.shuffle: for i in reversed(range(1, len)): j = randbelow(i + 1); swap.
+    for i in (1..len).rev() {
+        let j = rng.randbelow(i as u64 + 1) as usize;
+        order.swap(i, j);
+    }
+    if len > 1 && avoid.is_some() && order.first().copied() == avoid {
+        order.swap(0, 1);
+    }
+    order
+}
 
 impl DrivingState {
     /// Keep the radio spinning while a menu covers the drive.
@@ -80,8 +105,16 @@ impl DrivingState {
             ctx.award_achievement("radio_faded_out");
             self.radio_states_held.clear();
             ctx.audio.play_with("radio/static_burst", 0.5, 0.0);
+            // A driver on local radio stays on local radio: the strongest
+            // station the truck can hear from here takes the dial, and the
+            // in-house playlist is only where it lands when nothing is on
+            // the air (Brandon, 2026-09-17).
+            let next = self.radio.strongest_terrestrial(&before);
+            let landing = next
+                .as_ref()
+                .map_or(SAFE_ROUTE_PLAYLIST.to_string(), |r| r.station.id.clone());
             let action = self.with_radio_backend(ctx, |radio, backend| {
-                radio.select_station(SAFE_ROUTE_PLAYLIST, Some(backend))
+                radio.select_station(&landing, Some(backend))
             });
             // The dead station's fringe must die with it: without this the
             // cached signal keeps the hiss bed and pickets crackling over
@@ -90,14 +123,23 @@ impl DrivingState {
             self.radio_fringe_signal = None;
             self.stop_radio_fringe(ctx);
             self.write_radio_settings(ctx);
-            ctx.say_event_with(
+            // Named from what the radio actually landed on: a stream that
+            // would not open has already been swapped for the fallback.
+            let retuned = next.is_some() && !action.fallback_used;
+            let line = if retuned {
+                format!(
+                    "{} faded out of range. Tuned to {}, the strongest signal here.",
+                    before.display_name(),
+                    action.station.display_name()
+                )
+            } else {
                 format!(
                     "{} faded out of range. Falling back to {}.",
                     before.display_name(),
                     action.station.display_name()
-                ),
-                SayEvent::queued().category(SpeechCategory::Status),
-            );
+                )
+            };
+            ctx.say_event_with(line, SayEvent::queued().category(SpeechCategory::Status));
             return;
         }
         self.radio_signal_factor = signal_volume_factor(&reception);
@@ -130,8 +172,8 @@ impl DrivingState {
         }
         self.radio_reconnect_timer = 0.0;
         // What the stream says it is playing, read on the same tick that
-        // judges its signal. Only real streams carry ICY song metadata.
-        self.radio_now_playing = if reception.station.real_stream {
+        // judges its signal. Only a live connection carries song metadata.
+        self.radio_now_playing = if self.station_sends_song_info(&reception.station) {
             ctx.audio.radio_now_playing()
         } else {
             None
@@ -262,7 +304,12 @@ impl DrivingState {
     /// arrives mid-song the way a real dial does, and keeps running while the
     /// driver is elsewhere on the dial, which is why tuning back finds the
     /// station further along instead of back at the top.
-    fn station_cue(&self, station: &RadioStation, tracks: &[String]) -> RotationCue {
+    pub(super) fn station_cue(
+        &self,
+        ctx: &GameContext,
+        station: &RadioStation,
+        tracks: &[String],
+    ) -> RotationCue {
         if tracks.is_empty() {
             return RotationCue::default();
         }
@@ -273,11 +320,20 @@ impl DrivingState {
             playlist: &station.playlist,
             seed_key: &seed_key,
             tracks,
+            breaks: !self.synth_roadhouse(ctx, station),
         };
         cue_after(&rotation, self.radio_airtime_s)
     }
 
-    pub fn station_rotation_pool(&self, station: &RadioStation, night: bool) -> Vec<String> {
+    pub fn station_rotation_pool(
+        &self,
+        ctx: &GameContext,
+        station: &RadioStation,
+        night: bool,
+    ) -> Vec<String> {
+        if let Some(pool) = self.synth_roadhouse_pool(ctx, station, night) {
+            return pool;
+        }
         if station.playlist == "route" {
             return if night {
                 self.night_music_sequence.clone()
@@ -306,9 +362,14 @@ impl DrivingState {
         let night = is_night(self.trip.current_hour());
         self.music_night = night;
         self.radio_station_id = station.id.clone();
-        self.radio_playlist = self.station_rotation_pool(station, night);
-        let cue = self.station_cue(station, &self.radio_playlist);
-        let key = cue.current_key(&self.radio_playlist);
+        self.radio_playlist = self.station_rotation_pool(ctx, station, night);
+        self.synth_music_applied = Some(self.roadhouse_synth_state(ctx));
+        let cue = self.station_cue(ctx, station, &self.radio_playlist);
+        let key = if cue.in_break() {
+            cue.current_key(&self.radio_playlist)
+        } else {
+            self.resolve_station_track(ctx, cue.track_index)
+        };
         // A spoken host break, station ID or ad plays whole. Cutting into one
         // mid-word is what a real dial does and what a screen reader user
         // should never have to sit through, and a few seconds of drift on a
@@ -347,12 +408,14 @@ impl DrivingState {
             return;
         }
         self.radio_elapsed_s += dt.max(0.0);
-        let current = if !self.radio_break_queue.is_empty() {
-            self.radio_break_queue[self.radio_break_pos].clone()
+        let len = if !self.radio_break_queue.is_empty() {
+            content_duration_s(&self.radio_break_queue[self.radio_break_pos])
         } else {
-            self.radio_playlist[self.radio_track_index % self.radio_playlist.len()].clone()
+            let current =
+                self.radio_playlist[self.radio_track_index % self.radio_playlist.len()].clone();
+            self.station_track_len_s(ctx, &station, &current)
         };
-        if self.radio_elapsed_s < content_duration_s(&current) {
+        if self.radio_elapsed_s < len {
             return;
         }
         self.radio_elapsed_s = 0.0;
@@ -369,7 +432,9 @@ impl DrivingState {
         }
         self.radio_track_index += 1;
         self.radio_tracks_since_break += 1;
-        if self.radio_tracks_since_break >= RADIO_TRACKS_PER_HOST_BREAK {
+        if self.radio_tracks_since_break >= RADIO_TRACKS_PER_HOST_BREAK
+            && !self.synth_roadhouse(ctx, &station)
+        {
             let queue = plan_break(
                 &station.id,
                 &station.host,
@@ -391,8 +456,10 @@ impl DrivingState {
     }
 
     pub fn play_station_track(&mut self, ctx: &mut GameContext, fade_ms: u32) {
-        let key = self.radio_playlist[self.radio_track_index % self.radio_playlist.len()].clone();
-        ctx.audio.play_music_with(&key, fade_ms);
+        let key = self.resolve_station_track(ctx, self.radio_track_index);
+        if !key.is_empty() {
+            ctx.audio.play_music_with(&key, fade_ms);
+        }
     }
 
     /// `_start_playlist_station(station, fade_ms=900, advance=False)`, with
@@ -416,16 +483,23 @@ impl DrivingState {
         if entries.is_empty() {
             return Err(RadioPlaybackError("playlist is empty".to_string()));
         }
-        let mut start = self
-            .playlist_positions
-            .get(&station.id)
-            .copied()
-            .unwrap_or(0);
-        if advance {
-            start = (start + 1) % entries.len();
-        }
-        for attempt in 0..entries.len() {
-            let index = (start + attempt) % entries.len();
+        let shuffle = ctx.settings.radio_shuffle_playlists && entries.len() > 1;
+        let candidates: Vec<usize> = if shuffle {
+            self.shuffled_candidates(&station.id, entries.len(), advance)
+        } else {
+            let mut start = self
+                .playlist_positions
+                .get(&station.id)
+                .copied()
+                .unwrap_or(0);
+            if advance {
+                start = (start + 1) % entries.len();
+            }
+            (0..entries.len())
+                .map(|attempt| (start + attempt) % entries.len())
+                .collect()
+        };
+        for index in candidates {
             let entry = &entries[index];
             let stream = is_stream_entry(entry);
             let played = if stream {
@@ -437,6 +511,11 @@ impl DrivingState {
                 continue;
             }
             self.playlist_positions.insert(station.id.clone(), index);
+            if shuffle {
+                if let Some(lap) = self.playlist_shuffle.get_mut(&station.id) {
+                    lap.cursor = lap.order.iter().position(|&i| i == index).unwrap_or(0);
+                }
+            }
             self.radio_station_id = station.id.clone();
             self.radio_playlist = Vec::new();
             self.radio_break_queue = Vec::new();
@@ -456,6 +535,53 @@ impl DrivingState {
         ))
     }
 
+    /// The entry indices to try, in order, with shuffle on: the rest of this
+    /// lap from its cursor (the next slot when advancing, the current one
+    /// when tuning back in), then the slots already played, so a lap of
+    /// unreadable files still tries every entry once. A lap that has run
+    /// out is replaced first: a fresh permutation, and one that never opens
+    /// on the track that just ended.
+    ///
+    /// Each lap is a Fisher-Yates shuffle on a PyRandom seeded from the trip
+    /// seed, the playlist and the lap number, the way every other roll in
+    /// the drive is seeded, so a transcript replays and a test can pin it.
+    fn shuffled_candidates(&mut self, station_id: &str, len: usize, advance: bool) -> Vec<usize> {
+        let last = self.playlist_positions.get(station_id).copied();
+        let trip_seed = self.trip_seed;
+        let lap = self
+            .playlist_shuffle
+            .entry(station_id.to_string())
+            .or_insert_with(|| PlaylistShuffleLap {
+                order: shuffled_lap(trip_seed, station_id, 0, len, None),
+                cursor: 0,
+                lap: 0,
+            });
+        if lap.order.len() != len {
+            // The file was re-read with a different track count mid-drive.
+            *lap = PlaylistShuffleLap {
+                order: shuffled_lap(trip_seed, station_id, lap.lap + 1, len, last),
+                cursor: 0,
+                lap: lap.lap + 1,
+            };
+            return lap.order.clone();
+        }
+        let mut cursor = lap.cursor;
+        if advance {
+            cursor += 1;
+            if cursor >= len {
+                *lap = PlaylistShuffleLap {
+                    order: shuffled_lap(trip_seed, station_id, lap.lap + 1, len, last),
+                    cursor: 0,
+                    lap: lap.lap + 1,
+                };
+                return lap.order.clone();
+            }
+        }
+        let mut out: Vec<usize> = lap.order[cursor..].to_vec();
+        out.extend_from_slice(&lap.order[..cursor]);
+        out
+    }
+
     /// `_start_playlist_station` as the playback backend calls it, where the
     /// Python exception had nowhere to go through the trait's `Result`.
     pub fn start_playlist_station(
@@ -466,6 +592,19 @@ impl DrivingState {
         advance: bool,
     ) {
         let _ = self.start_playlist_station_checked(ctx, station, fade_ms, advance);
+    }
+
+    /// Whether the station on the air can report the song it is playing.
+    ///
+    /// A live stream carries ICY metadata; so does a personal playlist
+    /// sitting on a stream entry, because that entry IS an internet station
+    /// -- a playlist exported from an internet radio app is nothing but
+    /// stations. A playlist on a file off the player's own disk is not a
+    /// broadcast and nobody is publishing a title for it.
+    pub fn station_sends_song_info(&self, station: &RadioStation) -> bool {
+        station.real_stream
+            || (station.source_type == PERSONAL_PLAYLIST_SOURCE_TYPE
+                && is_stream_entry(&self.playlist_entry(station)))
     }
 
     /// The entry this playlist is sitting on right now.
@@ -640,6 +779,17 @@ impl DrivingState {
         } else {
             self.nice_speed_mi = 0.0;
         }
+        // And a mile at the old national maximum, for anyone who learned to
+        // drive a truck in a cab that never let them off it. Same shape as
+        // the one above: a held number, for a mile, deliberately.
+        if (54.5..=55.5).contains(&speed) {
+            self.double_nickel_mi += speed * dt / 3600.0;
+            if self.double_nickel_mi >= 1.0 {
+                ctx.award_achievement("fifty_five_mph");
+            }
+        } else {
+            self.double_nickel_mi = 0.0;
+        }
         if speed >= 88.0 {
             ctx.award_achievement("eighty_eight_mph");
         }
@@ -699,7 +849,7 @@ impl DrivingState {
         if !station.supported {
             return false;
         }
-        if self.radio.unplayable_ids.contains(&station.id) {
+        if self.radio.unplayable_ids.contains(&station.id) || !self.radio.synth_allows(station) {
             return false;
         }
         if !station.real_stream && station.source_type != PERSONAL_PLAYLIST_SOURCE_TYPE {
@@ -721,6 +871,7 @@ impl DrivingState {
     /// moment the row is toggled, the cab says so, and the radio lands on
     /// the Roadhouse like any other handover.
     pub fn apply_radio_settings_to_drive(&mut self, ctx: &mut GameContext) {
+        self.restart_roadhouse_on_synth_change(ctx);
         let before = self.radio.current_station();
         {
             let view = RadioSettingsView(&ctx.settings);
@@ -738,9 +889,14 @@ impl DrivingState {
         });
         self.write_radio_settings(ctx);
         if powered {
+            let reason = if self.radio.streamer_safe {
+                "streamer-safe mode is on"
+            } else {
+                "Music source is Synthesized"
+            };
             ctx.say_event_with(
                 format!(
-                    "{} left the dial, streamer-safe mode is on. Tuned to {}.",
+                    "{} left the dial, {reason}. Tuned to {}.",
                     before.display_name(),
                     action.station.display_name()
                 ),
@@ -799,7 +955,12 @@ impl DrivingState {
 
     pub fn finish_radio_action(&mut self, ctx: &mut GameContext, action: &RadioAction) {
         self.write_radio_settings(ctx);
-        ctx.say(&action.message);
+        // A locked dial's answer is an empty message (station commands do
+        // nothing and say nothing while Synthesized streamer-safe mode
+        // holds the radio on the Roadhouse) -- never speak it.
+        if !action.message.is_empty() {
+            ctx.say(&action.message);
+        }
     }
 
     /// Speak the dead-cab line when a radio key lands with no engine.
@@ -874,6 +1035,9 @@ impl DrivingState {
             return "The engine is off. The radio has no power.".to_string();
         }
         self.sync_radio_settings(ctx);
+        if self.radio.station_locked() && station_id != SAFE_ROUTE_PLAYLIST {
+            return String::new();
+        }
         let was_off = !self.radio.enabled;
         self.radio.enabled = true;
         let id = station_id.to_string();
@@ -910,7 +1074,10 @@ impl DrivingState {
             return "The engine is off. The radio has no power.".to_string();
         }
         let station = self.radio.current_station();
-        if !station.real_stream {
+        if let Some(text) = self.synth_now_playing(ctx, &station) {
+            return text;
+        }
+        if !self.station_sends_song_info(&station) {
             return format!("{} does not send song information.", station.display_name());
         }
         if !ctx.audio.music_playing() {
@@ -945,6 +1112,11 @@ impl DrivingState {
     pub fn toggle_radio_favorite(&mut self, ctx: &mut GameContext) {
         self.sync_radio_settings(ctx);
         let message = self.radio.toggle_favorite();
+        // A locked dial answers with an empty message and touches nothing:
+        // favorites stay exactly as they were.
+        if message.is_empty() {
+            return;
+        }
         if ctx.profile.is_some() {
             let mut favorites: Vec<String> = self.radio.favorite_ids.iter().cloned().collect();
             favorites.sort();

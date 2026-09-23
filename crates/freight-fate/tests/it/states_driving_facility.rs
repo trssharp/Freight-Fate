@@ -652,6 +652,69 @@ fn test_the_hold_prompt_does_not_come_back_once_the_menu_is_open() {
 }
 
 #[test]
+fn test_a_half_full_tank_is_eased_and_stopped_earlier_than_a_dry_van() {
+    // Every CDL manual says the same thing about a liquid load: brake earlier
+    // and more smoothly, because the surge gives back some of the rate at the
+    // worst moment. The truck has known how much since
+    // `surge_decel_penalty_mps2` was written, but only the ramp bar asked --
+    // the facility arrival, the curve servo and the speed keeper all priced
+    // their shed at the dry-van rate (owner, 2026-09-20).
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    d.trip.truck.cargo_kg = CARGO_KG;
+    d.trip.truck.velocity_mps = 20.0;
+
+    let dry_ease = d.keeper_ease_mi(15.0, 1.0);
+    assert_eq!(
+        d.trip.truck.surge_decel_penalty_mps2(),
+        0.0,
+        "a dry van has no surge to give back"
+    );
+
+    // A half-full smooth bore: the worst thing on the roster to stop.
+    d.trip.truck.liquid = Some(LiquidLoad::new(0.5, false));
+    let wet_penalty = d.trip.truck.surge_decel_penalty_mps2();
+    assert!(
+        wet_penalty > 0.0,
+        "a part-filled tank takes deceleration away: {wet_penalty}"
+    );
+    let wet_ease = d.keeper_ease_mi(15.0, 1.0);
+    assert!(
+        wet_ease > dry_ease,
+        "the keeper eases further out with liquid aboard: {wet_ease} vs {dry_ease}"
+    );
+}
+
+#[test]
+fn test_the_assist_stops_the_truck_at_a_pickup_gate() {
+    // The setting promises to stop at the selected facility arrival point,
+    // and it did that at a dock and not at a pickup: the pickup gate had no
+    // assist branch at all, so it only ever OPENED the check-in once the
+    // truck was already slow. The owner drove into Oshkosh Dry Warehouse
+    // with every assist on and stopped the truck himself (2026-09-20).
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    app.ctx.settings.destination_approach_assist = true;
+    app.clear_speech();
+    at_gate(&mut d, 8.0, false);
+    d.handle_pickup_gate(&mut app.ctx);
+    assert_eq!(d.trip.truck.brake, 1.0, "the assist has to take the brake");
+    assert_eq!(d.trip.truck.throttle, 0.0);
+    assert!(
+        !d.arrival_menu_open,
+        "still rolling, nothing to check into yet"
+    );
+
+    // Stopped, it holds at the entrance and hands the driver the key --
+    // the same line and the same control as the dock.
+    d.trip.truck.velocity_mps = 0.0;
+    d.handle_pickup_gate(&mut app.ctx);
+    let prompt = last_with(&app, "holding at the entrance");
+    assert!(prompt.contains("Press Enter"), "{prompt}");
+    assert!(d.trip.truck.parking_brake);
+}
+
+#[test]
 fn test_manual_delivery_stop_names_parking_and_facility_controls() {
     let mut app = TestApp::new();
     let mut d = a_drive(&mut app);
@@ -692,6 +755,49 @@ fn test_the_approach_assist_stops_the_truck_on_a_facility_street_chain() {
         assert!(arrival.ready, "{}", arrival.report(destination));
         assert!(
             arrival.speed_at_point_mph.unwrap_or(0.0) <= FACILITY_GATE_LIMIT_MPH,
+            "{}",
+            arrival.report(destination)
+        );
+    }
+}
+
+#[test]
+fn test_the_approach_assist_still_has_its_air_at_the_gate() {
+    // A facility chain is a string of corners, and the speed keeper works
+    // them with the service brakes. The air system charges a whole
+    // application every time the pedal RISES and only leakage while it is
+    // held, so the assist can only afford the chain if each snub is ONE
+    // application.
+    //
+    // It was not. `update_keeper` returns early on a frame the driver is on
+    // the accelerator or the automatic is mid-shift, and the input pass at
+    // the top of the frame had already bled the pedal the keeper left behind
+    // -- so the same snub was re-made, and re-charged, nine times a second.
+    // A hundred and twenty-five psi to the spring-brake trip in twenty
+    // seconds, and the truck set its own parking brakes half a mile short of
+    // Aberdeen Company Yard with the delivery unfinishable (2026-09-18).
+    //
+    // Arriving is not enough to catch that: the truck can arrive on the last
+    // of its air, or be stopped by the spring brakes ON the gate and read as
+    // parked there. This case measures the tanks the whole way in.
+    // The bar is the truck's OWN low-air warning, not a number chosen here:
+    // an approach the driver never even hears an air warning on is an
+    // approach that never spent the air, and the warning sits a long way
+    // above the spring-brake trip, so the case fails while the truck is
+    // still drivable rather than only once it has already stranded itself.
+    let (chain, _) = destinations(get_world(), FEW);
+    for destination in &chain {
+        let arrival = arrive(destination);
+        assert!(arrival.on_chain, "{}", arrival.report(destination));
+        // A run that sampled nothing leaves the floor at infinity and would
+        // pass the real bar below without measuring anything at all.
+        assert!(
+            arrival.min_air_psi.is_finite(),
+            "{}",
+            arrival.report(destination)
+        );
+        assert!(
+            arrival.min_air_psi > arrival.air_low_warning_psi,
             "{}",
             arrival.report(destination)
         );
@@ -786,6 +892,38 @@ fn test_a_blown_gate_loop_back_lets_the_arrival_latch_go() {
     assert_eq!(d.destination_assist_brake, 0.0);
     assert!(!d.approach_pull_ahead);
     assert!(d.ramp_mi.is_some_and(|mi| mi > 0.0));
+}
+
+#[test]
+fn test_a_stop_menu_lets_go_of_every_assist_brake() {
+    // Shane, Jerry and Jessie, 2026-09-21: facility stopping assistance
+    // brought the truck into a stop, and back on the road it would not move
+    // -- parking brake off, engine revving, 0 mph. The arrival's brake was
+    // still latched under the menu, and the brake ramp now holds any pedal an
+    // assist is holding, so the truck sat on it for good.
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    d.trip.truck.start_engine();
+    d.trip.truck.velocity_mps = 0.0;
+    d.destination_arrival_active = true;
+    d.destination_assist_brake = 1.0;
+    d.keeper_snub = 0.4;
+    d.aeb_brake = 0.5;
+
+    assert!(secure_truck_for_stopped_menu(&mut d, &mut app.ctx));
+    assert!(!d.destination_arrival_active);
+    assert_eq!(d.destination_assist_brake, 0.0);
+    assert_eq!(d.keeper_snub, 0.0);
+    assert_eq!(d.aeb_brake, 0.0);
+    assert!(d.curve_servo.is_none());
+
+    // Back on the road: release the parking brake and the service brake
+    // comes off on its own.
+    d.trip.truck.release_parking_brake();
+    for _ in 0..120 {
+        d.update_frame(&mut app.ctx, 1.0 / 60.0);
+    }
+    assert_eq!(d.trip.truck.brake, 0.0);
 }
 
 #[test]

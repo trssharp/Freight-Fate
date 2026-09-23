@@ -143,6 +143,17 @@ impl Trip {
             return self.events.clone();
         }
 
+        // What this run has burned, read as the DROP in the tank since the
+        // last frame. The burn model is the truck's and runs outside this
+        // call, so reading the level is the one place that sees every path;
+        // and only a drop counts, so a fuel island adds gallons without ever
+        // crediting the run with ones it did not spend.
+        let fuel_now = self.truck.fuel_gal;
+        if let Some(previous) = self.fuel_seen_gal {
+            self.fuel_used_gal += (previous - fuel_now).max(0.0);
+        }
+        self.fuel_seen_gal = Some(fuel_now);
+
         // Any release path disarms waiting.
         if self.waiting && !self.truck.parking_brake {
             self.waiting = false;
@@ -800,6 +811,49 @@ impl Trip {
         }
         self.inspection_check_mi = self.insp_rng.uniform(15.0, 40.0);
         if !self.hos_violation {
+            // Roadcheck week: the CB says so once, at the first check of the
+            // run, so the driver can walk around the truck before a trooper
+            // does.
+            if self.roadcheck_blitz && !self.announced_enforcement.contains("roadcheck") {
+                self.announced_enforcement.insert("roadcheck".to_string());
+                self.emit(
+                    TripEventKind::Inspection,
+                    SpokenMessage::new(
+                        "CB chatter: it is Roadcheck week. Inspectors are out in force for three \
+                         days, scales are open and troopers are checking paperwork.",
+                    ),
+                    TripEventData {
+                        key: Some("roadcheck".to_string()),
+                        context: Some("roadcheck_notice".to_string()),
+                        evidence: Some(Vec::new()),
+                        ..Default::default()
+                    },
+                );
+            }
+            // A legal driver still meets the occasional routine inspection:
+            // a trooper pulls in behind for a Level 3, driver and paperwork.
+            // The odds ride the safety record through
+            // `roadside_inspection_scale`, memoryless over the check interval
+            // so the interval itself never changes the rate.
+            let chance = crate::sim::roadside_inspection::roadside_inspection_chance(
+                self.inspection_check_mi,
+                self.roadside_inspection_scale,
+            );
+            if chance > 0.0 && self.insp_rng.random() < chance {
+                let key = format!("routine:{}", round_py_int(self.position_mi));
+                self.emit(
+                    TripEventKind::Inspection,
+                    SpokenMessage::new(
+                        "A trooper pulls in behind you for a routine roadside inspection.",
+                    ),
+                    TripEventData {
+                        key: Some(key),
+                        context: Some("routine_inspection".to_string()),
+                        evidence: Some(Vec::new()),
+                        ..Default::default()
+                    },
+                );
+            }
             return;
         }
         let leg_index = self.current_leg_index();

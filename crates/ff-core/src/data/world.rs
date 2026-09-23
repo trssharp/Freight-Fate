@@ -17,8 +17,10 @@ use parking_lot::Mutex;
 use serde_json::Value;
 
 use super::baked::{BakedData, CorridorRef};
+use super::branded_plazas::screen_branded_plazas;
 use super::data_resources::{baked_at, data_root, read_text_at};
 use super::legacy_aliases::LEGACY_CITY_SLUGS;
+use super::stop_twins::screen_twin_stops;
 use super::world_constants::{
     ALTERNATE_ROUTE_EXTRA_RATIO, ALTERNATE_ROUTE_MAX_EXTRA_MILES, ALTERNATE_ROUTE_MIN_EXTRA_MILES,
 };
@@ -189,6 +191,12 @@ impl World {
                 .iter()
                 .map(|s| parse_stop(s, miles, &leg_from, &leg_to))
                 .collect::<Result<Vec<_>, _>>()?;
+            // One chain truck stop listed twice is one stop (`stop_twins`).
+            let stops = screen_twin_stops(stops);
+            // A chain truck stop typed as a toll road's service plaza is a
+            // travel center (`branded_plazas`). After the twin screen, so
+            // which twin it keeps is decided on the recorded types.
+            let stops = screen_branded_plazas(stops);
             let corridor = leg.corridor;
             let from_state = cities
                 .get(&leg_from)
@@ -363,6 +371,7 @@ impl World {
             built.lanes = baked.lanes;
             built.local_cue = baked.local_cue;
             built.local_speed_mph = baked.local_speed_mph;
+            built.local_turn_deg = baked.local_turn_deg;
             built.divided = baked.divided;
             built.truck_advisory = baked.truck_advisory;
             built.meta_complete = baked.meta_complete;

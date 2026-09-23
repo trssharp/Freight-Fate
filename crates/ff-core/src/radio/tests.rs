@@ -201,6 +201,9 @@ impl RadioSettingsAccess for FakeSettings {
     fn radio_streamer_safe(&self) -> bool {
         self.radio_streamer_safe
     }
+    fn synth_music(&self) -> bool {
+        false
+    }
     fn set_radio_enabled(&mut self, enabled: bool) {
         self.radio_enabled = enabled;
     }
@@ -837,6 +840,94 @@ fn terrestrial_at(station_id: &str, call_sign: &str, degrees_east: f64) -> Radio
             "reception fixture",
         )
     }
+}
+
+#[test]
+fn test_a_lost_station_hands_the_dial_to_the_strongest_clean_local_signal() {
+    // Brandon, 2026-09-17. Contours here are 150 miles; a degree of longitude
+    // at Dallas is about 58.
+    let lost = terrestrial_at("kold-dallas", "KOLD", 0.0);
+    let near = terrestrial_at("kner-dallas", "KNER", 0.3);
+    let far = terrestrial_at("kfar-dallas", "KFAR", 1.7);
+    let edge = terrestrial_at("kedg-dallas", "KEDG", 2.5);
+    let mut all: Vec<RadioStation> = catalog()
+        .into_iter()
+        .filter(|station| dial_group(station) != TERRESTRIAL_GROUP)
+        .collect();
+    all.extend([lost.clone(), near, far, edge]);
+    let mut radio = RadioState::new(all).with_position(Some(DALLAS));
+
+    let landing = radio
+        .strongest_terrestrial(&lost)
+        .expect("a station in range");
+    assert_eq!(landing.station.id, "kner-dallas");
+
+    // A stream that would not open is off the dial, so the next one takes it.
+    radio.mark_unplayable("kner-dallas");
+    let landing = radio
+        .strongest_terrestrial(&lost)
+        .expect("a station in range");
+    assert_eq!(landing.station.id, "kfar-dallas");
+
+    // The static smear at the edge of a contour is not a landing: the driver
+    // would be handed a station that fades again a few miles on.
+    radio.mark_unplayable("kfar-dallas");
+    let edge_signal = radio
+        .receivable_stations()
+        .into_iter()
+        .find(|r| r.station.id == "kedg-dallas")
+        .expect("the edge station is still receivable")
+        .signal;
+    assert!(edge_signal > 0.0 && edge_signal < STATIC_SIGNAL_THRESHOLD);
+    assert!(radio.strongest_terrestrial(&lost).is_none());
+}
+
+#[test]
+fn test_no_imported_station_name_has_a_stripped_apostrophe() {
+    // "Birmingham s Beautiful QEZ" is what a stripped apostrophe sounds like.
+    let catalog = default_radio_catalog();
+    let stranded: Vec<&str> = catalog
+        .iter()
+        .filter(|station| {
+            let words: Vec<&str> = station.name.split_whitespace().collect();
+            words
+                .windows(3)
+                .any(|w| w[1] == "s" && w[0].chars().all(|c| c.is_ascii_alphabetic()))
+        })
+        .map(|station| station.name.as_str())
+        .collect();
+    assert!(stranded.is_empty(), "{stranded:?}");
+}
+
+#[test]
+fn test_a_dial_sweep_keeps_its_order_while_the_truck_moves() {
+    // Two stations whose signals cross as the truck moves: stepping the
+    // dial used to re-sort on every press, so the band could hand back the
+    // station just left and skip the next one.
+    let east = terrestrial_at("fix-east", "KEEE", 0.30);
+    let west = terrestrial_at("fix-west", "KWWW", -0.30);
+    let mut radio =
+        RadioState::new(vec![east, west]).with_position(Some((DALLAS.0, DALLAS.1 - 0.02)));
+    radio.station_id = "fix-west".to_string();
+    // Nearer the western tower, west leads the band; the first press steps
+    // to east.
+    let first = radio.tune(1, None);
+    assert_eq!(first.station.id, "fix-east");
+    // Drift east a few hundred feet, enough to flip the raw signal order
+    // but not to end the sweep: the next press must go on to west, not
+    // re-sort and land on east again.
+    radio.update_position(Some((DALLAS.0, DALLAS.1 + 0.02)), None);
+    let second = radio.tune(1, None);
+    assert_eq!(second.station.id, "fix-west");
+    // A real move ends the sweep and the band is rebuilt strongest-first,
+    // which now puts east ahead.
+    radio.update_position(Some((DALLAS.0, DALLAS.1 + 0.2)), None);
+    let ids: Vec<String> = radio
+        .sweep_receptions()
+        .into_iter()
+        .map(|r| r.station.id)
+        .collect();
+    assert_eq!(ids[0], "fix-east");
 }
 
 #[test]

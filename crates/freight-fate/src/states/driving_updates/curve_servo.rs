@@ -40,10 +40,10 @@ use crate::states::driving_speed_control::KEEPER_SNUB_DECEL_MPS2;
 use crate::states::driving_stops::arrival_servo_brake;
 
 /// Inside the bend, the truck is over the number by this much before the
-/// servo reaches for the drums again. Under it the pedal is released and the
-/// road's own drag holds the rest; a servo that chased the exact number
-/// through a corner paid an application every time drag dipped it a hair
-/// under and a downgrade lifted it back.
+/// servo is asking for its whole snub; under it the demand tapers to nothing
+/// at the number itself. Below the number the pedal is released and the
+/// road's own drag holds the rest, except on a downgrade, where the hill is
+/// held until the truck is this far under.
 pub const CURVE_SERVO_HOLD_BAND_MPH: f64 = 1.0;
 
 /// One bend's proactive speed job, from the curve call to the commit tail.
@@ -100,6 +100,7 @@ impl DrivingState {
     /// application it sets is the one the truck integrates.
     pub fn update_curve_speed_servo(&mut self, ctx: &GameContext) {
         let Some(servo) = self.curve_servo.as_ref() else {
+            self.trip.curve_shed_active = false;
             return;
         };
         let position = self.trip.position_mi;
@@ -108,6 +109,7 @@ impl DrivingState {
             // back silently -- a release line on every bend of a cluster
             // would chant.
             self.curve_servo = None;
+            self.trip.curve_shed_active = false;
             return;
         }
         let v = self.trip.truck.velocity_mps;
@@ -124,29 +126,84 @@ impl DrivingState {
         // back on the compressed clock, and a profile priced in real
         // metres there arrives over the number. The keeper prices its ease
         // the same way (`keeper_ease_mi`).
+        //
+        // Set the flag FIRST, then read the scale, because the flag is one of
+        // the things `effective_time_scale` answers with. Read the other way
+        // round it reported last frame's clock, and on the one frame the
+        // truck crossed back over the number -- flag still false, the
+        // pacenote's own decompression already let go -- the demand was
+        // priced seventeen times too high and the pedal took the rise
+        // (review finding, 2026-09-19). The clock stays real while there is
+        // still speed to take off, so the shed is priced in the same seconds
+        // the truck slows in; see `Trip::effective_time_scale`.
+        self.trip.curve_shed_active = v > target;
         let scale = self.trip.effective_time_scale().max(1.0);
-        let needed = if position < servo.start_mi {
+        let band = CURVE_SERVO_HOLD_BAND_MPH / MPH_PER_MPS;
+        let shed: Option<f64> = if position < servo.start_mi {
             // The approach: the uniform shed that lands the truck ON the
             // number at the bend's start. Recomputed every frame against the
             // road left, so a truck coasting slower than the profile sees
             // its demand climb and the pedal follow.
             let remaining_m = ((servo.start_mi - position) * METERS_PER_MILE).max(0.5);
-            0.0f64.max(v * v - target * target) * scale / (2.0 * remaining_m)
-        } else if v > target + CURVE_SERVO_HOLD_BAND_MPH / MPH_PER_MPS {
+            // Plus what the surge will take back. A tank the liquid can
+            // move in cannot hold the dry-van rate, so the demand has to ask
+            // for the shortfall as well or the bend arrives over its number
+            // (owner, 2026-09-20).
+            let surge = self.trip.truck.surge_decel_penalty_mps2();
+            (v > target).then(|| (v * v - target * target) * scale / (2.0 * remaining_m) + surge)
+        } else if v > target {
             // Inside the chain and over the number: the keeper's own snub
             // rate, net of the grade like everything else here. A profile to
             // the chain's END would let the truck ride the whole corner over
             // its advisory and only arrive at the number where it no longer
             // matters.
-            KEEPER_SNUB_DECEL_MPS2 * scale
+            //
+            // FEATHERED across the band, not switched at its edge: nothing at
+            // the number, the full snub a band over it, and a straight line
+            // between. Switched, the snub took the truck a hair under the
+            // edge, the hold below kept it there, and anything that nudged it
+            // back -- adaptive cruise holds this same bend, on this same edge
+            // -- made the whole snub again: 0.16 to 0.36 and back every other
+            // frame, 125 psi to the spring brakes with cruise on (agent
+            // drive, AZ-260, 2026-09-18). Latched down to the number it
+            // still came round every five seconds. A pedal that answers how
+            // far over the truck is settles where the push on it is met and
+            // stays there, which is what a foot does.
+            Some(KEEPER_SNUB_DECEL_MPS2 * scale * ((v - target) / band).min(1.0))
         } else {
-            0.0
+            None
         };
-        let applied = if v > target && needed > 0.0 {
-            arrival_servo_brake(servo.brake, needed - road, &self.trip.truck)
-        } else {
-            0.0
+        // What the pedal has to answer, net of the road: the shed, less what
+        // the road takes off by itself -- or, with nothing left to shed and
+        // GRAVITY pushing, the hill.
+        //
+        // "The road's own drag holds the rest" is only true where the road is
+        // taking speed off. On a downgrade it is adding it, so letting go at
+        // the number handed the truck straight back to the hill, which
+        // carried it over again within a few frames, and the snub came back
+        // as a fresh application each time -- ten a second down the 6.1
+        // percent pitch into the AZ-260 hairpin, 125 psi to the spring brakes
+        // in one bend (owner's drive, 2026-09-18; bench trace: 0.364,
+        // released, 0.364, released, six frames apart). The approach did the
+        // same at the mouth of the bend, twenty clunks in a row.
+        //
+        // So under the number the hill is still held, tapering to nothing a
+        // band below it. Tapered and not switched for the same reason the
+        // snub is: the pedal is mapped a little strong on purpose, so a held
+        // hill drifts the truck down, and a hold that let go at an edge let
+        // the hill bring it straight back -- a fresh application every four
+        // seconds. On the taper the truck settles where the pedal and the
+        // hill agree and the application is made once.
+        let demand = match shed {
+            Some(shed) => Some(shed - road),
+            None if road < 0.0 && v > target - band => {
+                Some(-road * ((v - (target - band)) / band).min(1.0))
+            }
+            None => None,
         };
+        let applied = demand.map_or(0.0, |demand| {
+            arrival_servo_brake(servo.brake, demand, &self.trip.truck)
+        });
         if let Some(servo) = self.curve_servo.as_mut() {
             servo.brake = applied;
         }
@@ -167,7 +224,7 @@ impl DrivingState {
         // ROUTE, not the ambient default: an automation just released the
         // pedals (the automation-handoff rule, 2026-08-20).
         ctx.say_event_with(
-            "Curve speed assistance released.",
+            "Curve assistance released.",
             SayEvent::queued()
                 .priority(EventPriority::Route)
                 .category(SpeechCategory::Confirmation),

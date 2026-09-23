@@ -85,6 +85,9 @@ pub const ROAD_BRAKE_COST_PER_PCT: f64 = 55.0; // road-shop premium over the gar
 pub const ROAD_BRAKE_MIN: f64 = 120.0;
 pub const FUEL_STOP_MIN: f64 = 20.0; // fueling is on-duty-not-driving work
 pub const INSPECTION_MIN: f64 = 15.0; // inspection lane: they take you in
+/// The driver's own pre-trip walk-around, on duty. ASSUMED: 49 CFR 396.13
+/// sets no time; carriers budget about fifteen minutes.
+pub const WALK_AROUND_MIN: f64 = 15.0;
 pub const WAVE_THROUGH_MIN: f64 = 2.0; // scale wave-through after you pull in
 pub const OUT_OF_SERVICE_MIN: f64 = hos::SLEEP_MIN;
 // Dynamiting the parking brake: pulling the valve at speed slams the spring
@@ -117,6 +120,7 @@ pub const EXIT_LANE_READY: f64 = 0.85; // accumulated right-lane commitment
 pub const EXIT_LANE_OFFSET_READY: f64 = 0.45; // right-side lane position also counts
 pub const EXIT_CANCEL_GUARD_MI: f64 = 1.0; // inside this, X keeps the signal; a second press cancels
 pub const EXIT_TAP_HOLD_S: f64 = 0.35; // a Right press this short is a tap, not held steering
+pub const EXIT_LANE_LOST_S: f64 = 1.0; // held out of the exit lane this long before it is called lost
 pub const AEB_BUDGET_MARGIN: f64 = 1.2; // emergency braking leads the physics budget by this factor
 pub const AEB_LEAD_S: f64 = 0.5; // plus this flat lead, covering brake heat added during the stop
                                  // The assist brakes on the SERVICE brakes, and the escalation to the emergency
@@ -180,9 +184,26 @@ pub const RAMP_BAR_REACTION_S: f64 = 1.5;
 pub const CRITICAL_CALL_WINDOW_S: f64 = 8.0;
 pub const CRITICAL_RESPEAK_DELAY_S: f64 = 2.0;
 pub const RAMP_CONTROL_ANNOUNCE_MI: f64 = 0.38; // where the terminal callout fires on the ramp
-pub const RAMP_LIGHT_RED_S: f64 = 12.0; // red phase of the terminal light, real seconds
-pub const RAMP_LIGHT_GREEN_S: f64 = 15.0; // green phase: a real minor-leg minimum, crossable from a stop
-pub const RAMP_LIGHT_YELLOW_S: f64 = 4.0; // yellow phase; entering on yellow is legal, like the real law
+
+// Game tuning, not a claim about any field signal plan. FHWA's planning-level
+// examples commonly begin at 60-second cycles; these four seeded profiles run
+// 60, 66, 72, or 78 real seconds so every terminal does not feel metronomic.
+// https://ops.fhwa.dot.gov/publications/fhwahop08024/chapter3.htm
+pub const RAMP_LIGHT_RED_S: f64 = 30.0; // shortest profile; includes clearance below
+pub const RAMP_LIGHT_RED_STEP_S: f64 = 4.0;
+pub const RAMP_LIGHT_GREEN_S: f64 = 26.0; // shortest profile; room for a loaded departure
+pub const RAMP_LIGHT_GREEN_STEP_S: f64 = 2.0;
+pub const RAMP_LIGHT_PROFILE_COUNT: i64 = 4;
+// The player's light remains red for this final part of its red interval while
+// the cross street is also held. The MUTCD makes red clearance an engineering
+// decision; this fixed game interval gives even this model's slowest vehicle
+// enough time to accelerate from its 45-foot cross bar and clear the 55-foot
+// conflict window rather than pretending to reproduce a real site.
+// https://mutcd.fhwa.dot.gov/pdfs/11th_Edition/part4.pdf#page=120
+pub const RAMP_LIGHT_RED_CLEARANCE_S: f64 = 7.0;
+// MUTCD 4F.17 recommends 3 to 6 seconds and says a timing plan's yellow must
+// not vary cycle by cycle. Four seconds remains fixed for every game profile.
+pub const RAMP_LIGHT_YELLOW_S: f64 = 4.0;
 pub const RED_STOP_MPH: f64 = 3.0; // at or under this you have honored a red or a stop sign
                                    // The stop bar's continuous tone level (BAR_SOLID_VOLUME) is re-exported from
                                    // ff_core::sound_catalog by the prelude, so the road and the Learn game
@@ -219,6 +240,17 @@ pub const RAMP_ASSIST_HOLD_MI: f64 = 60.0 / 5280.0;
 // brake application by the air system, so a servo that chases every dip in the
 // demand empties the tanks on one approach.
 pub const RAMP_ASSIST_RELEASE_BAND: f64 = 0.05;
+// And how far it has to climb ABOVE that pedal before the servo presses
+// harder. The air system charges a whole application for every RISE, so a
+// demand that creeps up a ten-thousandth of a pedal per frame -- which is
+// what a stop profile does while the truck is not quite holding its rate --
+// is charged sixty applications a second. The 2026-09-20 approach sweep
+// measured 31,556 of its 35,112 applications coming from that creep, and
+// Albany Company Yard was the first chain whose shed ran long enough to put
+// the tanks on the floor and set the spring brakes 2,992 feet short of the
+// gate. Same size as the release band: the pedal moves when the move is
+// worth an application, in either direction.
+pub const RAMP_ASSIST_APPLY_BAND: f64 = RAMP_ASSIST_RELEASE_BAND;
 // The destination approach assist's last lengths to the gate. The dock opens
 // only AT the point, so the arrival profile aims to reach it at a walk, not at
 // rest: an assist that targets zero speed at the point converges on a stop

@@ -6,8 +6,8 @@ use crate::data_support::{data_dir, shortest, supported, world};
 use ff_core::data::regions::REGIONS;
 use ff_core::data::world::{max_alternate_miles, World};
 use ff_core::data::world_constants::{
-    lookup, set_contains, DEFAULT_POI_ACTIONS, FREIGHT_LOCATION_TYPES, PARKING_CERTAINTY_LABELS,
-    POI_ACTIONS, STOP_DIRECTIONS, STOP_TYPE_LABELS,
+    is_stand_in_market, lookup, set_contains, DEFAULT_POI_ACTIONS, FREIGHT_LOCATION_TYPES,
+    PARKING_CERTAINTY_LABELS, POI_ACTIONS, STOP_DIRECTIONS, STOP_TYPE_LABELS,
 };
 use ff_core::data::world_models::Route;
 use serde_json::json;
@@ -260,7 +260,28 @@ fn test_each_metro_expands_to_representative_facilities() {
         // port terminal and the intermodal ramp from a remote town (rural
         // Nevada keeps five). Inventing a different filler facility to hold
         // the count at six would repeat the realism bug the gate fixes.
-        assert!(city.locations.len() >= 5);
+        // A STAND-IN market is the exception, and it is the point: not one of
+        // its facilities has an endpoint the freight-site screen accepts, so it
+        // is stamped with one company yard instead of four invented warehouses
+        // (owner ruling, 2026-09-20).
+        let templates: Vec<&str> = city
+            .locations
+            .iter()
+            .filter(|loc| loc.template)
+            .map(|loc| loc.facility_type.as_str())
+            .collect();
+        let curated = city.locations.iter().any(|loc| !loc.template);
+        if is_stand_in_market(&city.key) && !curated {
+            assert!(
+                templates.len() <= 1,
+                "{}: a stand-in market gets one yard, not {:?}",
+                city.name,
+                templates
+            );
+            assert!(templates.iter().all(|kind| *kind == "company_yard"));
+        } else {
+            assert!(city.locations.len() >= 5);
+        }
         assert!(!city.market_tags.is_empty());
         assert!(city.locations.iter().any(|loc| loc.template));
         assert!(city
@@ -724,6 +745,36 @@ fn test_southern_sleep_stop_gaps_are_no_longer_extreme() {
 }
 
 #[test]
+fn test_a_leg_with_only_bobtail_stops_carries_the_rest_areas_on_its_road() {
+    // Two bobtail-only Kwik Trips met the stop minimum for I-35 Owatonna to
+    // Minneapolis, so the federal inventory's own rest areas on that road
+    // were never curated in and the cab answered "no sleep-capable route
+    // stop ahead" (owner, 2026-09-18). A loaded truck must find a night's
+    // parking on the leg.
+    let world = world();
+    let route = supported(world, "Owatonna", "Minneapolis");
+    let stops = route.stop_details();
+    let sleepable: Vec<&str> = stops
+        .iter()
+        .filter(|stop| {
+            stop.actions.iter().any(|a| a == "sleep") && stop.vehicle_access != "bobtail_only"
+        })
+        .map(|stop| stop.name.as_str())
+        .collect();
+    assert!(
+        sleepable.contains(&"Heath Creek"),
+        "Heath Creek rest area missing from I-35 north of Owatonna: {sleepable:?}"
+    );
+    let heath = stops
+        .iter()
+        .find(|stop| stop.name == "Heath Creek")
+        .unwrap();
+    assert_eq!(heath.stop_type, "public_rest_area");
+    assert_eq!(heath.parking, "confirmed");
+    assert!(heath.source.contains("Jason's Law"), "{}", heath.source);
+}
+
+#[test]
 fn test_toll_metadata_is_explicit_and_separate_from_service_plazas() {
     let world = world();
     let route = world
@@ -830,8 +881,13 @@ fn test_every_city_has_coordinates_and_a_known_region() {
             city.name,
             city.lon
         );
+        let floor = if is_stand_in_market(&city.key) && city.locations.iter().all(|l| l.template) {
+            1
+        } else {
+            2
+        };
         assert!(
-            city.locations.len() >= 2,
+            city.locations.len() >= floor,
             "{}: too few freight locations",
             city.name
         );

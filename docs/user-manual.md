@@ -73,8 +73,10 @@ before starting a new drive.
 - **The hours clock answers one question at a time.** Alt+A, Alt+S, and Alt+D
   each ask a single question; C keeps the clock, the deadline, and whichever
   limit comes first.
-- **Traffic lights have a yellow, and every change is spoken.** Ramp-end
-  lights cycle green, yellow, red. Entering on green or yellow is legal.
+- **Traffic lights keep a steady cycle, and every change is spoken.** Each
+  ramp-end light keeps its timing while you approach. Reds and greens last
+  long enough to stop and pull a loaded truck away; entering on green or
+  yellow is legal, and cross traffic clears before green.
 - **The dash warns you about your own speed.** A few miles per hour over the
   posted limit chimes softly and names the limit, faster the further over you
   go. It is a courtesy alert with no setting; it starts more than 7 miles per
@@ -313,7 +315,7 @@ Your terminal is the safe hub between jobs. Public terminal actions include:
 | Garage | Refuel, repair, service tires, and wash company equipment; owner-operators can also buy upgrades, buy tractors, switch owned tractors, add trailer programs, or buy trailers after own authority. |
 | Request pay advance | Draw cash against your next load when you are broke. |
 | Career stats | Review level, reputation, deliveries, career totals, the endorsements you hold, your dispatch trust, your safety record and CDL status, and any balance you owe. Its last row, Citations and violations, opens the list newest first: what each was, why, what it cost, when, and where. Citations from before this build are counted but carry no reason. |
-| Endorsement courses | Pay for refrigerated, heavy-haul, high-value, or tank training early; the carrier sponsors each course for free at its unlock level. |
+| Licenses and training | Book any credential course, from manual transmission training to the LCV certificate. F1 on a row says what the credential unlocks and how you get it: the level the carrier sponsors it at, or the level you can pay for it early. The table under Licenses and training below lists them all. |
 | Truck status | Review truck model, fuel, tank size, damage and its band, tire wear, and road grime. |
 | Time and weather | A screen of lines: the clock, the date and season, the career day, and the weather in the city, with the live reading's age when there is one. |
 | Logbook | Review your Record of Duty Status: what you are doing now, your hours limits, today's totals, and the recent entries. |
@@ -329,6 +331,32 @@ garage can do partial fuel or repair work when you cannot afford a full tank or
 full repair. Owner-operators also start with a dry van trailer program and can
 add reefer, flatbed, or bulk programs. Company drivers do not lease trailers;
 the carrier supplies the right trailer for approved loads.
+
+### Licenses and training
+
+Every license add-on sits in one list at the terminal, in the order the career
+reaches them. Certificates are carrier training: the carrier sponsors each one
+free at its listed level, and you can pay for it yourself one level earlier.
+Endorsements and cards are only ever earned by course, and never before their
+level. A course takes game time at the school, and hazmat and the port card
+then wait on a background check that clears while you drive. F1 on any row
+reads the same facts for that credential.
+
+| Credential | Unlocks | How you get it |
+| --- | --- | --- |
+| Manual transmission training | A manual-spec pay differential on drives made on a manual gearbox. | Course only, 220 dollars from level 1. |
+| Refrigerated certificate | Fresh food and refrigerated goods. | Free from the carrier at level 2, or 900 dollars from level 1. |
+| Flatbed securement certificate | Steel products, and lumber and paper products. | Free from the carrier at level 2, or 450 dollars from level 1. |
+| Heavy-haul certificate | Heavy machinery. | Free from the carrier at level 3, or 1,600 dollars from level 2. |
+| High-value certificate | Electronics and packaged industrial chemicals. | Free from the carrier at level 4, or 1,300 dollars from level 3. |
+| Doubles endorsement | Twin-trailer parcel freight. | Course only, 60 dollars from level 8. |
+| Hazmat endorsement | Placarded hazardous materials, and bulk fuel once the tank vehicle endorsement joins it. | Course only, 185 dollars from level 10, then a background check of about 30 days. |
+| Tank vehicle endorsement | Liquid food products from level 21, and bulk fuel once the hazmat endorsement joins it. | Free from the carrier at level 16, or 2,400 dollars from level 15. |
+| TWIC port card | Port containers. | Course only, 125 dollars from level 18, then a background check of about 20 days. |
+| LCV certificate | Turnpike doubles freight, between the states whose networks allow them. | Course only, 2,000 dollars from level 20. Needs the doubles endorsement and a clean recent record. |
+
+Holding both the tank vehicle and hazmat endorsements is the X combination,
+and bulk fuel opens the day the second one lands.
 
 ## Business status
 
@@ -359,13 +387,17 @@ stays focused on driving.
 
 You never have to take the buy-in. Once it opens, **Business status** offers
 Stay a company driver: the career plan and the business reminders stop
-pointing you at the truck, and the buy-in row stays there for later. Reopen
-the owner-operator plan turns the reminders back on. An owner-operator who
-wants out chooses Go back to company driving on the same screen. It asks
+pointing you at the truck, and the buy-in row stays there for later. Your
+spoken rank titles and goals also switch to the company career ladder
+(senior company and fleet ranks such as Company Fleet Captain and Freight
+Fate Company Driver) instead of owner-operator prep or independent titles.
+Reopen the owner-operator plan turns the reminders back on. An owner-operator
+who wants out chooses Go back to company driving on the same screen. It asks
 twice; the carrier takes every tractor and trailer you own, pays you for them
 (the buy-in tractor for what you paid, anything bought since at its used
-value), and puts you back in a carrier tractor on company wages. Nothing goes
-on your record, and the buy-in stays open if you change your mind again.
+value), and puts you back in a carrier tractor on company wages with company
+rank titles again. Nothing goes on your record, and the buy-in stays open if
+you change your mind again.
 
 At level 21, established owner-operators can set aside an authority prep reserve
 from **Business status** after enough deliveries, reputation, and working
@@ -654,6 +686,7 @@ wherever the pad has one.
 | L | Report which lane you are in, whether you are centered, drifting, or at an edge, and whether the lane beside you is open or blocked. |
 | Left / Right arrow | With lane keeping on partial or off, steer; steer across the line to change lanes. With lane keeping on full, tap to change one lane in that direction -- the signal clicks and the change is announced. |
 | A | Repeat the last route announcement -- the last thing with consequences -- even if other speech came after it. |
+| Alt+C | Repeat the last CB chatter, with the distance as it is now. Once you have passed what the CB called, it says so instead. |
 | U | Report the road ahead that no other key answers: the ramp control coming up, the next imposed speed limit, the next stop, and the next bend that will demand slowing, with its advisory speed. Four short clauses at the most. It does not report police activity -- enforcement reaches you on the CB. |
 | F1 | Show the driving control list and current objective. |
 | Comma | Review earlier speech. The full review keys are listed under "Reviewing what the game said". |
@@ -805,8 +838,8 @@ The road warns you about the hills that matter. Any climb or descent of three
 percent or more that runs at least three quarters of a mile is called out
 before it starts, with the steepness, the length, and -- going down -- what to
 do about it before it begins. Short dips stay quiet so the real hills stand
-out. Terse speech skips these; G answers on demand either way, and G also
-names the next grade ahead.
+out. Quiet and Urgent only skip these; G answers on demand either way, and G
+also names the next grade ahead.
 
 Cruise reads the same road when predictive cruise is on. It banks a little
 speed before a climb so the truck carries it up the hill, gives up the last
@@ -849,8 +882,8 @@ level you choose.
 
 ## Taking curves
 
-With lane keeping on partial or off, the road itself is your steering guide,
-and the whole approach comes down to five habits.
+The engine is your steering guide, and the whole approach comes down to five
+habits.
 
 ### Carry your speed to the bend
 
@@ -862,8 +895,7 @@ nothing -- no push, no steering, and time lost.
 
 ### Know the vocabulary
 
-A bright tone on one side is a curve call, or a
-curve beginning, on that side. Hard double-thuds under the whole truck are
+Hard double-thuds under the whole truck are
 the warning bars real road agencies only cut ahead of a curve that has killed
 people: a hairpin is a quarter mile out, so brake hard now, because 25 means
 25 with fifteen tons pushing you. A thump-roll from one side is your tires
@@ -871,14 +903,27 @@ crossing a lane line's markers.
 
 ### Steer toward the lean
 
-In a bend the road sound leans toward where the
-wheel should go: into the bend as it arrives, through it, and back toward
-lane center when you drift. Hold the arrow that way and keep the sound
-centered. This is the one cue you follow rather than avoid -- every other
-panned cue comes from the side you are drifting toward and you steer away
-from it. Small, held corrections. Sawing at the wheel bounces you across the
-lane line, and you will hear the marker thump each time; that rhythm is the
-sound of overcorrecting.
+The engine leans toward the way to
+steer: into a bend as it arrives and through it, and into a street corner as
+you reach it. Hold the arrow that way and the engine comes back to the middle
+as the truck comes round. This is the one cue you follow rather than avoid --
+every other panned cue comes from the side you are drifting toward and you
+steer away from it. Small, held corrections. Sawing at the wheel bounces you
+across the lane line, and you will hear the marker thump each time; that
+rhythm is the sound of overcorrecting.
+
+With lane keeping on partial or off and lane-departure warning on, the engine
+also leans back toward lane center when you drift, so the same habit covers
+the straight road between the bends.
+
+The road noise underneath answers a different question: it sits where you sit
+in your lane. A road bed off to the right means the truck is riding right of
+center, not that you should steer right.
+
+Two settings change this. Steering guide flips which way to steer when the
+engine leans, for drivers who learned the other habit elsewhere. Lane guide
+sound moves the lean off the engine onto a quiet note of its own, and the
+engine stays centered.
 
 ### Listen to the edge
 
@@ -1033,6 +1078,24 @@ the lane is enough; the scale's own exit ramp is the sanctioned way in. A
 visibly
 unsafe truck can also draw a safety stop when you pass active enforcement, so
 repair severe damage before pushing through patrol corridors.
+
+Inspections are real. A clean record is waved through an open scale nearly
+every time; a record carrying citations or out-of-service history is
+pulled into the lane, and the lane is a Level 1 inspection: driver,
+paperwork, a walk-around and a look under the truck, about 45 minutes on
+duty. Worn tires, brakes near their limit, body damage and whatever the
+last driver left on a hooked trailer get written up, with a fine and a
+citation on your record. A critical item, a bald tire, brakes out of
+adjustment, damage past the safe limit, parks the truck until a roadside
+mechanic fixes it. A clean Level 1 earns an inspection decal that gets you
+waved past open scales for three months unless your record is targeted.
+A trooper can also pull a legal driver in for a routine Level 3, licence
+and paperwork only, about 15 minutes; a clean one costs nothing else. The
+odds ride your record, and triple during Roadcheck week in May, which the
+CB announces. Walk around the truck first: at the terminal and at any
+stop, the Walk around the truck row spends 15 minutes on duty and reads
+out exactly what an inspector would find, so nothing on the report is a
+surprise.
 In low-speed local roads such as facility access, construction, or heavy
 traffic, automatic speed control uses the speed keeper instead. It switches
 back to adaptive cruise when the open road begins. If you start it during the
@@ -1103,8 +1166,10 @@ you while slowing down is still free.
 
 Ramp ends are real intersections. Most ramps end at a traffic light or a stop
 sign, called out on the way down. Lights cycle green, yellow, red, and speak
-every change. Enter on green or yellow; red means brake to a full stop at the
-bar and hold the brakes until it says green. Rolling a red draws horns;
+every change. Each light keeps a stable, slower cycle instead of changing its
+timing while you wait, and cross traffic clears before green. Enter on green
+or yellow; red means brake to a full stop at the bar and hold the brakes until
+it says green. Rolling a red draws horns;
 blowing one at speed means cross traffic finds your trailer. The stop bar has
 a parking-sensor tick that speeds up as you close on it, so you stop at the
 bar instead of a quarter mile short and creeping blind.
@@ -1112,8 +1177,10 @@ bar instead of a quarter mile short and creeping blind.
 Once the stop is honored and the way is clear, who pulls ahead depends on
 Facility stopping assistance. With it off, the cab says "Clear; pull ahead to
 the entrance" (or "Green light. Pull ahead to the entrance") and the last
-stretch is yours. With it on, the cab says "Facility stopping assistance is
-taking you to the entrance" and the truck moves off on its own: where the ramp
+stretch is yours; where city streets follow the ramp, it says "onto the
+streets" instead. With it on, the cab says "Facility stopping assistance is
+taking you to the entrance", or "onto the streets", and the truck moves off
+on its own: where the ramp
 ends at the gate, the assist drives it there and stops; where the facility sits
 at the end of city streets, the assist rolls the truck to the streets and the
 speed keeper takes them, holding the posted number and easing for each corner,
@@ -1170,6 +1237,7 @@ Stop actions depend on that stop's data. A stop may offer:
 - Repairs and rig care.
 - Roadside assistance or towing.
 - Inspection check-in.
+- Walk around the truck.
 - Save point.
 
 Meals, drinks, and showers are purchases with spoken effects and clocks
@@ -1433,6 +1501,7 @@ Use these keys when you need status without leaving the road:
 | Alt+D | What ends this shift, both clocks, plus the next legal stop. |
 | R | Route progress and GPS context. |
 | V | Weather and forecast. |
+| Alt+C | The last CB chatter again, with the distance as it is now. |
 | M | Toggle the in-cab radio. |
 | Page Down / Page Up | Tune the radio to the next or previous station. |
 | ; / ' | The same, on keyboards where the Page keys are awkward: semicolon tunes to the previous station and apostrophe to the next. |
@@ -1440,6 +1509,7 @@ Use these keys when you need status without leaving the road:
 | Shift with any tune key | Change the in-cab radio volume in 10 percent steps: up on Page Up or Shift+semicolon, down on Page Down or Shift+apostrophe. Works whether the radio is on or off, and speaks the new level. |
 | O | Save or unsave the current station as a favorite. Favorites become their own early dial category. |
 | Y | Speak radio station, source, signal or fallback state, volume, and streamer-safe status. |
+| Shift+Y | Speak what the radio is playing right now. |
 | Tab | Grouped driving status screens. |
 
 Tab opens the Driving status menu. It has four review screens and a Driver apps menu:
@@ -1546,9 +1616,9 @@ Three driving assistance presets are available: Realistic, Balanced, and All ass
 #### Individual assists
 
 The individual controls are Automatic emergency braking, Lane-departure warning,
-Stop-and-go assistance, Lane centering assistance, Descent speed control, Exit
-speed assistance, Destination approach assistance, Planned rest-stop stopping
-assistance, Curve speed assistance, and Route-transition assistance.
+Stop-and-go assistance, Descent speed control, Exit speed assistance, Destination
+approach assistance, Planned rest-stop stopping assistance, Curve speed
+assistance, and Route-transition assistance.
 
 Descent speed control has four levels: Off, Realistic, Balanced, and Interactive.
 Interactive is a descent-control level, not a preset.
@@ -1566,21 +1636,21 @@ Custom like any other preset row.
 The separate default-off planned-stop control stops at a sleep stop only after
 T plans it and X signals for it.
 
-#### Curve speed assistance
+#### Curve assistance
 
-Curve speed assistance slows the truck for mapped curves before you reach them, whatever is holding the speed: adaptive cruise, the speed keeper, or your own pedals. It starts at the curve call. If you are over the bend's advisory when the call comes, the assist takes the service brakes on the approach so the truck is at the advisory by the start of the bend, holds it through the bend (the tightest number when the call names two bends together), and lets go on the far side.
+Curve assistance slows the truck for mapped curves before you reach them, whatever is holding the speed: adaptive cruise, the speed keeper, or your own pedals. It starts at the curve call. If you are over the bend's advisory when the call comes, the assist takes the service brakes on the approach so the truck is at the advisory by the start of the bend, holds it through the bend (the tightest number when the call names two bends together), and lets go on the far side.
 
-With curve callouts on it says so in the same breath as the call: "Sharp left, half a mile. Advise 35 miles per hour. Curve speed assistance slowing." Under adaptive cruise the call names cruise instead ("Adaptive cruise easing to 35 miles per hour for the bend"), and a bend too tight for cruise to hold pauses cruise while the assist slows the truck; cruise resumes once you are through and back up to speed.
+With curve callouts on it says so in the same breath as the call: "Sharp left, half a mile. Advise 35 miles per hour. Curve assistance slowing." Under adaptive cruise the call names cruise instead ("Adaptive cruise easing to 35 miles per hour for the bend"), and a bend too tight for cruise to hold pauses cruise while the assist slows the truck; cruise resumes once you are through and back up to speed.
 
-Your own brake cancels it for that bend, and it says "Curve speed assistance released." With curve callouts off nothing is said and the slowing is what you hear.
+Your own brake cancels it for that bend, and it says "Curve assistance released." With curve callouts off nothing is said and the slowing is what you hear.
 
 Inside a bend you entered too fast, it brakes and it reaches for the engine brake only when the corner needs about 10 miles per hour or more taken off, or the road under you is a real downgrade. This limits engine braking to bends and descents that need it.
 
 It aims at the advisory itself: a load starts shifting a little over fifteen percent above a bend's posted advisory.
 
-#### Route transitions and lane centering
+#### Route transitions
 
-Route-transition assistance helps manage speed and lane workload at confirmed route transitions. Lane centering assistance is reserved for steering help the truck does not do yet: the row is there, and the presets set it, but leaving it on or off makes no difference to how the truck steers today.
+Route-transition assistance helps manage speed and lane workload at confirmed route transitions. Lane keeping is the row that decides how much of the lane work is yours; there is no separate lane-centering assist.
 
 Assists never silently choose a route or optional exit, enter a yard, dock, or complete a delivery: you still steer, confirm route choices and exits, initiate lane changes, leave long stops, and handle every precision task.
 
@@ -1592,7 +1662,7 @@ Predictive cruise sits outside the presets. It lets cruise read the road about a
 
 Lane keeping controls how much steering you do. Full keeps the truck centered with no lane work, turns Left and Right into tap lane changes, and takes your exits for you, including the destination exit, with no signal and no exit lane. Partial drifts gently with generous steering help. Off drifts like a real wheel, and every exit needs your turn signal set and the exit lane held.
 
-On partial or off, a short beep comes from the side you drift toward, so steer away from the beep; a centered-lane chime confirms you are centered again, and the rumble strip is panned to the side you have drifted toward near the lane edge.
+On partial or off, with lane-departure warning on, the engine leans back toward lane center when you drift, and you steer the way it leans; a centered-lane chime confirms you are centered again, and the rumble strip is panned to the side you have drifted toward near the lane edge. The road noise underneath leans to where you sit in your lane whichever way you are drifting, so it tells you position, not direction. On full the engine still leans for the bends and corners ahead, and the road noise stays centered because the truck is.
 
 Lane keeping is a preset field: Realistic sets it to off, Balanced to partial, and All assists to full, so the preset row can never describe less automation than you actually have.
 
@@ -1675,15 +1745,18 @@ quiets it, and settling back under the limit disarms it.
 | Engine sounds volume | Engine start, shutdown, and running engine sounds. |
 | Engine voice | Real plays the engine recorded from a working truck cab, following the RPM through its range. Classic keeps the original engine sound. Changes apply immediately, even while driving. |
 | Music volume | Menu and facility background music volume. |
+| Music source | Original, the default, plays the licensed menu and Roadhouse music. Synthesized has menus and the Roadhouse play music the game composes itself, with no voiced breaks, plus the original three tracks from Freight Fate 1.5. Changes take effect at once, even mid-drive. See below for what Synthesized mode does to the radio dial. |
+| Music seed | Only shown with Music source set to Synthesized. Rolls a new seed and reads it aloud, so you can share a favorite with someone else. Every synthesized piece changes, and the current music restarts at once. |
 | In-cab radio volume | Driving radio music volume. It defaults lower than speech and safety cues. |
-| Radio streamer-safe mode | Off by default: the full dial plays, including real public streams and personal playlists. Turn it on while streaming or recording to keep the radio on built-in safe stations only. |
+| Radio streamer-safe mode | Off by default: the full dial plays, including real public streams and personal playlists. Turn it on while streaming or recording to keep the radio on built-in safe stations only. With Music source set to Synthesized, this locks the radio to the synthesized Roadhouse alone; every other station control does nothing, though the radio key, volume, and now playing still work. |
+| Shuffle personal playlists | Off by default: each of your playlists plays top to bottom and resumes where it left off. On plays it in a random order, every track once before any repeats, with a new order each time through. |
 | Menu and UI sounds volume | Menu movement, selection, warning, and cash sounds. |
 
 ### Speech settings
 
 | Setting | Purpose |
 | --- | --- |
-| Driving speech | How much the road tells you, on a ladder of three settings from talkative to quiet. Standard speaks every confirmation and status readout in words, tells you a driving tip once per leg of the route, and repeats a status readout only when it changes rather than on every re-check. Quiet cuts confirmations and status readouts to short sounds instead of sentences, keeping the safety calls, what things cost, and route instructions as words. Urgent only drops the tips entirely, and turns the heads-up lines -- a bend coming, a town coming up, how far the next stretch runs -- into a short sound as well, so what is left in words is the safety calls, what things cost, and the directions you cannot take back: the turn itself, the exit, the stop you are pulling into. Billboards, place names, and landmarks are not part of this ladder and keep their own switches below, so a quiet cab can still drive through a talkative countryside. |
+| Driving speech | Standard gives full confirmations, status updates, and a driving tip once per route leg. Quiet keeps short spoken updates, including lane openings, assist confirmations, costs, and navigation. Urgent only speaks safety warnings and directions requiring action; routine costs, status, and tips are silent, while road heads-ups and confirmations use sounds. Events suppressed by the speech setting stay out of message review. Readout keys always answer on demand. Billboards, place names, and landmarks keep their own switches below. |
 | Roadside chatter | The ambient color spoken between navigation cues: entering parks and forests, named river crossings, mountain passes, museums and attractions, and parody billboards. One master switch turns it all on or off, and each kind has its own switch below it. Safety and navigation speech is never affected, and town names have their own Place callouts setting. |
 | Place callouts | How much the co-driver says about places along the road. Sparse, the default, speaks only the town names that explain a speed limit change, like Entering Strawberry right before its 35. All adds the towns the route passes through or skirts. Off silences place names entirely. Speed limit announcements themselves are never affected, and no tier ever reads out every place on the map. |
 | Menu position announcements | When on, menus say the position, like 3 of 10, after each option. Turn off to hear only the option. |
@@ -1717,7 +1790,7 @@ your orinks.net account, cloud backup, and every sharing choice in one place:
 | Automatic cloud retention | Your account keeps up to ten cloud careers. When a new active career replaces the least recently played cloud career, Freight Fate names the removed cloud backup and confirms that its local career was not deleted. |
 | Share notable deliveries to Mastodon | When on, finishing a delivery that earns an achievement, a level, or a perfect streak posts a short public summary to your own Mastodon account with the FreightFateRuns hashtag. That tag is only used by these automatic posts; the FreightFate tag is where players talk about the game, so you can mute one without losing the other. Routine deliveries are never posted. Off until you link a Mastodon account. |
 | Link a Mastodon account | Opens a page on orinks.net where you authorize your own Mastodon server, using the same orinks.net sign-in as driver setup. Unlinking happens on the same page. |
-| Discord presence | Show broad activity in Discord (menu, terminal, driving, resting, delivering) with high-level route and cargo. Only general game status is shared, never your saves or personal details. On by default; no effect if Discord is closed. Works without a driver profile. |
+| Discord presence | Show broad activity in Discord (menu, terminal, driving, resting, delivering) with high-level route and cargo. Only general game status is shared, never your saves or personal details. If you pause or leave the game sitting for half an hour, the presence comes down until you play again, so it never claims you are mid-run when you have stepped away. On by default; no effect if Discord is closed. Works without a driver profile. |
 
 ### Problem reports
 
@@ -1732,10 +1805,17 @@ flows, driving alerts, route information, and settlement summaries are available
 through the game's audio and text output. The window mirrors the same
 core menu and status information as plain text.
 
-Freight Fate can use NVDA, JAWS, SAPI, VoiceOver, Speech Dispatcher, and other
-available voices. It chooses a voice that is usable on the current machine. If
-the preferred screen reader is not running, the game can fall back to another
-available voice.
+Freight Fate speaks through whichever screen reader you already run: NVDA,
+JAWS, ZDSR, PC-Talker, BoYing, SenseReader, System Access, ZoomText, Narrator,
+VoiceOver, Orca, or Speech Dispatcher. Where none is running it uses a software
+voice instead -- SAPI or the Windows voices on Windows, the system voice
+elsewhere. There is no list of approved readers: the game asks each one in turn
+whether it can speak right now and takes the first that says yes, so a reader
+you start in the middle of a drive is picked up on its own.
+
+To see what your own computer offers, start the game with
+`--list-speech-backends`. It names every reader and voice it found, says which
+of them can speak, and says which one it would use.
 
 Driving events can use a separate software voice when available, so road alerts
 do not fight with a screen reader's own speech.
@@ -1778,8 +1858,17 @@ country, classic rock, and blues and soul formats with their own song pools --
 and behave like real FM signals: full volume near the market, thinner audio and
 static crackle at the fringe of the range, and a fade to static as you drive
 past the edge. When a station drops out of range the radio announces it and
-falls back to the Roadhouse, which is receivable everywhere along with the
-Night Line and the satellite fallback.
+tunes to the strongest local station the truck can still hear clearly, and
+names it. Only when nothing else is on the air does it fall back to the
+Roadhouse, which is receivable everywhere along with the Night Line and the
+satellite fallback.
+
+With Settings, Audio, Music source set to Synthesized, the Roadhouse plays
+music the game composes itself instead, with no host breaks, station IDs,
+or jingles. Freight Fate's own fictional regional stations leave the dial
+entirely; the terrestrial, web, and personal-playlist stations are
+unaffected. With Music source Original, the dial plays exactly as described
+above.
 
 Real public stream stations, including AFN choices, play out of the box; turning
 streamer-safe mode on hides them, for anyone streaming or recording their
@@ -1792,7 +1881,8 @@ into the Playlists folder next to your saves (the game creates it on first run)
 and each file becomes a station under Your playlists, named from the playlist.
 The entries can point at files anywhere your computer can read, including
 network drives, and the usual formats all play: mp3, ogg, opus, flac, aac, and
-wma. Entries can also be internet stations: a playlist exported from an
+wma, plus tracker module files such as .it, .xm, .s3m, .mod, and .mo3, the
+kind OpenMPT and similar trackers save. Entries can also be internet stations: a playlist exported from an
 internet radio app is nothing but stream addresses, and those play too, in the
 order the playlist lists them alongside any music files. The station remembers
 its place while you tune away during a drive, and an entry that will not open
@@ -1804,6 +1894,9 @@ fix mid-drive appears on the dial without starting a new run. Personal
 playlists ride the same streamer-safe gate as real streams -- turning the mode
 on hides them, because the game cannot vouch for what your files are licensed
 for. Ctrl with any tune key jumps straight to the Your playlists category.
+A playlist of your own music files plays in the file's order unless Settings,
+Audio, Shuffle personal playlists is on, which plays every track once in a
+random order before any repeats.
 
 The dial is grouped into categories -- route playlist, Freight Fate stations,
 your playlists, favorites, terrestrial, AFN, satellite, international,

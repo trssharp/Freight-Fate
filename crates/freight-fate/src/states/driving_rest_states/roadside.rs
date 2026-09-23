@@ -8,6 +8,7 @@ use ff_core::models::enforcement;
 use ff_core::pyfmt::{fmt_f, fmt_grouped};
 use ff_core::pyrandom::PyRandom;
 use ff_core::sim::hos;
+use ff_core::sim::roadside_inspection::InspectionLevel;
 
 use crate::app::{GameContext, Say};
 use crate::discord_presence::PresenceState;
@@ -222,7 +223,7 @@ impl TrafficStopState {
         let hit = hos::HOS_REPUTATION_HIT * if self.signaled { 0.7 } else { 1.0 };
         {
             let p = profile_mut_of(ctx);
-            p.money -= fine;
+            p.spend(fine);
             p.career.reputation = (rep - hit).max(0.0);
         }
         ctx.audio.play("ui/error");
@@ -318,6 +319,9 @@ pub struct EnforcementStopState {
     /// they do the inspection right there, on the shoulder, the same
     /// `INSPECTION_MIN` the check-in lane would have cost you.
     pub inspection_on_stop: bool,
+    /// A routine roadside inspection at this level: the report, not the
+    /// caller, decides what it costs, and a clean one costs nothing.
+    pub inspection_level: Option<InspectionLevel>,
     outcome_text: String,
     /// Whether the stop has been told once already. See `announce_entry`: the
     /// fine is charged here, in `resolve`, exactly once, and a later telling
@@ -357,6 +361,7 @@ impl EnforcementStopState {
             out_of_service: params.out_of_service,
             warned: params.warned,
             inspection_on_stop: params.inspection_on_stop,
+            inspection_level: params.inspection_level,
             outcome_text: String::new(),
             stop_announced: false,
             presence_detail,
@@ -370,11 +375,23 @@ impl EnforcementStopState {
     }
 
     fn resolve(&mut self, ctx: &mut GameContext, d: &mut DrivingState) {
+        if let Some(level) = self.inspection_level {
+            // The stop is the inspection: what it costs comes off the
+            // report, and a clean one costs the minutes and nothing else.
+            let report = d.inspection_report(ctx, level);
+            self.fine = report.total_fine();
+            self.outcome_text = d.settle_inspection(ctx, &report);
+            if self.licence_pulled(ctx) {
+                let tail = self.suspended_exit_text(ctx, d);
+                self.outcome_text.push_str(&tail);
+            }
+            return;
+        }
         d.ticket_fines_paid += self.fine;
         let hit = self.reputation_hit * if self.signaled { 0.8 } else { 1.0 };
         {
             let p = profile_mut_of(ctx);
-            p.money -= self.fine;
+            p.spend(self.fine);
             p.career.reputation = (p.career.reputation - hit).max(0.0);
         }
         ctx.audio.play("ui/error");
@@ -575,7 +592,7 @@ impl FelonyStopState {
         d.ticket_fines_paid += fine;
         {
             let p = profile_mut_of(ctx);
-            p.money -= fine;
+            p.spend(fine);
             p.career.reputation = (p.career.reputation - hos::HOS_REPUTATION_HIT * 3.0).max(0.0);
         }
         // The part that used to go nowhere: fleeing a stop in a commercial

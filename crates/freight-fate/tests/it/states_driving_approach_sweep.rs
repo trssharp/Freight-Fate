@@ -34,8 +34,7 @@ use freight_fate::playtest::harness::{PlaytestHarness, RouteSetup};
 use freight_fate::states::base::Key;
 use freight_fate::states::driving::DrivingState;
 use freight_fate::states::driving_core::{
-    DOCKING_MAX_MPH, FACILITY_LANE_ROLL_MPH, RAMP_ACCESS_MI, RAMP_LIGHT_GREEN_S, RAMP_LIGHT_RED_S,
-    RED_STOP_MPH,
+    DOCKING_MAX_MPH, FACILITY_LANE_ROLL_MPH, RAMP_ACCESS_MI, RED_STOP_MPH,
 };
 use freight_fate::states::driving_menu_states::FacilityArrivalState;
 
@@ -160,6 +159,17 @@ pub struct Arrival {
     pub min_creep_gear: Option<i32>,
     /// A dead engine at the gate would make a successful position misleading.
     pub stalled: bool,
+    /// Lowest service-brake pressure seen anywhere on the approach, psi.
+    pub min_air_psi: f64,
+    /// This truck's own low-air warning pressure, so a case can ask whether
+    /// the approach ever got near the cliff without naming a number of its
+    /// own.
+    pub air_low_warning_psi: f64,
+    /// How many times the pedal ROSE on the way in -- the air system charges
+    /// a whole application for each one, so this is what the approach spent.
+    /// Diagnostic, not a bar: what a chain costs depends on how many corners
+    /// it turns.
+    pub brake_applications: usize,
     /// Every line the driver heard.
     pub heard: Vec<String>,
 }
@@ -172,11 +182,12 @@ impl Arrival {
     /// What went wrong, for a failure message that names the place and the
     /// numbers rather than just "assertion failed".
     pub fn report(&self, destination: &Destination) -> String {
-        let tail: Vec<&String> = self.heard.iter().rev().take(6).rev().collect();
+        let tail: Vec<&String> = self.heard.iter().rev().take(60).rev().collect();
         format!(
             "{} ({}, {}, {}, truck={} torque={:.0} Nm gross={:.0} kg brake={:.2} m/s2): ready={} \
              assist_spoke={} on_chain={} speed={:.2} mph, {:.0} ft short of the gate, creep hold \
-             {:.3}, creep speed {:?}, creep gear {:?}, stalled={}\nlast heard: {:#?}",
+             {:.3}, creep speed {:?}, creep gear {:?}, stalled={}, air floor {:.1} psi over {} \
+             brake applications\nlast heard: {:#?}",
             destination.location,
             destination.city,
             destination.state,
@@ -194,6 +205,8 @@ impl Arrival {
             self.min_creep_speed_mph,
             self.min_creep_gear,
             self.stalled,
+            self.min_air_psi,
+            self.brake_applications,
             tail,
         )
     }
@@ -208,14 +221,26 @@ impl Arrival {
 /// is the posted number, eased to the advised speed for a corner in play --
 /// a driver who hears "turn right, ten miles an hour" and holds twenty-nine
 /// through it is testing the missed-turn loop-back, not the assist.
+///
+/// "In play" is the game's own word for it, and `turn_cue_in_play` is the
+/// game's own answer: an unresolved corner within its commit tail, which is
+/// the corner the truck is still taking. This used to narrow that to corners
+/// whose milepost was still ahead, so the moment the front wheels crossed the
+/// corner -- with the "turn right now, advise nine" still being spoken, and
+/// the judgement of the corner still a grace period away -- the driver here
+/// went back to the posted number and floored it. Measured on the Abilene
+/// chain: 8.6 mph to 19.8 in the last seven hundred feet, the corner then
+/// failed on the speed the driver had just put on, and the loop-back set the
+/// truck down on the gate still doing 19.8. That is the loop-back being
+/// tested, which this driver exists not to do.
 pub fn driver_target_mph(d: &mut DrivingState) -> f64 {
     if d.ramp_mi.is_some() {
         return d.armed_ramp_mph(None);
     }
     let posted = d.trip.speed_limit_at(d.trip.position_mi).0;
     match d.turn_cue_in_play() {
-        Some(cue) if cue.at_mi >= d.trip.position_mi => posted.min(d.turn_speed_mph(&cue)),
-        _ => posted,
+        Some(cue) => posted.min(d.turn_speed_mph(&cue)),
+        None => posted,
     }
 }
 
@@ -258,6 +283,8 @@ fn regrade_chain(d: &mut DrivingState, grade_pct: f64) {
                 &leg.local_cue,
                 leg.local_speed_mph,
             )
+            // Same streets, same cues, same corners -- only the hill is new.
+            .with_turn_deg(leg.local_turn_deg)
             .with_detail(detail)
         })
         .collect();
@@ -289,6 +316,13 @@ fn arrive_with(
     harness.app.ctx.settings.destination_approach_assist = true;
     harness.app.ctx.settings.speed_keeper = true;
     harness.app.ctx.settings.automatic_transmission = true;
+    // Lane keeping holds the WHEEL; this sweep is about the assist that holds
+    // the PEDALS. They were the same question while steering was a nudge on
+    // the truck's position, and stopped being one when the lane model grew a
+    // heading (2026-09-18): a truck nobody steers now genuinely leaves the
+    // road, which is the point of that change and not this file's subject.
+    // Every run here would otherwise measure whether a ghost can steer.
+    harness.app.ctx.settings.lane_keeping = "full".to_string();
     let mut route_setup = RouteSetup::seeded(4242)
         .named("Approach Sweep")
         .destination_location(&destination.location);
@@ -378,9 +412,22 @@ fn arrive_with(
     let mut max_creep_hold_throttle = 0.0f64;
     let mut min_creep_speed_mph: Option<f64> = None;
     let mut min_creep_gear: Option<i32> = None;
-    // Enough for a mile of city streets at a crawl, and no more: a truck that
-    // has not arrived by then is not going to.
-    for _ in 0..(60 * 600) {
+    let mut min_air_psi = f64::INFINITY;
+    let mut air_low_warning_psi = 0.0f64;
+    let mut brake_applications = 0usize;
+    let mut last_brake = 0.0f64;
+    // Ten minutes for each mile of city streets at a crawl, and no more: a
+    // truck that has not arrived by then is not going to. Per mile, because
+    // the streets are as long as the facility is far: this was a flat ten
+    // minutes while no sampled chain ran much past a mile, and the 2026-09-17
+    // sweep gave Aurora Company Yard its real 3.9 miles of them.
+    let chain_mi = world
+        .facility_source_approach(&destination.city, &destination.location)
+        .ok()
+        .flatten()
+        .map_or(1.0, |approach| approach.total_miles.max(1.0));
+    let budget_frames = (60.0 * 600.0 * chain_mi).ceil() as usize;
+    for _ in 0..budget_frames {
         if !harness.has_drive() {
             // The automatic pull-in first replaces the drive with a timed
             // spoken transition. Finish it and require the real dock menu;
@@ -403,6 +450,23 @@ fn arrive_with(
             }
         }
         on_chain |= now_on_chain;
+        // What the approach cost the tanks, every frame of it. An arrival that
+        // is measured only on where the truck ENDED cannot tell "stopped at
+        // the gate" from "stopped wherever the spring brakes caught it", and
+        // that is exactly the shape the 2026-09-18 defect had.
+        let (air_psi, pedal, warning_psi) = harness.read_drive(|d| {
+            (
+                d.truck().air_pressure_psi(),
+                d.truck().brake.clamp(0.0, 1.0),
+                d.truck().specs.air_low_warning_psi,
+            )
+        });
+        min_air_psi = min_air_psi.min(air_psi);
+        air_low_warning_psi = warning_psi;
+        if pedal > last_brake + 1e-9 {
+            brake_applications += 1;
+        }
+        last_brake = pedal;
         let (remaining, speed, hold_throttle, gear) = harness.read_drive(|d| {
             (
                 d.ramp_mi.unwrap_or_else(|| d.trip.remaining_miles()),
@@ -511,6 +575,9 @@ fn arrive_with(
         min_creep_speed_mph,
         min_creep_gear,
         stalled,
+        min_air_psi,
+        air_low_warning_psi,
+        brake_applications,
         heard,
     }
 }
@@ -718,7 +785,7 @@ fn test_great_falls_signal_stop_does_not_become_a_two_mph_destination_crawl() {
         d.ramp_terminal_done = false;
         d.ramp_light_announced = true;
         d.ramp_light_last_phase = "green".to_string();
-        d.ramp_light_offset_s = RAMP_LIGHT_RED_S + RAMP_LIGHT_GREEN_S - 2.0;
+        d.ramp_light_offset_s = d.ramp_light_red_s() + d.ramp_light_green_s() - 2.0;
         d.ramp_light_timer = 0.0;
         d.ramp_waiting_at_light = false;
         d.ramp_assist_said = false;
@@ -758,7 +825,7 @@ fn test_great_falls_signal_stop_does_not_become_a_two_mph_destination_crawl() {
                 d.ramp_light_offset_s = 1.0;
                 d.ramp_light_timer = 0.0;
             } else if waiting {
-                d.ramp_light_offset_s = RAMP_LIGHT_RED_S;
+                d.ramp_light_offset_s = d.ramp_light_red_s();
                 d.ramp_light_timer = 0.0;
                 d.ramp_light_last_phase = "red".to_string();
             }
@@ -812,8 +879,7 @@ fn test_great_falls_signal_stop_does_not_become_a_two_mph_destination_crawl() {
     assert!(
         !heard
             .iter()
-            .any(|line| line.contains("Pull ahead to the entrance")
-                || line.contains("taking the pedals")),
+            .any(|line| line.contains("Pull ahead ") || line.contains("taking the pedals")),
         "{}",
         harness.transcript_text()
     );
@@ -887,6 +953,10 @@ fn arrive_from_the_sign(
     harness.app.ctx.settings.route_transition_assist = true;
     harness.app.ctx.settings.speed_keeper = true;
     harness.app.ctx.settings.automatic_transmission = true;
+    // "Hands off" here means no PEDAL and no wheel input from the test; lane
+    // keeping is what holds the wheel, and since the lane model grew a heading
+    // it has to be on for a truck nobody steers to stay on the road.
+    harness.app.ctx.settings.lane_keeping = "full".to_string();
     let mut route_setup = RouteSetup::seeded(4242)
         .named("Sign Release")
         .destination_location(&destination.location);
@@ -1033,7 +1103,7 @@ fn test_the_assist_drives_from_the_clear_sign_to_the_entrance_hold_hands_off() {
     println!("{}", release.report(destination));
     assert!(release.stopped_at_sign, "{}", release.report(destination));
     assert!(
-        release.said("Stopped at the sign. Clear. Facility stopping assistance is taking you to the entrance."),
+        release.said("Stopped at the sign. Clear. Facility stopping assistance is taking you onto the streets."),
         "{}",
         release.report(destination)
     );
@@ -1113,7 +1183,7 @@ fn test_with_the_assist_off_the_clear_sign_still_hands_the_last_stretch_to_the_d
     let release = arrive_from_the_sign(destination, false, false);
     assert!(release.stopped_at_sign, "{}", release.report(destination));
     assert!(
-        release.said("Stopped at the sign. Clear; pull ahead to the entrance."),
+        release.said("Stopped at the sign. Clear; pull ahead onto the streets."),
         "{}",
         release.report(destination)
     );
@@ -1140,7 +1210,11 @@ fn test_the_drivers_brake_cancels_the_automatic_pull_ahead() {
         println!("{}", release.report(destination));
         assert!(release.moved_off_alone, "{}", release.report(destination));
         assert!(
-            release.said("Facility stopping assistance released; pull ahead to the entrance."),
+            release.said(if destination.chain {
+                "Facility stopping assistance released; pull ahead onto the streets."
+            } else {
+                "Facility stopping assistance released; pull ahead to the entrance."
+            }),
             "{}",
             release.report(destination)
         );

@@ -9,8 +9,9 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ff_core::data::world_models::HomeTerminal;
-use ff_core::models::business::SettlementTerms;
+use ff_core::models::business::{display_rank_for, uses_company_career_ranks_for, SettlementTerms};
 use ff_core::models::career::{standing_xp_rate, xp_rate_settlement_clause};
+use ff_core::models::career_ladder::relabel_level_up_announcements;
 use ff_core::models::cargo_condition::{cargo_condition_text, settle_cargo, CargoSettlement};
 use ff_core::models::carrier_fleet::{
     assigned_truck_key, equipment_held_back, fleet_tier_for_level, fleet_upgrade_announcement,
@@ -130,7 +131,7 @@ impl ArrivalState {
             p.current_city = job.destination.clone();
             let driver_charges = p.fines_owed;
             if driver_charges != 0.0 {
-                p.money -= driver_charges;
+                p.spend(driver_charges);
                 p.fines_owed = 0.0;
                 self.summary_parts.push(format!(
                     "Fines carried over from earlier loads: {} dollars, settled.",
@@ -144,8 +145,8 @@ impl ArrivalState {
             let on_time = hours <= job.deadline_game_h;
             let (previous_level, money) = {
                 let p = profile_mut_of(ctx);
-                p.money += job.pay;
-                (p.career.level(), p.money)
+                p.earn(job.pay);
+                (p.career.level(), p.money())
             };
             let standing = enforcement::standing_band(profile_of(ctx));
             announcements = profile_mut_of(ctx).career.record_delivery(
@@ -156,6 +157,15 @@ impl ArrivalState {
                 1.0,
                 standing_xp_rate(standing),
             );
+            {
+                let p = profile_of(ctx);
+                relabel_level_up_announcements(
+                    &mut announcements,
+                    previous_level,
+                    p.career.level(),
+                    uses_company_career_ranks_for(p),
+                );
+            }
             let promotion = self.handle_fleet_promotion(ctx, previous_level, &mut announcements);
             announcements.extend(promotion);
             format!(
@@ -525,7 +535,7 @@ impl ArrivalState {
         {
             let p = profile_mut_of(ctx);
             p.fines_owed = round_py_n(p.fines_owed + (carried_balance - collected).max(0.0), 2);
-            p.money += net_pay;
+            p.earn(net_pay);
             p.current_city = job.destination.clone();
         }
         let lane = lane_key(ctx.world, &job);
@@ -553,6 +563,15 @@ impl ArrivalState {
             xp_class_multiplier(job.cargo),
             standing_xp_rate(standing),
         );
+        {
+            let p = profile_of(ctx);
+            relabel_level_up_announcements(
+                &mut announcements,
+                previous_level,
+                p.career.level(),
+                uses_company_career_ranks_for(p),
+            );
+        }
         let promotion = self.handle_fleet_promotion(ctx, previous_level, &mut announcements);
         announcements.extend(promotion);
         let mut xp_bonus_notes: Vec<String> = Vec::new();
@@ -667,7 +686,7 @@ impl ArrivalState {
         }
 
         let destination_timezone = d.trip.destination_timezone();
-        let money = profile_of(ctx).money;
+        let money = profile_of(ctx).money();
         let receiver_service_hours = (elapsed_hours - hours).max(0.0);
         let receiver_service_clause = if receiver_service_hours >= 0.05 {
             format!(
@@ -934,7 +953,7 @@ impl ArrivalState {
         ));
         lines.push(format!(
             "Money after settlement: {} dollars.",
-            fmt_grouped(profile_of(ctx).money, 0)
+            fmt_grouped(profile_of(ctx).money(), 0)
         ));
         lines.extend(bonus_lines);
         lines.push(format!("Route: {}.", cities.join(" to ")));
@@ -989,7 +1008,7 @@ impl ArrivalState {
         if announcements.is_empty() {
             return;
         }
-        let unlock = profile_of(ctx).career.rank().unlock;
+        let unlock = display_rank_for(profile_of(ctx)).unlock;
         let target = format!("Unlock: {unlock}");
         for message in announcements.iter_mut() {
             if message.starts_with("Level up!") && message.contains(&target) {

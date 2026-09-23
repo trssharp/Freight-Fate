@@ -79,15 +79,16 @@ fn test_settings_menu_cycles_hours_of_service() {
 #[test]
 fn test_settings_menu_cycles_lane_keeping() {
     let mut app = TestApp::new();
-    assert_eq!(app.ctx.settings.lane_keeping, "off"); // the realistic default
+    assert_eq!(app.ctx.settings.lane_keeping, "partial"); // the balanced default
     open_settings_category(&mut app, "Driving assistance");
     move_to::<Cat>(&mut app, "Lane keeping");
+    // Starts on the shipped default, partial, and steps round the ladder.
+    key(&mut app, Key::Return);
+    assert_eq!(app.ctx.settings.lane_keeping, "off");
     key(&mut app, Key::Return);
     assert_eq!(app.ctx.settings.lane_keeping, "full");
-    key(&mut app, Key::Return);
-    assert_eq!(app.ctx.settings.lane_keeping, "partial");
     key(&mut app, Key::Left);
-    assert_eq!(app.ctx.settings.lane_keeping, "full");
+    assert_eq!(app.ctx.settings.lane_keeping, "off");
 }
 
 #[test]
@@ -99,15 +100,15 @@ fn test_lane_keeping_row_speaks_its_consequence_not_a_bare_value() {
     move_to::<Cat>(&mut app, "Lane keeping");
     assert_eq!(
         current_label::<Cat>(&app),
-        "Lane keeping: off, you hold the lane and take your own exits"
+        "Lane keeping: partial, gentle drift and you steer with help"
     );
     key(&mut app, Key::Return);
     assert_eq!(
         current_label::<Cat>(&app),
-        "Lane keeping: full, the truck holds the lane and takes your exits"
+        "Lane keeping: off, you hold the lane and take your own exits"
     );
     key(&mut app, Key::Return);
-    assert!(current_label::<Cat>(&app).contains("you steer with help"));
+    assert!(current_label::<Cat>(&app).contains("the truck holds the lane"));
 }
 
 #[test]
@@ -181,11 +182,10 @@ fn gameplay_subcategory_rows(category: &str) -> &'static [&'static str] {
             "Automatic emergency braking",
             "Lane-departure warning",
             "Stop-and-go assistance",
-            "Lane centering assistance",
             "Descent speed control",
             "Exit speed assistance",
             "Facility stopping assistance",
-            "Curve speed assistance",
+            "Curve assistance",
             "Route-transition assistance",
             "Latching brake",
             "Predictive cruise",
@@ -311,6 +311,20 @@ fn test_no_dead_pointer_stub_rows_remain() {
         .collect();
     assert_eq!(lane_rows.len(), 1);
     assert_eq!(lane_rows[0].0, "assistance");
+}
+
+#[test]
+fn test_no_settings_row_carries_a_run_of_spaces() {
+    // Two help strings lost their backslash line continuations and shipped
+    // eighteen-space runs to speech and braille (review I9, 2026-09-19). A
+    // literal split across lines has to be joined with `\`, and this is
+    // what catches the next one that is not.
+    let mut app = TestApp::new();
+    let runs: Vec<_> = all_settings_rows(&mut app)
+        .into_iter()
+        .filter(|(_, label, help)| label.contains("  ") || help.contains("  "))
+        .collect();
+    assert!(runs.is_empty(), "{runs:?}");
 }
 
 #[test]
@@ -626,17 +640,20 @@ fn test_settings_menu_uses_category_submenus() {
 fn test_driving_assistance_preset_keyboard_path_and_custom_transition() {
     let mut app = TestApp::new();
     open_settings_category(&mut app, "Driving assistance");
-    // The shipped defaults now ARE the realistic preset, field for field,
-    // so the row can finally say so honestly rather than reading Custom
-    // over a combination no preset described.
+    // The row reads the real fields, so it says Balanced when they ARE
+    // Balanced -- the point of the 2026-08-09 ruling. Applied explicitly
+    // here because TestApp pins the facility approach assist off for
+    // determinism, which is deliberately not any preset's combination.
+    app.ctx.settings.apply_driving_assistance_preset("balanced");
+    with_state_mut::<Cat, _>(&mut app, |c, ctx| c.refresh(ctx, true));
     assert_eq!(
         labels::<Cat>(&app)[0],
-        "Driving assistance preset: Realistic"
+        "Driving assistance preset: Balanced"
     );
-    assert_eq!(app.ctx.settings.lane_keeping, "off");
+    assert_eq!(app.ctx.settings.lane_keeping, "partial");
+    // Right steps to the next preset along, which from Balanced is All.
     key(&mut app, Key::Right);
-    assert_eq!(app.ctx.settings.driving_assistance_preset, "balanced");
-    assert!(app.ctx.settings.lane_centering_assist);
+    assert_eq!(app.ctx.settings.driving_assistance_preset, "all");
     assert_eq!(app.ctx.settings.time_scale, 10.0);
     assert_eq!(app.ctx.settings.hos_mode, "realistic");
     key(&mut app, Key::Down);
@@ -918,15 +935,16 @@ fn test_a_player_two_layouts_behind_hears_the_driving_speech_notice() {
 }
 
 #[test]
-fn test_lane_centering_help_does_not_promise_steering_help() {
+fn test_lane_centering_row_is_retired() {
+    // Owner 1.9: the phantom settings promise is gone. Lane keeping full
+    // already holds center; this row must not reappear.
     let mut app = TestApp::new();
     let rows = cat_rows(&mut app, "assistance");
-    let (_, help) = rows
-        .iter()
-        .find(|(label, _)| label.starts_with("Lane centering assistance"))
-        .unwrap();
-    assert!(help.contains("does not do yet"));
-    assert!(help.contains("makes no difference"));
+    assert!(
+        rows.iter()
+            .all(|(label, _)| !label.starts_with("Lane centering assistance")),
+        "retired row still present: {rows:?}"
+    );
 }
 
 #[test]

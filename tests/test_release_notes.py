@@ -7,8 +7,6 @@ from pathlib import Path
 
 import yaml
 
-from freight_fate.updater import flatten_markdown
-
 
 def load_release_notes_module():
     path = Path(__file__).resolve().parents[1] / "tools" / "release_notes.py"
@@ -550,7 +548,7 @@ def test_generated_notes_flatten_to_speakable_lines(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(release_notes, "ROOT", repo)
 
-    spoken = flatten_markdown(release_notes.nightly_notes())
+    spoken = release_notes.flatten_markdown(release_notes.nightly_notes())
 
     assert "Added" in spoken
     assert "Cruise control. See manual before setting speed." in spoken
@@ -568,8 +566,8 @@ def test_check_accepts_single_push_release_sync(tmp_path, monkeypatch, capsys):
     git(repo, "tag", "v1.8.1")
     base = git(repo, "rev-parse", "HEAD")
 
-    (repo / "src").mkdir()
-    (repo / "src" / "game.py").write_text("GAME = True\n", encoding="utf-8")
+    (repo / "data").mkdir()
+    (repo / "data" / "cities.json").write_text("{}\n", encoding="utf-8")
     (repo / "CHANGELOG.md").write_text(
         changelog(
             "",
@@ -595,17 +593,38 @@ def test_check_accepts_single_push_release_sync(tmp_path, monkeypatch, capsys):
     assert release_notes.check_command(args) == 1
 
 
-def test_build_workflow_uses_curated_nightly_decision_and_notes():
-    workflow = (
-        Path(__file__).resolve().parents[1] / ".github" / "workflows" / "build.yml"
-    ).read_text(encoding="utf-8")
+def test_one_workflow_builds_the_game_and_it_is_the_rust_one():
+    """`build.yml` is gone and must not come back.
 
-    assert "tools/release_notes.py should-build-nightly" in workflow
-    assert "--exclude-notes previous-notes.md" in workflow
-    assert "--exclude-stable-notes latest-stable-notes.md" in workflow
-    assert "tools/release_notes.py nightly" in workflow
-    assert 'git diff --name-only "$LAST_TAG"..HEAD' not in workflow
-    assert "macos-arm64.zip" not in workflow
+    It built the Python game (Nuitka) and scheduled itself against `dev`.
+    At the 1.9 cutover (2026-09-20) dev became the Rust line, and the owner
+    ruled the same day that 1.8 gets no further releases of any kind, so the
+    workflow had no job left: its nightly could not succeed and its tag
+    trigger would have built the wrong thing for a `v1.9.0`.
+
+    Restoring it would put two workflows on one cron again, or hand a
+    stable tag to the Nuitka path. If a stable release path is needed, it
+    belongs in `build-career-1.9.yml` alongside the Rust toolchain and BASS
+    steps that only that workflow has.
+    """
+    workflows = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+
+    assert not (workflows / "build.yml").exists()
+
+    snapshot = (workflows / "build-career-1.9.yml").read_text(encoding="utf-8")
+    assert set(yaml.load(snapshot, Loader=yaml.BaseLoader)["on"]) == {"workflow_dispatch"}
+    assert "tools/release_notes.py should-build-nightly" in snapshot
+    assert "--exclude-notes previous-notes.md" in snapshot
+    assert "--exclude-stable-notes latest-stable-notes.md" in snapshot
+    assert "tools/release_notes.py nightly" in snapshot
+
+    # The retry watches the one surviving workflow, and dispatches against
+    # the branch it actually builds -- it named feat/career-1.9 until the
+    # cutover moved the nightly to dev.
+    retry = (workflows / "retry-failed-nightly.yml").read_text(encoding="utf-8")
+    assert set(yaml.load(retry, Loader=yaml.BaseLoader)["on"]) == {"workflow_dispatch"}
+    assert "feat/career-1.9" not in retry
+    assert 'SNAPSHOT_BRANCH: "dev"' in retry
 
 
 def test_career_19_snapshot_workflow_contract():
@@ -613,7 +632,14 @@ def test_career_19_snapshot_workflow_contract():
         Path(__file__).resolve().parents[1] / ".github" / "workflows" / "build-career-1.9.yml"
     ).read_text(encoding="utf-8")
 
-    assert 'CAREER_BRANCH: "feat/career-1.9"' in workflow
+    # `dev` since the 1.9 cutover (2026-09-20): dev IS the 1.9 line now, and
+    # this is the only workflow that builds the Rust game, so it is the
+    # nightly. build.yml's schedule was retired in the same change because it
+    # builds the Python game, which dev no longer has.
+    # This fork keeps its existing branch name for manual snapshots.
+    assert "inputs.branch || 'feat/career-1.9'" in workflow
+    # Tag pushes build the tagged ref, not tip-of-dev by accident.
+    assert "github.event_name == 'push' && github.ref" in workflow
     assert "group: career-19-snapshot\n" in workflow
     assert "career-19-snapshot-${{ github.ref }}" not in workflow
     # This fork runs snapshots only when explicitly dispatched.
@@ -632,7 +658,12 @@ def test_career_19_snapshot_workflow_contract():
     assert "./build-release.ps1" in workflow
     assert "windows-portable.zip" in workflow
     assert "macos-arm64.zip" in workflow
+    # Tester path still cuts a prerelease; the stable tag path does not.
     assert "--prerelease" in workflow
+    assert "Create stable release" in workflow
+    assert "tools/release_notes.py stable --version" in workflow
+    assert "push" not in triggers
+    assert "is_prerelease: ${{ steps.check.outputs.is_prerelease }}" in workflow
     assert "COMMIT_SHA: ${{ needs.prepare.outputs.commit_sha }}" in workflow
     assert '--target "$COMMIT_SHA"' in workflow
     assert '--target "$CAREER_BRANCH"' not in workflow
@@ -692,10 +723,9 @@ def test_career_19_snapshot_builds_and_boots_a_linux_release():
     smoke = (Path(__file__).resolve().parents[1] / "tools" / "linux_smoke.sh").read_text(
         encoding="utf-8"
     )
-    # Speech is not disabled in the container boot: libprism.so and its
-    # bundled glib are really opened, which is where a loader would object.
+    # Speech is not disabled in the container boot: Prism really opens the
+    # system's speech-dispatcher, which is where a loader would object.
     assert "FREIGHT_FATE_NO_SPEECH" not in smoke
-    assert "prism: loaded from" in smoke
     assert "Speech backend: Speech Dispatcher" in smoke
     assert 'grep -q " ERROR "' in smoke
     assert "--appimage-extract-and-run --smoke" in smoke
@@ -780,16 +810,28 @@ def test_career_19_release_requires_and_verifies_every_platform_archive():
         "Linux-x86_64",
         "Linux-aarch64",
     }
-    assert all(step["with"]["path"] == "assets" for step in downloads)
+    # Not `assets/`: that is a tracked source folder (sounds.pak, the add-ons)
+    # since the Python sunset, and `gh release create ... <dir>/*` would
+    # publish it next to the archives.
+    assert all(step["with"]["path"] == "release-assets" for step in downloads)
+    create = next(step for step in release["steps"] if step.get("name") == "Create prerelease")
+    assert 'gh release create "$TAG" release-assets/*' in create["run"]
+    assert "--prerelease" in create["run"]
+    assert "is_prerelease == 'true'" in create["if"]
+    stable = next(step for step in release["steps"] if step.get("name") == "Create stable release")
+    assert 'gh release create "$TAG" release-assets/*' in stable["run"]
+    assert "--prerelease" not in stable["run"]
+    assert "is_prerelease == 'false'" in stable["if"]
+    assert "Freight Fate $VERSION" in stable["run"]
     verify = next(
         step for step in release["steps"] if step.get("name") == "Verify release archives"
     )
-    assert "assets/FreightFate-*-windows-portable.zip" in verify["run"]
-    assert "assets/FreightFate-*-macos-arm64.zip" in verify["run"]
-    assert "assets/FreightFate-*-linux-x64.tar.gz" in verify["run"]
-    assert "assets/FreightFate-*-linux-x86_64.AppImage" in verify["run"]
-    assert "assets/FreightFate-*-linux-arm64.tar.gz" in verify["run"]
-    assert "assets/FreightFate-*-linux-aarch64.AppImage" in verify["run"]
+    assert "release-assets/FreightFate-*-windows-portable.zip" in verify["run"]
+    assert "release-assets/FreightFate-*-macos-arm64.zip" in verify["run"]
+    assert "release-assets/FreightFate-*-linux-x64.tar.gz" in verify["run"]
+    assert "release-assets/FreightFate-*-linux-x86_64.AppImage" in verify["run"]
+    assert "release-assets/FreightFate-*-linux-arm64.tar.gz" in verify["run"]
+    assert "release-assets/FreightFate-*-linux-aarch64.AppImage" in verify["run"]
     assert verify["run"].count('"${#') == 6
     checksum = next(
         step
@@ -853,21 +895,45 @@ def test_career_19_retry_is_bounded_to_one_delayed_attempt():
         Path(__file__).resolve().parents[1] / ".github" / "workflows" / "retry-failed-nightly.yml"
     ).read_text(encoding="utf-8")
 
-    assert "workflows: [Build, Career 1.9 snapshot]" in workflow
+    # One workflow to watch since the cutover deleted build.yml, and the
+    # branch it retries against is dev -- this named feat/career-1.9 while
+    # 1.9 was a side line, which would have dispatched the retry at the
+    # wrong ref the first time the nightly failed.
+    assert set(yaml.load(workflow, Loader=yaml.BaseLoader)["on"]) == {"workflow_dispatch"}
+    assert "Build" not in workflow.split("jobs:")[0]
+    assert "feat/career-1.9" not in workflow
     assert "github.event.workflow_run.run_attempt == 1" in workflow
-    assert 'if [ "$WORKFLOW_NAME" = "Career 1.9 snapshot" ]; then' in workflow
+    assert 'SNAPSHOT_WORKFLOW: "Career 1.9 snapshot"' in workflow
+    assert 'SNAPSHOT_BRANCH: "dev"' in workflow
     assert 'TAG="1.9-tester-$(date -u +%Y%m%d)"' in workflow
-    assert 'TARGET_BRANCH="feat/career-1.9"' in workflow
-    assert 'TAG="nightly-$(date -u +%Y%m%d)"' in workflow
-    assert 'TARGET_BRANCH="dev"' in workflow
-    assert (
-        'gh workflow run "Career 1.9 snapshot" --repo "$GITHUB_REPOSITORY" '
-        '--ref "feat/career-1.9" -f dry_run=false'
-    ) in workflow
-    assert (
-        'gh workflow run Build --repo "$GITHUB_REPOSITORY" --ref dev -f dry_run=false'
-    ) in workflow
-    assert '"$TAG already exists; the nightly recovered while waiting."' in workflow
+    assert ('gh workflow run "$SNAPSHOT_WORKFLOW" --repo "$GITHUB_REPOSITORY"') in workflow
+    assert '"$TAG already exists; the snapshot recovered while waiting."' in workflow
+
+
+def test_the_gate_covers_the_shipping_runtime_but_not_its_tests():
+    # The gate was written when src/ WAS the game. The Rust port moved every
+    # line of gameplay into crates/ and the gate was not widened with it, so
+    # a change to the shipping runtime could land with no entry at all.
+    module = load_release_notes_module()
+    for path in (
+        "crates/freight-fate/src/states/driving_turns.rs",
+        "crates/ff-core/src/sim/trip.rs",
+        "data/facility_endpoints.json",
+        "assets/sounds.pak",
+        "docs/ontology.md",
+        "CHANGELOG.md",
+    ):
+        assert module.is_user_facing_path(path), path
+    # A test or bench is not a player-facing change: under the Python layout
+    # tests/ sat beside the game and was never gated.
+    for path in (
+        "crates/ff-core/tests/it/sim_trip_cues.rs",
+        "crates/freight-fate/benches/frame_time.rs",
+        "tools/build_facility_endpoints.py",
+        "data/spider/gap-fill/gap_scan_nn.py",
+        ".github/workflows/rust.yml",
+    ):
+        assert not module.is_user_facing_path(path), path
 
 
 def test_auto_base_follows_the_release_line_the_branch_was_cut_from(tmp_path, monkeypatch):

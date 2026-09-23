@@ -725,7 +725,7 @@ fn test_the_secret_store_report_fails_when_the_backends_are_not_packaged() {}
 fn test_the_secret_store_report_fails_without_keyring_at_all() {}
 
 #[test]
-#[ignore = "tools/build_release.py stays Python; its Nuitka flags are tested there"]
+#[ignore = "the Nuitka build that needed keyring flags was deleted with the Python game"]
 fn test_the_release_build_asks_for_keyrings_backends_and_metadata() {}
 
 #[test]
@@ -749,7 +749,10 @@ fn test_missing_or_malformed_identity_loads_as_none() {
 #[test]
 fn test_base_url_env_override() {
     // `base_url()` reads the environment on every call, so the override
-    // is checked through the same path the dev workflow uses.
+    // is checked through the same path the dev workflow uses. The lock is
+    // what keeps this out of the online-hub tests' variable: it is one
+    // process-global environment and four tests write this name.
+    let _env = freight_fate::app::testing::env_lock();
     std::env::set_var("FREIGHT_FATE_ONLINE_URL", "http://localhost:3000/");
     let url = base_url();
     std::env::remove_var("FREIGHT_FATE_ONLINE_URL");

@@ -17,7 +17,7 @@ use super::{Achievement, AchievementCategory};
 /// sha256 over every category and achievement field, as the generator
 /// computed it from the Python catalog (see `catalog_digest` in the
 /// tests for the exact framing).
-pub const CATALOG_DIGEST: &str = "2431169ff4ace2bd390ec89b10d3db300fb3c8023f808d14685b600f5552fc94";
+pub const CATALOG_DIGEST: &str = "8a0be9ee9387f8edd9c1f913584275ad7af8d33adab0c0f6c2df8d43b7136d44";
 
 /// What a locked, hidden achievement speaks in place of its real name and
 /// description. Keeps a hidden badge's surprise -- the joke, the calendar
@@ -34,7 +34,7 @@ pub const CATEGORIES: [AchievementCategory; 7] = [
     AchievementCategory {
         id: "road",
         title: "Out on the Road",
-        description: "Clean runs, hard climbs, and the everyday craft of hauling freight.",
+        description: "Clean runs, hard climbs, and the everyday work of hauling freight.",
     },
     AchievementCategory {
         id: "working_day",
@@ -44,22 +44,22 @@ pub const CATEGORIES: [AchievementCategory; 7] = [
     AchievementCategory {
         id: "career",
         title: "Career and Rank",
-        description: "Levels, money, and trucks -- the long climb from rookie to owner-operator.",
+        description: "Levels, money, and trucks -- the long climb from hire to owner-operator.",
     },
     AchievementCategory {
         id: "radio_songs",
         title: "The Dial and Song Towns",
-        description: "Stations chased down the dial, and the towns the old songs already knew.",
+        description: "Stations you catch on the dial, and the towns those songs put on the map.",
     },
     AchievementCategory {
         id: "weather_seasons",
         title: "Weather and the Calendar",
-        description: "Rain, snow, fog, and the seasons that turned while you kept driving.",
+        description: "Rain, snow, fog, and the seasons while you kept driving.",
     },
     AchievementCategory {
         id: "places",
         title: "Places on the Map",
-        description: "Cities, states, and regions where your freight found a home.",
+        description: "Cities, states, and regions you hauled into.",
     },
     AchievementCategory {
         id: "hidden",
@@ -70,7 +70,7 @@ pub const CATEGORIES: [AchievementCategory; 7] = [
 
 /// Every badge, in the Python catalog's order (the achievements menu and
 /// the cloud validator's allow-list both walk it in this order).
-pub const ACHIEVEMENTS: [Achievement; 179] = [
+pub const ACHIEVEMENTS: [Achievement; 181] = [
     Achievement {
         id: "first_dispatch",
         name: "Breaker, Breaker",
@@ -1502,5 +1502,21 @@ pub const ACHIEVEMENTS: [Achievement; 179] = [
         category: "road",
         inspiration: "Tom Waits - One for My Baby (and One More for the Road)",
         hidden: false,
+    },
+    Achievement {
+        id: "fifty_five_mph",
+        name: "Wrong Game, No Limit",
+        description: "It isn't the mid-90s anymore like Jim Kitchen had you believe in Trucker. It's okay, floor it and hit 88.",
+        category: "hidden",
+        inspiration: "Sammy Hagar - I Can't Drive 55",
+        hidden: true,
+    },
+    Achievement {
+        id: "ten_four_day",
+        name: "Copy That, October",
+        description: "A load settled on the fourth of October, which every driver reads as ten-four. Some white knight on the channel started it, and by noon the whole band was saying the date back.",
+        category: "hidden",
+        inspiration: "Cledus Maggard and the Citizen's Band - The White Knight",
+        hidden: true,
     },
 ];

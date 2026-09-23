@@ -99,7 +99,7 @@ pub use ff_core::settings::{acc_gap_seconds, ACC_GAP_CHOICES, ACC_GAP_DEFAULT};
 pub use ff_core::sim::driving_modes::tuning_for_time_scale;
 pub use ff_core::sim::enforcement_observe::OBSERVE_LEEWAY_MPH;
 pub use ff_core::sim::hos::{clock_text, is_night, time_of_day};
-pub use ff_core::sim::lane::{lane_label, lane_phrase, LaneKeeping, CURVE_RATE};
+pub use ff_core::sim::lane::{lane_label, lane_phrase, LaneKeeping};
 pub use ff_core::sim::lane_guidance::LaneGuidance;
 pub use ff_core::sim::pedal_latch::PedalLatch;
 pub use ff_core::sim::timezones::city_zone;
@@ -885,6 +885,9 @@ impl RadioSettingsAccess for RadioSettingsView<'_> {
     fn radio_streamer_safe(&self) -> bool {
         self.0.radio_streamer_safe
     }
+    fn synth_music(&self) -> bool {
+        self.0.synth_music
+    }
     fn set_radio_enabled(&mut self, _enabled: bool) {}
     fn set_radio_station_id(&mut self, _station_id: &str) {}
 }
@@ -904,6 +907,9 @@ impl RadioSettingsAccess for RadioSettingsMut<'_> {
     }
     fn radio_streamer_safe(&self) -> bool {
         self.0.radio_streamer_safe
+    }
+    fn synth_music(&self) -> bool {
+        self.0.synth_music
     }
     fn set_radio_enabled(&mut self, enabled: bool) {
         self.0.radio_enabled = enabled;

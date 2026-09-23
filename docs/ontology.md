@@ -26,7 +26,8 @@ uses this native Rust runtime. See [the contributor architecture guide](../CLAUD
 for the crate layout and service boundaries.
 
 The Python module and class references below are **legacy port references**
-under `src/freight_fate/`, including `models/`, `sim/`, and `states/`.
+to the deleted Python game (in git history; `v1.8.8.1` is its last release),
+including `models/`, `sim/`, and `states/`.
 They are not the current gameplay implementation. Rust
 modules generally retain the names of their Python counterparts under
 `crates/ff-core/src/` or `crates/freight-fate/src/`; consult those modules
@@ -203,10 +204,10 @@ has to degrade silently when offline.
 
 Not classes, but part of the ontology, because the shape is load-bearing:
 
-- Tools edit `src/freight_fate/data/world_source/`, never directly: go through
+- Tools edit `data/world_source/`, never directly: go through
   `tools/world_source.py`, where `load_world()` returns the whole world as one
   dict and `save_world(data)` writes it back as per-state shards.
-- The game loads the indexed `src/freight_fate/data/world_data/` tree.
+- The game loads the indexed `data/world_data/` tree.
 - `tools/index_world.py` regenerates the index; `--check` verifies the two are
   in sync, and CI and tests expect that.
 
@@ -248,7 +249,7 @@ from the words, and synonyms cost them a re-read.
 | The federal vetting behind hazmat and the port card | background check | security threat assessment, STA, TSA check (the agency name is fine once, in help) | `PendingCredential` |
 | A purchasable consumable | its own name: "shower", "energy drink" | buff, item, power-up | `Buff` |
 | The tractor a carrier gave you | your assigned truck | your truck (when leased) | `FleetTier` |
-| How much of the lane-holding work the truck does | lane keeping, always with its value clause ("full, the truck holds the lane and takes your exits") | lane drift (retired 1.9), steering assist, lane keeping assist (that is `lane_centering_assist`, a reserved row for steering help that is not implemented -- never describe it as working), the bare value word alone -- "off" here is the hardest mode, the opposite of "off" on the rows around it | `settings.lane_keeping` |
+| How much of the lane-holding work the truck does -- holding the truck between the lines against wander and wind. Steering THROUGH a mapped bend is curve assistance, a separate setting and a separate job | lane keeping, always with its value clause ("full, the truck holds the lane and takes your exits") | lane drift (retired 1.9), steering assist, lane keeping assist / lane centering assistance (retired 1.9 -- was a settings promise with no feature; never describe it as working), the bare value word alone -- "off" here is the hardest mode, the opposite of "off" on the rows around it | `settings.lane_keeping` |
 | Vehicles around you now | traffic | NPCs, cars | `TrafficManager` |
 | Room adaptive cruise leaves to the vehicle ahead | following gap, always with its seconds ("close, two and a half seconds") | following distance, headway, gap on its own (bare "gap" is the lane row below, and the two are different things) | `settings.acc_following_gap`, `ACC_GAP_CHOICES` |
 | Room to move into the next lane over | the lane is open ("right lane open"); held by somebody, it is blocked ("right lane blocked by a semi"); at a hazard call the same words name the side a dodge can go ("Left lane open.", "Either lane open.", "No lane open.") | clear (that is what the truck is clear OF -- the vehicle passed), safe, free, gap, "open lane on the left" | `Trip::open_side_at`, `Trip::lane_blocker_at`, `states/driving_lane_gap.rs` |
@@ -276,11 +277,11 @@ from the words, and synonyms cost them a re-read.
 | The facility entrance where a drive ends | facility gate; "gate" in short cues | entrance (as the noun for the thing), dock gate | `_handle_arrival_gate` |
 | The highway exit for the delivery | destination exit | final exit, last exit, your exit | `_destination_exit_stop` |
 | The assist that brakes and creeps the truck to the facility entrance, and, from a cleared ramp-end stop, drives it there hands off | Facility stopping assistance (the settings row's own name) | destination approach assistance (the setting's code name only), arrival assist, approach assist | `destination_approach_assist`, `update_destination_approach_assist`, `terminal_release_text` |
-| The assist that brakes the truck down to a mapped bend's advisory on the approach, holds it through the bend, and still brakes inside a bend entered too fast | Curve speed assistance (the settings row's own name); "slowing" when it takes the brakes, "released" when it lets go | curve assist, corner assist, curve braking, bend assist, the servo (code only) | `curve_speed_assist`, `driving_updates/curve_servo.rs`, `update_lane` |
-| A driveway, delivery lane or parking aisle OSM holds no name for | a service road | unnamed public road, access road, service way, private road | `build_local_geometry.UNNAMED_SERVICE` |
+| The assist that takes a mapped bend for the driver: brakes to its advisory on the approach, holds that speed through it, brakes inside a bend entered too fast, and steers the wheel the bend wants | Curve assistance (the settings row's own name); "slowing" when it takes the brakes, "released" when it lets go | curve speed assistance (its name before it steered), turn assist, corner assist, curve braking, bend assist, the servo (code only) | `curve_speed_assist`, `driving_updates/curve_servo.rs`, `sim::lane::tracking_steer_rad`, `update_lane` |
+| A driveway, delivery lane or parking aisle OSM holds no name for, and the approach to a facility the world generated rather than surveyed | a service road | unnamed public road, access road, service way, private road, local facility access road | `build_local_geometry.UNNAMED_SERVICE`, `build_local_approaches.fallback_road` |
 | A residential or minor street OSM holds no name for | a side street | unnamed public road, unnamed street, local road, back road | `build_local_geometry.UNNAMED_STREET` |
 | A street maneuver the route asks for | turn | corner, junction, intersection, manoeuvre | `_is_judged_turn`, `local_turn` cues |
-| The speed a turn has to be taken under | advise ("Advise 20", the pacenote word) | turn limit, corner advisory, max speed | `_turn_speed_mph` |
+| The speed a turn has to be taken under, from the turn's own measured angle | advise ("Advise 9", the pacenote word) | turn limit, corner advisory, max speed | `data::corners`, `turn_speed_mph` |
 | The loop-back after missing the destination exit, the facility gate, the stop at the end of the destination ramp, or a turn | safe turnaround | U-turn, turnaround point, loop | `_handle_missed_destination_exit`, `_handle_missed_facility_gate`, `_loop_back_to_destination_terminal`, `_handle_missed_turn` |
 | The give-way control at a ramp terminal: slow for the gap, stop only if the road is not clear | yield ("Yield at ramp end", "Through the yield in a gap") | give way (the OSM tag, not a spoken word), yield sign as the noun in short cues | `_ramp_control == "yield"`, `YIELD_ROLL_MPH` |
 | The circular terminal a ramp can end at, played by yield rules against circulating traffic | roundabout | traffic circle, rotary, circle | `_ramp_control == "roundabout"` |
@@ -301,6 +302,12 @@ from the words, and synonyms cost them a re-read.
 | The fleet or self-purchased equipment that gets a weigh-in-motion verdict before an open scale, instead of every truck being demanded in | transponder | PrePass, bypass reader, weigh-in-motion unit | `business.has_weigh_station_transponder`, `business.WEIGH_STATION_TRANSPONDER_LEVEL` |
 | The transponder's verdict clearing a truck to keep rolling past an open scale | Scale green light | bypass cleared, waved through | `events/scale_green`, `_resolve_transponder_verdict` |
 | The transponder's verdict sending a truck into the scale anyway | Scale red light | red-lighted, called in | `events/scale_red`, `_resolve_transponder_verdict` |
+| An officer going over the truck, the driver's papers, or both, at a scale or on the shoulder | roadside inspection; "Level 1 full inspection", "Level 2 walk-around inspection", "Level 3 driver inspection" for the kind | DOT inspection, safety check, CVSA inspection, audit | `sim/roadside_inspection::InspectionLevel`, `DrivingState::settle_inspection` |
+| The item an inspector writes up | written up for ...; the finding itself is the noun ("brakes out of adjustment") | violation, defect code, OOS item | `roadside_inspection::Finding` |
+| A critical item that parks the truck until it is fixed | out of service until repaired | OOS, red-tagged, grounded | `Finding::out_of_service`, `Repair` |
+| The sticker a clean Level 1 earns, good for three months of being waved past open scales | inspection decal; "the decal on the windshield" | CVSA sticker, decal, bypass sticker | `DrivingRecord::decal_until_h`, `DECAL_VALID_HOURS` |
+| The driver's own pre-trip check of the same items | walk-around; "Walk around the truck" is the row | pre-trip, DVIR, pre-trip inspection, vehicle check | `roadside_inspection::walk_around`, `WALK_AROUND_MIN` |
+| The three days in May when every inspector is on the road | Roadcheck week | blitz, inspection blitz, Roadcheck event | `roadside_inspection::roadcheck_blitz`, `Trip::roadcheck_blitz` |
 | Drivers talking about enforcement on the radio | CB chatter | radio talk, scanner, traffic | `cb_patrol_message` |
 | A CB report nobody has verified | unconfirmed | rumor, maybe, possible, unreliable | `_cb_confidence` |
 | The last CB call said again because the driver asked for it | repeat the CB chatter | CB replay, rewind, play back the CB, last CB | `DrivingState::speak_last_cb_chatter` (Alt C) |
@@ -348,7 +355,8 @@ from the words, and synonyms cost them a re-read.
 | The receiver refusing a load outright | the receiver refused the load | bounced, returned, kicked back | `CARGO_OUTCOME_REJECTED` |
 | Damage a safety committee rules the driver's fault | preventable damage | at-fault, chargeable, negligence | `TruckState.preventable_damage_pct` |
 | The polling secret bound to this device | never spoken -- internal only | activation code | `Activation.device_code` |
-| Road noise leaning the way the wheel should go -- into a bend, and away from the edge being drifted toward. The one panned cue a driver steers TOWARD; the rumble strip is the opposite and is steered away from | The road lean | road bed, ambient road, tire hiss, drift beep (that is the rumble strip, and it means the other direction) | `vehicle/road`, `sim/lane_guidance.LaneGuidance` |
+| The engine leaning the way the wheel should go -- into a bend or a street corner, and, with lane keeping on partial or off and lane-departure warning on, back toward lane center on a drift. The one panned cue a driver steers TOWARD; the rumble strip is the opposite and is steered away from | The engine lean | the road lean (what it was called while it rode the road bed, before 2026-09-18), engine pan, steering lean, drift beep (that is the rumble strip, and it means the other direction) | `sim/turn_guide.rs`, `DrivingState::update_lane_guidance_audio`, `sim/lane_guidance.rs` |
+| Where the truck is sitting across its lane, reported by panning the road noise; centered whenever lane keeping is doing the steering. A position readout, never a direction to steer | Where you sit in the lane | the road lean (that is the engine now), road bed, ambient road, tire hiss | `vehicle/road`, `DrivingState::update_lane_guidance_audio` |
 | A tire just catching the edge line, still fully inside the lane | Rumble strip, clipped | edge clip, low rung of the edge ladder | `vehicle/edge_clip`, `sim/lane_guidance.EDGE_CLIP_KEY` |
 | The whole tire riding the rumble strip on one side | Rumble strip | edge strip, full rumble, middle rung of the edge ladder | `vehicle/edge_strip`, `sim/lane_guidance.EDGE_STRIP_KEY` |
 | Gravel under a tire that has left the road surface | Off the pavement | shoulder gravel, run-off, top rung of the edge ladder | `vehicle/edge_shoulder`, `sim/lane_guidance.EDGE_SHOULDER_KEY` |
@@ -358,7 +366,7 @@ from the words, and synonyms cost them a re-read.
 | Mechanical relay clicks following steering position or assisted lane-change direction; an armed exit repeats on the right until ramp entry, cancellation, or a missed exit | Mechanical blinker | indicator tick, automatic locator | `vehicle/turn_signal` |
 | One rumble hit with nothing held after it, unattached to a steering correction -- fatigue or a momentary catch | Rumble strip, single hit | single tap, fatigue rumble | `vehicle/rumble_strip` |
 | Grouped bars cut across a whole lane, placed only ahead of a curve that has killed people | Transverse strips | rumble bars, wake-up strips, dead-man's-curve strips | `vehicle/transverse_strips`, `sim/lane_guidance.TRANSVERSE_KEY` |
-| A chime from the side a demanding bend turns toward, ahead of curve callouts | Curve chime | curve bink, bend warning | `vehicle/curve_bink` |
+| The tick that speeds up as the truck closes on a ramp's stop bar, handing over to the stop bar tone once the bar is close enough that the truck must already be stopping | Stop bar countdown | curve chime (retired 2026-09-18 -- the bend chime no longer exists, and this sound is all that still uses the key), curve bink, bend warning, bar tick | `vehicle/curve_bink`, `DrivingState::update_ramp_bar_audio` |
 | A short confirmation from the side of a deliberate lane crossing, shoulder pull-over, ramp merge, or route exit | Signal tone | confirmation tone, manoeuvre tone | `vehicle/signal_tone` |
 | A quieter centered confirmation when the steering cue ends or the exit position is set; assisted lane changes instead finish with Lane line crossed | Signal tone (the treatment marks cancellation) | cancel chime, all-clear, "exit lane set" tone | `vehicle/signal_tone` |
 | The compressor filling the air tanks before the truck can move | Air building | air pressurize, tank fill | `vehicle/air_pressurize` |
@@ -389,11 +397,12 @@ from the words, and synonyms cost them a re-read.
 | Crossing into another state | State line | border cue, state-crossing chime | `events/state_crossing` |
 | A toll gantry or plaza billing the truck | Toll charged | toll cue, gantry chime | `events/toll_charged` |
 | The driver's own yawn as fatigue builds | Yawn | fatigue sound, drowsy cue | `driver/yawn` |
-| The optional note the lane guide leans instead of the road bed, off by default | Lane guide tone | guide tone, steering tone, lean tone | `guide/lane_guide_tone`, `lane_guide_tone.py`, `Settings.lane_guide_tone` |
+| The optional note that carries the lean instead of the engine, off by default; with it on the engine stays centered | Lane guide tone (the settings row is "Lane guide sound: engine" or "tone") | guide tone, steering tone, lean tone | `guide/lane_guide_tone`, `Settings.lane_guide_tone`, `DrivingState::lean_the_tone` |
+| The setting for which way to steer when the engine leans: toward the lean by default, or away from it | Steering guide (the settings row reads "steer toward the lean" or "steer away from the lean") | invert steering, reverse guide, flipped lean | `Settings.steering_guide_inverted`, `guide_sign` |
 | The synthesized short high note standing in for a confirmation -- the assist acted, the setting took -- once the speech ladder stops speaking it | Confirmation note | confirmation earcon, acted tone | `ladder/confirmation_note`, `ladder_earcons.py`, `speech_pacing.LADDER_EARCONS` |
 | The synthesized two falling notes standing in for a heads-up about what the road is about to do -- a bend, a merge, a stop still miles off -- once the speech ladder stops speaking them, at the Urgent only rung | Road ahead note | navigation advisory earcon, lead-cue tone | `ladder/road_ahead_note`, `ladder_earcons.py`, `speech_pacing.LADDER_EARCONS`, `SpeechCategory.NAVIGATION_ADVISORY` |
 | The synthesized chime standing in for a driving tip once the speech ladder stops speaking coaching, at the Quiet rung | Coaching note | coaching earcon, tip chime | `ladder/coaching_note`, `ladder_earcons.py`, `speech_pacing.LADDER_EARCONS` |
-| The synthesized tock standing in for a status update once the speech ladder stops speaking it, at the Quiet rung | Status note | status earcon, state tock | `ladder/status_note`, `ladder_earcons.py`, `speech_pacing.LADDER_EARCONS` |
+| The synthesized tock standing in for a status update once the speech ladder stops speaking it, available in Learn game sounds; Quiet now speaks status | Status note | status earcon, state tock | `ladder/status_note`, `ladder_earcons.py`, `speech_pacing.LADDER_EARCONS` |
 | Being looked at for something other than speed: damage, missing chains, following too close | Inspection warning | inspection cue, roadside-check tone | `events/inspection_warning` |
 | The earcon that fires with the open-scale approach notice, ahead of the ambient bed | Scale warning | weigh-station warning cue, scale earcon | `events/weigh_station_warning` |
 | The ambient bed that swells as the truck comes up on an open scale | Weigh station | scale bed, weigh-lane loop | `poi/weigh_station_lane` |
@@ -402,7 +411,10 @@ from the words, and synonyms cost them a re-read.
 | The load hitting the front or back of the tank | Surge strike | liquid hit, fore-aft strike | `vehicle/liquid_hit`, `sim/surge.SloshAxis` |
 | The load hitting the side of the tank -- the one that rolls trucks | Surge strike, sideways | lateral hit, side slosh | `vehicle/liquid_hit_lateral`, `sim/surge.SloshAxis` |
 | A station built from one of the player's own playlist files | playlist; what is in it is tracks, whether a track is a file or an internet station | mix, folder, media library, your files | `PERSONAL_PLAYLIST_SOURCE_TYPE`, `RadioStation.playlist_entries` |
+| A personal playlist playing its tracks in a random order, every track once per lap | shuffle | random play, mix mode, randomize | `radio_shuffle_playlists`, `PlaylistShuffleLap` |
+| Music the game composes itself, plus the restored 1.5 tracks; what Music source: Synthesized plays in menus and on the Roadhouse | synthesized music | no-AI music, generated music, procedural music | `Settings.synth_music`, `ff_core::music_synth` |
 | The one career whose accepted backups front the player's public profile | public career | shared career, featured career, main save | `publicSaveName` |
+| A career changed outside the game that was checked by hand and turned down, so it no longer backs up | "<career>: backup declined after review" | rejected, banned, blocked, quarantined | `cloud_saves::rejection_status` |
 | A career's copy on orinks.net, and the act of sending it there | backed up / backup -- "<career> is backed up", "Backed up to the cloud"; the by-hand row on each career's Cloud backup screen is "Back up this career now"; the Speech settings row for how often the all-clear speaks is "Say when a career is backed up" | synced, uploaded, saved to the cloud, cloud save (the *menu* is Cloud backup, but a career is never "a cloud save") | `cloud_saves.backup_status`, `cloud_saves.recovery_status`, `city._backup_outcome_text` |
 | The page on orinks.net where a player manages their driver name, their sharing, and the computers signed in to the account | driver setup page | account page, dashboard, my account, profile page (that name belongs to the public one) | `online_presence.setup_page_url`, the Online hub's "Open my driver setup page" |
 | The other players out working right now, and the screen that shows them | drivers on duty; the thing itself is the drivers **list** ("this list", "the drivers list") | drivers board (board belongs to dispatch, one row above), drivers online (Online is the hub's name *and* a setting the player toggles, so it reads as "drivers who have online services on"), roster, who's online, live board | `DriversOnlineState`, `getLivePresenceBoard` and the `Drivers on duty` heading on orinks.net |
@@ -539,10 +551,11 @@ the CB, spoken by a driver on the radio. It is trade slang, and it is flavour.
 In a warning, a menu item, a status readout, or anything the game says in its
 own voice, the word is "trooper".
 
-This is enforced, not just documented:
-`tests/test_enforcement_presence.py::test_bear_is_cb_voice_only_in_every_player_facing_string`
-scans every player-facing string in `src/` and fails if the word appears
-outside a CB clause. The check exists because slang leaks: the word is
+The Python game enforced this with a sweep of every player-facing string
+that failed if the word appeared outside a CB clause. The Rust port has no
+equivalent yet (`test_bear_is_cb_voice_only_in_every_player_facing_string`
+in `crates/ff-core/tests/it/sim_enforcement_presence.rs` is an ignored
+placeholder), so for now it is a review rule. The check exists because slang leaks: the word is
 evocative, it reads well in a sentence, and one careless line teaches a screen
 reader user a second noun for a thing that already had one.
 
@@ -556,8 +569,8 @@ name of the shorter rendering and is no longer a thing the player selects.
 | Concept | Canonical spoken noun | Never say | Where |
 | --- | --- | --- | --- |
 | The working default | standard | normal, default | `DRIVING_SPEECH_MODES` |
-| Confirmations and status become sounds | quiet | terse (that is the rendering, not the rung), minimal | `DRIVING_SPEECH_MODES` |
-| Safety, cost, and the directions you cannot take back | urgent only | emergency mode, critical only | `DRIVING_SPEECH_MODES` |
+| Short confirmations, lane openings, and status updates | quiet | terse (that is the rendering, not the rung), minimal | `DRIVING_SPEECH_MODES` |
+| Safety warnings and directions requiring action | urgent only | emergency mode, critical only | `DRIVING_SPEECH_MODES` |
 
 Roadside colour -- billboards, place names, landmarks -- is **not** governed
 by these rungs. It answers to the chatter switches and the place-callouts
@@ -570,8 +583,8 @@ nothing else -- every safety call, route instruction, and money consequence
 still speaks, in the shortest form this ontology allows, and everything that
 is color, confirmation, coaching, or congratulation is an earcon or silence.
 Two rules bound every terse rendering, and the pairs themselves live in
-`speech_text.py` (one definition, both forms side by side, pinned by
-`tests/test_terse_contract.py`):
+`speech_text.rs` (one definition, both forms side by side, pinned by the
+tests in that module):
 
 **Compress words, never certainty.** A qualifier that changes a decision
 survives terse. Parking certainty is the worked example: all five values stay

@@ -51,7 +51,7 @@ pub fn assists_fight_descent() -> Outcome {
         }
     }
     rig.check_invariants();
-    let cue_count = rig.said("Curve speed assistance") + rig.said("Descent");
+    let cue_count = rig.said("Curve assistance") + rig.said("Descent");
     if seconds > 0.0 && cue_count as f64 / seconds > 0.2 {
         findings.push(format!(
             "assist cue spam: {cue_count} assist cues in {seconds:.0}s of descent"
@@ -104,7 +104,7 @@ pub fn jake_toggle_fine_dodge() -> Outcome {
              is a rhythm game, and the warning repeats forever"
         ));
     } else if fines > 0 {
-        let money_delta = STARTING_MONEY - rig.app.ctx.profile.as_ref().map_or(0.0, |p| p.money);
+        let money_delta = STARTING_MONEY - rig.app.ctx.profile.as_ref().map_or(0.0, |p| p.money());
         if (money_delta - rig.drive.jake_fines_paid).abs() > 0.01 {
             findings.push(format!(
                 "jake fines paid {:.0} but money moved {money_delta:.0}",
@@ -337,6 +337,20 @@ pub fn ramp_speed_control_handback() -> Outcome {
     }
     // 3. Route-transition assistance brings the truck to the bar. Nothing may
     //    re-engage on the creep toward it.
+    //
+    //    The bar is pinned to a stop sign, which is what this run is about: a
+    //    sign always stops the truck, and the handback is measured from that
+    //    stop. Left to the map, the ramp's control is whatever this exit
+    //    carries that day -- a seeded stop sign until 2026-09-17, then exit
+    //    48A's own traffic light once stops read their interchange -- and a
+    //    light that turns green releases a truck nobody is braking, which
+    //    rolls past the entrance and off down the road. Lights have their own
+    //    suite (`states_driving_ramps`).
+    //    The crossroad goes with it: it was seeded for the control the ramp
+    //    began with, and a sign waits for a gap in it.
+    rig.drive.ramp_control = "stop".to_string();
+    rig.drive.cross_bubble = None;
+    rig.drive.ramp_waiting_at_light = false;
     rig.step(
         60000,
         DT,
@@ -371,11 +385,25 @@ pub fn ramp_speed_control_handback() -> Outcome {
 
     // 5. And the drive stayed sane by ear: no resume announced on the ramp,
     //    and the pause never announced itself twice.
-    if rig.said("Automatic speed control paused") > 1 {
+    //    Counted as what the game announced, not what the voice received:
+    //    where a ramp ends at a street speed zone, the zone line lands in the
+    //    same frame as the return and cuts it, and the pacer finishes the cut
+    //    line. That is one announcement, heard once, and the rig's transcript
+    //    shows it twice.
+    if rig.announced("Automatic speed control paused") > 1 {
         findings.push("the ramp pause announced itself more than once".to_string());
     }
-    if rig.said("resuming") > 1 {
+    if rig.announced("resuming") > 1 {
         findings.push("automatic speed control announced its return more than once".to_string());
+    }
+    // A line handed back again and again is still a chant at the ear.
+    for phrase in ["Automatic speed control paused", "resuming"] {
+        let heard = rig.said(phrase);
+        if heard > 2 * rig.announced(phrase).max(1) {
+            findings.push(format!(
+                "\"{phrase}\" reached the voice {heard} times: the pacer kept handing it back"
+            ));
+        }
     }
 
     let note = format!(

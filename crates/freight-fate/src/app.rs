@@ -39,6 +39,7 @@ pub mod held_keys;
 pub mod logging;
 pub mod sdl_shell;
 pub mod speech_delivery;
+pub mod synth_music;
 pub mod testing;
 
 pub use context::{
@@ -286,7 +287,7 @@ impl PlayerInputFrame<'_> {
             profile.name,
             profile.career.level(),
             profile.career.deliveries,
-            ff_core::pyfmt::fmt_grouped(profile.money, 0),
+            ff_core::pyfmt::fmt_grouped(profile.money(), 0),
             profile.business_status,
         );
         if !notes.is_empty() {
@@ -380,6 +381,10 @@ impl App {
     }
 
     fn build(shell: Option<SdlShell>, speech: Box<dyn SpeechSink>, audio: Box<dyn Audio>) -> App {
+        // The restored 1.5 classics: compiled in, so they must exist before
+        // the title screen's first menu theme, not just before a drive.
+        // Every GameContext is built here, so this one call covers drives too.
+        crate::audio::classic_music::register();
         let settings = Settings::load();
         boot_timing::mark("settings");
         let message_log = MessageLog::new();
@@ -791,6 +796,20 @@ impl App {
         for line in self.ctx.services.cloud.take_announcements() {
             self.ctx.say_with(line, Say::queued());
         }
+        // A reviewed career the server accepted: clear its mark silently so
+        // the next backup goes up unmarked. A career that is not loaded
+        // clears the next time it is accepted.
+        for name in self.ctx.services.cloud.take_absolved() {
+            if let Some(profile) = self
+                .ctx
+                .profile
+                .as_mut()
+                .filter(|p| crate::cloud_saves::save_slot_name(&p.name) == name)
+            {
+                profile.absolve();
+                self.ctx.save_profile();
+            }
+        }
         // Another driver setting off or signing off, when the player asked
         // to hear it: same channel, same reason.
         for line in self.ctx.services.duty.take_announcements() {
@@ -950,6 +969,8 @@ impl App {
         boot_timing::mark("quit: duty watch");
         self.ctx.services.cloud.shutdown(); // flushes the final save's backup, bounded
         boot_timing::mark("quit: cloud backup");
+        self.ctx.synth_worker.shutdown(Duration::from_millis(2500));
+        boot_timing::mark("quit: synthesized music");
         profile_module::set_save_listener(None);
         self.ctx.controller.shutdown();
         boot_timing::mark("quit: controller");

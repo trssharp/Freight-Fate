@@ -14,12 +14,17 @@
 //!
 //! The turn speed is anchored to the road, never invented: the street the truck
 //! is turning ONTO carries a baked `local_speed_mph` (25 named, 15 unnamed
-//! service ways), and the corner itself is capped at `TURN_CORNER_MAX_MPH`. A
-//! 53-foot trailer off-tracks through a signalised city corner; CDL training
-//! teaches completing one at 10 to 15, entering at no more than 20. Twenty also
-//! sits honestly between the two speeds the game already posts -- a sweeping
-//! ramp at 45 and the gate crawl at 15 -- so the ladder a player learns by ear
-//! stays ordered.
+//! service ways), and the CORNER's own speed comes from its measured turn angle
+//! through `ff_core::data::corners` -- TxDOT's design radius for that angle,
+//! priced at the lateral a loaded combination actually holds. A square city
+//! corner lands a little over 9 mph, a sweeping 60-degree one near 12, a
+//! switchback under 8, and the advisory is the lower of that and the street.
+//!
+//! Until 2026-09-18 both ends were assumed constants instead -- the street
+//! limit clamped between 15 and 20 -- so every corner in the game got the same
+//! answer, and a truck already held at 14-15 by the speed keeper was under all
+//! of them and never heard an advisory at all. `docs/turn-geometry-brief.md`
+//! is the standing record of that directive and the sources behind the model.
 //!
 //! The miss is the fourth instance of the shipped loop-back pattern (blown ramp
 //! stop, missed destination exit, missed facility gate) and inherits the two
@@ -42,10 +47,9 @@
 //! direction, radius, or lane ordinal, and `docs/nav-phrasing-brief.md` forbids
 //! speaking a lane ordinal that was never harvested.
 
+use ff_core::data::corners::corner_speed_mph;
 use ff_core::data::curves::RouteCurve;
-use ff_core::sim::trip_models::{
-    NavigationCue, FACILITY_ACCESS_LIMIT_MPH, FACILITY_GATE_LIMIT_MPH,
-};
+use ff_core::sim::trip_models::{NavigationCue, FACILITY_ACCESS_LIMIT_MPH};
 use ff_core::speech_pacing::{EventPriority, SpeechCategory};
 
 use crate::app::{GameContext, SayEvent};
@@ -61,7 +65,10 @@ pub const TURN_WARNING_REAL_S: f64 = 25.0;
 /// should arrive two miles of arterial before the corner exists.
 pub const TURN_WINDOW_MIN_MI: f64 = 0.25;
 pub const TURN_WINDOW_MAX_MI: f64 = 2.0;
-/// The corner ceiling for a tractor-trailer, whatever the street is posted at.
+/// The nominal corner speed the APPROACH WINDOW is sized against -- not a
+/// ceiling on the corner itself, which `data::corners` derives per angle.
+/// A crawling truck still gets a window sized as if it were doing twenty, so
+/// the call arrives with road left to brake in rather than on top of the turn.
 pub const TURN_CORNER_MAX_MPH: f64 = 20.0;
 /// Brake deadband: the truck may be a few mph over without failing, the same
 /// forgiveness the curve assist's hysteresis grants.
@@ -79,7 +86,13 @@ pub const TURN_COMMIT_TAIL_MI: f64 = 0.15;
 pub const TURN_NOW_MI: f64 = 0.05;
 /// The pursuit guide starts leaning into the corner this far out, reaching its
 /// full lean at the corner itself.
-pub const TURN_GUIDE_LEAD_MI: f64 = 0.2;
+///
+/// The turn guide's own lead, by name and not by a second number. This was
+/// 0.2 beside the turn guide's 0.12, so the lane guide opened a corner's lean
+/// first and the turn guide then took the engine over and started the same
+/// lean again from nothing (review I3, 2026-09-19). One constant, so the
+/// engine's lean and the tone's open at the same place.
+pub const TURN_GUIDE_LEAD_MI: f64 = ff_core::sim::turn_guide::LEAD_MI;
 pub const TURN_GUIDE_DEMAND: f64 = 0.9;
 /// An exit ramp peels right; the lane model already pushes the truck that way,
 /// so the road bed leans with it instead of sitting dead centre.
@@ -108,6 +121,7 @@ impl DrivingState {
         self.turn_advised.clear();
         self.turn_missed.clear();
         self.turn_resolved.clear();
+        self.turn_announced.clear();
         self.turn_grace_s = 0.0;
         self.trip.controlled_turn = false;
     }
@@ -190,24 +204,34 @@ impl DrivingState {
     }
 
     /// `_turn_speed_mph(cue)`: the speed the corner has to be taken under --
-    /// the street's own posted limit, capped at what a trailer can turn,
-    /// floored at the gate crawl so the gate stays the slowest thing on the
-    /// route.
+    /// the lower of the street's own posted limit and what the corner's own
+    /// geometry allows THIS combination, loaded as it is right now. An empty
+    /// trailer's weight sits far lower than a full one's, so it takes the same
+    /// corner faster; `corners` owns that span.
+    ///
+    /// There is deliberately NO floor. The old one clamped every corner to at
+    /// least the 15 mph gate crawl, which made a truck already held at 14-15 by
+    /// the speed keeper faster than every corner on the route, so the advisory
+    /// never spoke and the owner drove past a turn in Spokane (2026-08-21).
+    /// A corner is now as slow as its own angle says it is, which for a square
+    /// city corner is a little over 9.
     pub fn turn_speed_mph(&self, cue: &NavigationCue) -> f64 {
         let index = self.turn_leg_index(cue);
-        let posted = self
-            .trip
-            .route
-            .legs
-            .get(index)
-            .map(|leg| leg.local_speed_mph)
-            .unwrap_or(0.0);
+        let leg = self.trip.route.legs.get(index);
+        let posted = leg.map(|leg| leg.local_speed_mph).unwrap_or(0.0);
         let street = if posted != 0.0 {
             posted
         } else {
             FACILITY_ACCESS_LIMIT_MPH
         };
-        FACILITY_GATE_LIMIT_MPH.max(street.min(TURN_CORNER_MAX_MPH))
+        // 0.0 is a corner nobody measured -- a legacy or estimated route --
+        // and `corners` prices that as a square one rather than inventing a
+        // shape for it.
+        let measured = leg.map(|leg| leg.local_turn_deg).filter(|deg| *deg > 0.0);
+        street.min(corner_speed_mph(
+            measured,
+            self.trip.truck.roll_load_fraction(),
+        ))
     }
 
     /// `_turn_window_mi()`: how far out the corner is called, and how far back
@@ -308,7 +332,7 @@ impl DrivingState {
                 // whole story here, by the comment above -- still has to
                 // arrive far enough ahead to be acted on.
                 if ahead <= 0.0 {
-                    self.resolve_turn(&cue);
+                    self.resolve_turn(ctx, &cue);
                 } else if ahead <= self.turn_window_mi() {
                     self.trip.controlled_turn = true;
                 }
@@ -324,13 +348,15 @@ impl DrivingState {
             self.trip.controlled_turn = true;
             let message = self.turn_approach_text(ctx, &cue, 0.0f64.max(ahead));
             self.turn_grace_s = self.turn_grace_seconds(ctx, &message);
-            if let Some(sound) = local_turn_sound(Some(&cue.direction)) {
-                let pan = if cue.direction == "left" {
-                    -TURN_CUE_PAN
-                } else {
-                    TURN_CUE_PAN
-                };
-                ctx.audio.play_with(sound, 1.0, pan);
+            // The earcon waits for the corner itself. It used to sound
+            // here, on the approach, whether or not the words that go with
+            // it were ever spoken -- so a rung that silenced the lead left a
+            // turn chime with nothing attached to it, and the owner heard
+            // corners announced by sound alone (2026-09-20). It marks the
+            // moment the truck turns now, his own preference, and only for a
+            // corner he was actually told about.
+            if ctx.settings.speaks(Some(SpeechCategory::Navigation)) || !ctx.ladder_applies() {
+                self.turn_announced.insert(cue.key.clone());
             }
             // A LEAD is deliberately left on the droppable ambient default,
             // unlike the act-now navigation calls raised to ROUTE alongside
@@ -370,22 +396,34 @@ impl DrivingState {
             return; // the corner's own cue is still speaking
         }
         if self.turn_miss_suspended() {
-            self.resolve_turn(&cue);
+            self.resolve_turn(ctx, &cue);
             return;
         }
         if self.trip.truck.speed_mph() > self.turn_speed_mph(&cue) + TURN_SPEED_MARGIN_MPH {
             self.handle_missed_turn(ctx, &cue);
         } else {
-            self.resolve_turn(&cue);
+            self.resolve_turn(ctx, &cue);
         }
     }
 
     /// `_resolve_turn(cue)`: this corner is settled; the clock goes back to
     /// trip pacing.
-    pub fn resolve_turn(&mut self, cue: &NavigationCue) {
+    pub fn resolve_turn(&mut self, ctx: &mut GameContext, cue: &NavigationCue) {
         self.turn_resolved.insert(cue.key.clone());
         self.turn_grace_s = 0.0;
         self.trip.controlled_turn = false;
+        // Taken, by the driver or by the assists: the corner is behind the
+        // truck and this is the sound of it, panned to the side it went.
+        if self.turn_announced.remove(&cue.key) {
+            if let Some(sound) = local_turn_sound(Some(&cue.direction)) {
+                let pan = if cue.direction == "left" {
+                    -TURN_CUE_PAN
+                } else {
+                    TURN_CUE_PAN
+                };
+                ctx.audio.play_with(sound, 1.0, pan);
+            }
+        }
     }
 
     /// `_reposition_for_turn(cue)`: drop back a full spoken window onto the
@@ -436,7 +474,7 @@ impl DrivingState {
             format!("You missed the turn onto {street}.")
         };
         let (tail, status): (String, &str) = if completed {
-            self.resolve_turn(cue);
+            self.resolve_turn(ctx, cue);
             self.trip.position_mi = self.trip.position_mi.max(cue.at_mi + TURN_COMMIT_TAIL_MI);
             let tail = if terse {
                 "Turn made for you.".to_string()

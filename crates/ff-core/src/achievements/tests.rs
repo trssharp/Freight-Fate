@@ -60,7 +60,7 @@ fn catalog_digest() -> String {
 #[test]
 fn the_generated_catalog_matches_the_python_source_digest() {
     assert_eq!(catalog_digest(), CATALOG_DIGEST);
-    assert_eq!(ACHIEVEMENTS.len(), 179);
+    assert_eq!(ACHIEVEMENTS.len(), 181);
     assert_eq!(CATEGORIES.len(), 7);
 }
 
@@ -275,6 +275,8 @@ fn test_the_funny_ones_are_actually_in_the_catalog() {
     for badge_id in [
         "sixty_nine_mph",
         "eighty_eight_mph",
+        "fifty_five_mph",
+        "ten_four_day",
         "sixteen_tons",
         "brake_smoke",
         "one_for_the_road",
@@ -284,6 +286,35 @@ fn test_the_funny_ones_are_actually_in_the_catalog() {
         assert!(badge.inspiration.matches(" - ").count() >= 1);
         assert!(!badge.description.trim().is_empty());
     }
+
+    // The two jokes that turn on a specific number keep their number: the
+    // copy is the whole badge, and a reworded one stops being the joke.
+    let double_nickel = achievement_by_id("fifty_five_mph").unwrap();
+    assert!(double_nickel.hidden);
+    // The whole badge is the wink: the game it is winking at, and the number
+    // it sends you to instead -- which is the badge sitting next to it.
+    assert!(double_nickel.description.contains("Jim Kitchen"));
+    assert!(double_nickel.description.contains("88"));
+    let ten_four = achievement_by_id("ten_four_day").unwrap();
+    assert!(ten_four.hidden);
+    assert!(ten_four.description.contains("fourth of October"));
+    assert!(ten_four.description.contains("ten-four"));
+    // And it alludes to its own song, which is how the catalog talks. Owner
+    // ruling while it was being written: a fresh one, by an artist the
+    // catalog has not leaned on already -- Convoy is cited twice elsewhere
+    // and Dave Dudley three times over, and a wink shared with three other
+    // badges is not a wink.
+    assert!(ten_four.description.contains("white knight"));
+    let (artist, _) = ten_four.inspiration.split_once(" - ").unwrap();
+    assert_eq!(
+        ACHIEVEMENTS
+            .iter()
+            .filter(|badge| badge.inspiration.starts_with(artist))
+            .count(),
+        1,
+        "{} shares its artist with another badge",
+        ten_four.id
+    );
 }
 
 #[test]

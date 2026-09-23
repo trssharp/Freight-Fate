@@ -16,7 +16,7 @@ use ff_core::speech_text::{
 use crate::app::{GameContext, Say, SayEvent};
 use crate::states::driving::DrivingState;
 use crate::states::driving_core::*;
-use crate::states::driving_turns::TURN_COMMIT_TAIL_MI;
+use crate::states::driving_turns::{is_judged_turn, TURN_COMMIT_TAIL_MI};
 use crate::states::driving_updates::live;
 
 use super::ambient::Ambient;
@@ -477,14 +477,11 @@ impl DrivingState {
         // 2026-07-18). One-shot, not the continuous steering tone the
         // community ruled out. Placeholder sound until a dedicated cue
         // is auditioned (docs/sound-hunt-brief.md, need 1).
-        if let Some(curve) = curve.as_ref().filter(|_| announce) {
-            let pan = if curve.direction == 'L' {
-                -PACENOTE_CUE_PAN
-            } else {
-                PACENOTE_CUE_PAN
-            };
-            ctx.audio.play_with("vehicle/curve_bink", 0.9, pan);
-        }
+        // The panned curve chime that used to fire here is gone (owner,
+        // 2026-09-18): a one-shot beep says a bend is coming and then stops
+        // saying anything, and the driver still has the whole bend to steer.
+        // The engine's lean carries that continuously now, so the chime was
+        // noise stacked in front of the guide rather than help.
         let say_curve = |ctx: &mut GameContext, text: SpokenMessage, interrupt: bool| {
             if !announce {
                 return;
@@ -687,7 +684,33 @@ impl DrivingState {
             return;
         }
         if let Some(sound) = sound {
-            if kind != TripEventKind::ZoneEnter {
+            // A turn earcon belongs to the words that name the turn. The
+            // maneuver lead is NAVIGATION_ADVISORY, which the quiet rungs
+            // cut, and this played the chime anyway -- so at urgent only a
+            // driver heard a turn announced by sound with nothing said about
+            // it, on top of the rung's own stand-in note (owner,
+            // 2026-09-20). Only the turn cue is held back: the road's other
+            // sounds, a passing truck above all, are the road itself and
+            // were never a substitute for a sentence (owner, 2026-08-17:
+            // "sound is enough").
+            // A JUDGED corner -- one with a real side to it -- belongs to the
+            // turn flow, which sounds it once as the truck actually turns
+            // (`resolve_turn`). Its route cues fire twice more, at the
+            // quarter-mile lead and at the corner itself, and the owner heard
+            // all three on one turn out of Houston (2026-09-20). One corner,
+            // one chime, at the corner.
+            //
+            // A cue with no side to it -- "continue onto", "straight on" --
+            // never reaches the turn flow, so it keeps its own sound and only
+            // has to be told when the words it belongs to were silenced.
+            let judged_turn = event.data.cue.as_ref().is_some_and(is_judged_turn);
+            let is_turn_cue = event
+                .data
+                .cue
+                .as_ref()
+                .is_some_and(|cue| cue.kind == "local_turn");
+            let spoken = ctx.settings.speaks(category) || !ctx.ladder_applies();
+            if kind != TripEventKind::ZoneEnter && !judged_turn && (spoken || !is_turn_cue) {
                 ctx.audio
                     .play_with(sound, 1.0, route_event_sound_pan(event));
             }
@@ -1023,7 +1046,7 @@ impl DrivingState {
 
     /// What an inspector would write up on the trailer, if anything.
     pub fn hooked_trailer_defect(&self, ctx: &GameContext) -> Option<String> {
-        if ctx.profile.is_none() || self.trailer_refused {
+        if ctx.profile.is_none() || self.trailer_refused || self.trailer_repaired {
             return None;
         }
         let plan = pickup_plan(&self.job, profile_of(ctx));
@@ -1047,6 +1070,21 @@ impl DrivingState {
             return;
         }
         self.enforcement_events.insert(event_key);
+        match event.data.context.as_deref() {
+            // CB heads-up, not a stop: Roadcheck week is on.
+            Some("roadcheck_notice") => {
+                let mut opts = SayEvent::queued().priority(EventPriority::Route);
+                opts.category = Self::event_category(event);
+                ctx.say_event_with(event.text(), opts);
+                return;
+            }
+            // A legal driver's routine Level 3: the stop is the inspection.
+            Some("routine_inspection") => {
+                self.begin_routine_inspection(ctx);
+                return;
+            }
+            _ => {}
+        }
         let mode = ctx.settings.hos_mode.clone();
         let fine = hos::hos_fine(&mode, self.hos_fine_count);
         self.hos_fine_count += 1;
@@ -1110,7 +1148,7 @@ impl DrivingState {
         }
         {
             let profile = profile_mut_of(ctx);
-            profile.money -= fine; // can go negative; never a game over
+            profile.spend(fine); // can go negative; never a game over
             profile.career.reputation =
                 0.0f64.max(profile.career.reputation - hos::HOS_REPUTATION_HIT);
         }

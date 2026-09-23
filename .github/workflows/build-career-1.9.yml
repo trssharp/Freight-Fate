@@ -1,9 +1,16 @@
 name: Career 1.9 snapshot
 
+# The nightly (and the stable release path) for the 1.9 line, which since
+# the 2026-09-20 cutover is `dev` (see CAREER_BRANCH below).
+#
 # A scheduled run executes the copy of this file on the DEFAULT branch
 # (main), whatever the checked-out code is, so after changing it here push
 # the same file to main or the nightly quietly keeps the old job list. The
-# Prepare job fails a scheduled run whose file differs from this branch's.
+# Prepare job fails a scheduled run whose file differs from CAREER_BRANCH's.
+#
+# Stable releases: push a `v*.*.*` tag. That trigger drops `--prerelease`,
+# takes the version from the tag, and writes notes via
+# `tools/release_notes.py stable`. Do not tag from this workflow.
 
 on:
   workflow_dispatch:
@@ -12,6 +19,10 @@ on:
         description: "Skip release creation"
         type: boolean
         default: false
+      branch:
+        description: "Branch to build (a dry run is the way to try one)"
+        type: string
+        default: feat/career-1.9
 
 permissions:
   contents: write
@@ -22,7 +33,23 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.12"
-  CAREER_BRANCH: "feat/career-1.9"
+  # `dev` since the 1.9 cutover (2026-09-20). This built feat/career-1.9
+  # while 1.9 was a side line; dev IS the 1.9 line now, and this is the
+  # only workflow that knows how to build the Rust game, so it is the
+  # nightly -- and now the only one that builds the game at all. build.yml
+  # ran the Python/Nuitka path and was deleted with the 1.8 line: dev has
+  # no Python gameplay left to feed it, and the owner ruled on 2026-09-20
+  # that 1.8 gets no further releases, so it had no job on either trigger.
+  #
+  # The `1.9-tester-*` tag scheme deliberately does NOT change. The
+  # in-game updater's developer-snapshot channel finds builds by that
+  # name, so renaming it would strand everyone already on one.
+  # A manual run may name another branch to try; the schedule always
+  # builds dev.
+  # Tag pushes build the tagged commit. Schedule/dispatch still build
+  # `dev` (or the dispatch branch). A tag that only exists on another
+  # tip must not silently rebuild today's dev.
+  CAREER_BRANCH: ${{ github.event_name == 'push' && github.ref || inputs.branch || 'feat/career-1.9' }}
 
 jobs:
   prepare:
@@ -33,6 +60,8 @@ jobs:
       should_build: ${{ steps.check.outputs.should_build }}
       tag: ${{ steps.check.outputs.tag }}
       commit_sha: ${{ steps.check.outputs.commit_sha }}
+      is_prerelease: ${{ steps.check.outputs.is_prerelease }}
+      version: ${{ steps.check.outputs.version }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -62,8 +91,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "tag=1.9-tester-$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
           echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+          # Stable path: an explicit v*.*.* tag push. Version and tag come
+          # from the tag itself; notes come from the matching CHANGELOG
+          # block (falling back to Unreleased if that heading is not cut
+          # yet). Never invent a stable tag from schedule or dispatch.
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            VERSION="${TAG#v}"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "tag=1.9-tester-$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+          echo "version=" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
 
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             echo "should_build=true" >> "$GITHUB_OUTPUT"
@@ -107,7 +153,6 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.commit_sha }}
           fetch-depth: 0
-          lfs: true
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.2.0
@@ -147,6 +192,15 @@ jobs:
       - name: Build the portable release
         run: ./build-release.ps1 --tag "${{ needs.prepare.outputs.tag }}"
 
+      - name: Check Prism registered its backends
+        # Every job here runs muted, so a Prism linked without its backends
+        # would still pass every test and boot. The listing does not speak;
+        # it names each backend Prism registered, reachable or not.
+        shell: bash
+        run: |
+          ./target/release/freightfate.exe --list-speech-backends | tee speech-backends.txt
+          grep -q "^SAPI " speech-backends.txt
+
       - uses: actions/upload-artifact@v7
         with:
           name: Windows
@@ -175,7 +229,6 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.commit_sha }}
           fetch-depth: 0
-          lfs: true
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.2.0
@@ -222,6 +275,15 @@ jobs:
         # inside the builder, which dumps the game log on failure.
         run: uv run python tools/build_release.py --rust --smoke --tag "${{ needs.prepare.outputs.tag }}"
 
+      - name: Check Prism registered its backends
+        # Every job here runs muted, so a Prism linked without its backends
+        # would still pass every test and boot. The listing does not speak;
+        # it names each backend Prism registered, reachable or not.
+        shell: bash
+        run: |
+          ./target/release/freightfate --list-speech-backends | tee speech-backends.txt
+          grep -q "^AVSpeech " speech-backends.txt
+
       - uses: actions/upload-artifact@v7
         with:
           name: macOS-arm64
@@ -235,8 +297,8 @@ jobs:
     # 22.04, not latest: the executable carries its build host's glibc as a
     # floor (2.35 here), and one built on 24.04 would refuse to start on any
     # distribution still shipping an older release, with no useful error.
-    # SDL2 is compiled in, so nothing else of the host is linked; Prism's
-    # own floor is 2.34 (a manylinux_2_34 wheel).
+    # SDL2 and Prism (with gcc 13's libstdc++) are compiled in; what else is
+    # linked is the host's speech-dispatcher client.
     #
     # Two native builds, one per CPU: x86_64 for PCs and aarch64 for the
     # Blazie BT Speak and BT Braille (Debian on a Raspberry Pi Compute
@@ -271,7 +333,6 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.commit_sha }}
           fetch-depth: 0
-          lfs: true
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.2.0
@@ -282,9 +343,13 @@ jobs:
         run: rustup show
 
       - name: Cache cargo registry and target directory
+        # The compiler is in the key: a CMake build directory configured by
+        # another compiler throws its cache away on reconfigure, options and
+        # install prefix included, and SDL2 then tries to install into
+        # /usr/local.
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: career-19-snapshot-linux-${{ matrix.arch }}
+          shared-key: career-19-snapshot-linux-${{ matrix.arch }}-gcc13
 
       # SDL2 is compiled from source into the executable (`bundled` +
       # `static-link`), and what it can open at run time is decided by the
@@ -307,6 +372,28 @@ jobs:
             libdbus-1-dev libudev-dev libibus-1.0-dev \
             file desktop-file-utils
 
+      # Prism is compiled from source and linked into the executable. It
+      # needs gcc 13's standard library (std::atomic_unsigned_lock_free);
+      # 22.04 stops at 12, so gcc 13 comes from Ubuntu's toolchain PPA and
+      # crates/freight-fate/build.rs links its libstdc++ statically -- the
+      # player's system libstdc++ can be as old as 22.04's. Prism builds its
+      # speech-dispatcher backend only when the development package is here;
+      # without it Linux players would get no speech. Its Orca backend needs
+      # glibmm 2.68, which 22.04 does not carry, so it is left out; Orca
+      # users hear the game through Speech Dispatcher instead.
+      - name: Install Prism build dependencies
+        run: |
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-13 g++-13 libspeechd-dev
+          echo "CC=gcc-13" >> "$GITHUB_ENV"
+          echo "CXX=g++-13" >> "$GITHUB_ENV"
+          # Prism's objects carry gcc 13 link-time bytecode; the system cc
+          # (gcc 11) cannot read it, so gcc 13 does the final link as well.
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=gcc-13" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=gcc-13" >> "$GITHUB_ENV"
+
       - name: Check Rust formatting
         run: cargo fmt --all --check
 
@@ -324,9 +411,18 @@ jobs:
       - name: Build the Linux release
         # --smoke boots the staged tarball payload for five frames with dummy
         # drivers, the same proof the Mac job gets. Staging refuses an
-        # executable that links SDL2 dynamically and a payload missing BASS,
-        # its decoders, or Prism with its bundled speech-dispatcher.
+        # executable that links SDL2 dynamically and a payload missing BASS
+        # or its decoders.
         run: uv run python tools/build_release.py --rust --smoke --tag "${{ needs.prepare.outputs.tag }}"
+
+      - name: Check Prism registered its backends
+        # Every job here runs muted, so a Prism linked without its backends
+        # would still pass every test and boot. The listing does not speak;
+        # it names each backend Prism registered, reachable or not.
+        shell: bash
+        run: |
+          ./target/release/freightfate --list-speech-backends | tee speech-backends.txt
+          grep -q "^Speech Dispatcher " speech-backends.txt
 
       - name: Package the AppImage
         timeout-minutes: 15
@@ -401,53 +497,53 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           name: Windows
-          path: assets
+          path: release-assets
 
       - uses: actions/download-artifact@v7
         with:
           name: macOS-arm64
-          path: assets
+          path: release-assets
 
       - uses: actions/download-artifact@v7
         with:
           name: Linux-x86_64
-          path: assets
+          path: release-assets
 
       - uses: actions/download-artifact@v7
         with:
           name: Linux-aarch64
-          path: assets
+          path: release-assets
 
       - name: Verify release archives
         shell: bash
         run: |
           shopt -s nullglob
-          windows_archives=(assets/FreightFate-*-windows-portable.zip)
+          windows_archives=(release-assets/FreightFate-*-windows-portable.zip)
           if [ "${#windows_archives[@]}" -ne 1 ]; then
             echo "Expected exactly one Windows portable archive; found ${#windows_archives[@]}." >&2
             exit 1
           fi
-          macos_archives=(assets/FreightFate-*-macos-arm64.zip)
+          macos_archives=(release-assets/FreightFate-*-macos-arm64.zip)
           if [ "${#macos_archives[@]}" -ne 1 ]; then
             echo "Expected exactly one Apple Silicon macOS archive; found ${#macos_archives[@]}." >&2
             exit 1
           fi
-          linux_archives=(assets/FreightFate-*-linux-x64.tar.gz)
+          linux_archives=(release-assets/FreightFate-*-linux-x64.tar.gz)
           if [ "${#linux_archives[@]}" -ne 1 ]; then
             echo "Expected exactly one Linux tarball; found ${#linux_archives[@]}." >&2
             exit 1
           fi
-          linux_appimages=(assets/FreightFate-*-linux-x86_64.AppImage)
+          linux_appimages=(release-assets/FreightFate-*-linux-x86_64.AppImage)
           if [ "${#linux_appimages[@]}" -ne 1 ]; then
             echo "Expected exactly one Linux AppImage; found ${#linux_appimages[@]}." >&2
             exit 1
           fi
-          linux_arm64_archives=(assets/FreightFate-*-linux-arm64.tar.gz)
+          linux_arm64_archives=(release-assets/FreightFate-*-linux-arm64.tar.gz)
           if [ "${#linux_arm64_archives[@]}" -ne 1 ]; then
             echo "Expected exactly one Linux ARM64 tarball; found ${#linux_arm64_archives[@]}." >&2
             exit 1
           fi
-          linux_arm64_appimages=(assets/FreightFate-*-linux-aarch64.AppImage)
+          linux_arm64_appimages=(release-assets/FreightFate-*-linux-aarch64.AppImage)
           if [ "${#linux_arm64_appimages[@]}" -ne 1 ]; then
             echo "Expected exactly one Linux ARM64 AppImage; found ${#linux_arm64_appimages[@]}." >&2
             exit 1
@@ -458,27 +554,35 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
           COMMIT_SHA: ${{ needs.prepare.outputs.commit_sha }}
+          IS_PRERELEASE: ${{ needs.prepare.outputs.is_prerelease }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           test "$(git rev-parse HEAD)" = "$COMMIT_SHA"
-          (cd assets && sha256sum FreightFate-*-windows-portable.zip FreightFate-*-macos-arm64.zip FreightFate-*-linux-x64.tar.gz FreightFate-*-linux-x86_64.AppImage FreightFate-*-linux-arm64.tar.gz FreightFate-*-linux-aarch64.AppImage > checksums.txt)
-          (cd assets && sha256sum -c checksums.txt)
+          (cd release-assets && sha256sum FreightFate-*-windows-portable.zip FreightFate-*-macos-arm64.zip FreightFate-*-linux-x64.tar.gz FreightFate-*-linux-x86_64.AppImage FreightFate-*-linux-arm64.tar.gz FreightFate-*-linux-aarch64.AppImage > checksums.txt)
+          (cd release-assets && sha256sum -c checksums.txt)
 
-          LAST_TAG=$(git tag --list "1.9-tester-*" --sort=-version:refname | grep -v "^$TAG$" | head -1)
-          if [ -n "$LAST_TAG" ]; then
-            gh release view "$LAST_TAG" --json body -q .body > previous-notes.md || true
-            python3 tools/release_notes.py nightly \
-              --previous-tag "$LAST_TAG" \
-              --exclude-notes previous-notes.md \
-              --output notes.md
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            LAST_TAG=$(git tag --list "1.9-tester-*" --sort=-version:refname | grep -v "^$TAG$" | head -1)
+            if [ -n "$LAST_TAG" ]; then
+              gh release view "$LAST_TAG" --json body -q .body > previous-notes.md || true
+              python3 tools/release_notes.py nightly \
+                --previous-tag "$LAST_TAG" \
+                --exclude-notes previous-notes.md \
+                --output notes.md
+            else
+              python3 tools/release_notes.py nightly --first-snapshot --output notes.md
+            fi
           else
-            python3 tools/release_notes.py nightly --first-snapshot --output notes.md
+            # Stable notes: the matching ## version block, or Unreleased if
+            # that heading has not been cut yet (release_notes.stable_notes).
+            python3 tools/release_notes.py stable --version "$VERSION" --output notes.md
           fi
           test -s notes.md
           python3 tools/release_notes.py check-size --input notes.md --max-characters 120000
-          test -s assets/checksums.txt
+          test -s release-assets/checksums.txt
 
       - name: Create prerelease
-        if: ${{ inputs.dry_run != true }}
+        if: ${{ inputs.dry_run != true && needs.prepare.outputs.is_prerelease == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
@@ -489,6 +593,23 @@ jobs:
           elif git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
             git push origin ":refs/tags/$TAG"
           fi
-          gh release create "$TAG" assets/* --notes-file notes.md \
+          gh release create "$TAG" release-assets/* --notes-file notes.md \
             --title "Freight Fate 1.9 tester snapshot $(date -u +%Y-%m-%d)" \
             --prerelease --target "$COMMIT_SHA"
+
+      - name: Create stable release
+        if: ${{ inputs.dry_run != true && needs.prepare.outputs.is_prerelease == 'false' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          COMMIT_SHA: ${{ needs.prepare.outputs.commit_sha }}
+        run: |
+          # Stable tags are owner-pushed. Never delete or move one from CI.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; refusing to replace a stable release." >&2
+            exit 1
+          fi
+          gh release create "$TAG" release-assets/* --notes-file notes.md \
+            --title "Freight Fate $VERSION" \
+            --target "$COMMIT_SHA"

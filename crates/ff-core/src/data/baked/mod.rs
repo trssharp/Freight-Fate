@@ -55,7 +55,7 @@
 //!
 //! ```text
 //! cargo run -p ff-core --bin ff-bake -- \
-//!     --data-dir src/freight_fate/data --out <dir>/world.ffdata
+//!     --data-dir data --out <dir>/world.ffdata
 //! ```
 
 use std::collections::HashMap;
@@ -90,7 +90,13 @@ pub const MAGIC: &[u8; 8] = b"FFDATA\0\0";
 
 /// Bumped whenever a section's encoding changes. A file written by another
 /// version is refused with a message naming both, never half-read.
-pub const FORMAT_VERSION: u32 = 1;
+///
+/// 2: a stop carries the interchange that serves it (`exit_ref`,
+/// `interchange_mi`).
+///
+/// 3: a local segment carries the measured turn angle at the junction onto it
+/// (`local_turn_deg`), which `data::corners` prices the corner from.
+pub const FORMAT_VERSION: u32 = 3;
 
 const HEADER_LEN: usize = 32;
 
@@ -232,7 +238,7 @@ impl BakedData {
             return Err(DataError::io(format!(
                 "{} is baked data format {version}, this build reads format \
                  {FORMAT_VERSION}. Re-bake it: cargo run -p ff-core --bin \
-                 ff-bake -- --data-dir src/freight_fate/data --out {}",
+                 ff-bake -- --data-dir data --out {}",
                 path.display(),
                 path.display()
             )));
@@ -459,7 +465,14 @@ mod tests {
         std::fs::write(&path, &bytes).expect("write");
         let err = BakedData::open(&path).expect_err("refused");
         let text = err.to_string();
-        assert!(text.contains("format 42"), "{text}");
+        // Whatever the build reads today, plus the 41 written above: this
+        // said "format 42" while the format was 1, and broke when it moved.
+        let written = format!("format {}", FORMAT_VERSION + 41);
+        assert!(text.contains(&written), "{text}");
+        assert!(
+            text.contains(&format!("reads format {FORMAT_VERSION}")),
+            "{text}"
+        );
         assert!(text.contains("ff-bake"), "{text}");
     }
 }

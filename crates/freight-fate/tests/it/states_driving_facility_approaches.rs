@@ -14,15 +14,10 @@ use ff_core::sim::weather::WeatherSystem;
 use ff_core::speech_text::SpokenMessage;
 use freight_fate::states::driving_core::route_event_sound;
 
-/// The Python package's `data/` folder in the source tree.
+/// The checkout's world data tree (`data/`).
 fn data_dir() -> PathBuf {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let dir = manifest
-        .join("..")
-        .join("..")
-        .join("src")
-        .join("freight_fate")
-        .join("data");
+    let dir = manifest.join("..").join("..").join("data");
     dir.canonicalize().unwrap_or(dir)
 }
 
@@ -54,19 +49,14 @@ fn test_facility_route_prefers_turn_level_source_approach() {
 
     assert!(approach.turn_level);
     assert!((route.miles() - approach.total_miles).abs() < 1e-9);
-    // The route speaks the source roads verbatim, except the retired
-    // "unnamed public road" literal still baked into stale records, which
-    // is spoken as the side-street stand-in (2026-09-01).
+    // The route speaks the source roads as the game speaks any street: the
+    // retired "unnamed public road" literal becomes the side-street stand-in
+    // (2026-09-01), and a raw list of route numbers keeps its first
+    // ("386th Avenue (US 281;CR 13)" is spoken "386th Avenue (US 281)").
     let roads: Vec<String> = approach
         .segments
         .iter()
-        .map(|s| {
-            if s.road == "unnamed public road" {
-                "a side street".to_string()
-            } else {
-                s.road.clone()
-            }
-        })
+        .map(|s| ff_core::data::world_services::spoken_road_text(&s.road))
         .collect();
     assert_eq!(route.highways(), roads);
 

@@ -37,6 +37,7 @@ use crate::models::enforcement::DrivingRecord;
 use crate::models::jobs::{py_str, py_truthy, Job};
 use crate::models::loyalty::LoyaltyAccount;
 use crate::models::market::Market;
+use crate::models::money_guard::MoneyGuard;
 use crate::models::safety_record::SAFETY_RECORD_BASELINE;
 use crate::models::save_migration::json_f64;
 use crate::models::start_options::{DEFAULT_START_KEY, START_MODE_COMPANY};
@@ -46,7 +47,9 @@ use crate::sim::hos::{DutyLog, HosClock};
 use crate::sim::vehicle::{TruckSpecs, TruckState};
 
 pub mod condition;
+pub mod origin;
 pub mod paths;
+pub mod plausibility;
 pub mod serialize;
 pub mod signing;
 mod traits;
@@ -57,6 +60,8 @@ pub(crate) mod tests;
 mod tests_compat;
 #[cfg(test)]
 mod tests_gate;
+#[cfg(test)]
+mod tests_origin;
 #[cfg(test)]
 mod tests_portable;
 #[cfg(test)]
@@ -112,9 +117,10 @@ pub const LEGACY_CONDITION_FIELDS: &[&str] = &[
 
 // Packed save container: this magic header, then zlib-deflated profile JSON.
 // The container stops accidental and casual hand-editing; the HMAC signature
-// inside the JSON remains the actual tamper check. Legacy plain-JSON saves
+// inside the JSON remains the actual tamper check. Signed plain-JSON saves
 // still load and are converted on their next save (the old file is kept as
-// `.json.bak` so an older game version can still be rolled back to).
+// `.json.bak` so an older game version can still be rolled back to); an
+// unsigned one loads marked as modified.
 pub const SAVE_MAGIC: &[u8] = b"FFSAVE1\x00";
 pub const SAVE_SUFFIX: &str = ".ffsave";
 pub const LEGACY_SAVE_SUFFIX: &str = ".json";
@@ -347,7 +353,10 @@ pub fn find_save_path(name: &str) -> Option<PathBuf> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Profile {
     pub name: String,
-    pub money: f64,
+    /// Private so every change goes through `earn`, `spend` or `set_money`
+    /// and the money guard sees it; a direct write would wrongly mark an
+    /// honest career as modified. Read it with [`Profile::money`].
+    money: f64,
     pub current_city: String,
     // The release line this career was created on. New careers stamp the
     // current line; a save without the field is judged by its save version
@@ -460,6 +469,12 @@ pub struct Profile {
     // Set by from_dict when the raw dict needed a format migration, so load()
     // can rewrite the converted save to disk. Never serialized.
     pub needs_migration_resave: bool,
+
+    // Runtime shadow of `money`, held obfuscated so an editor writing the
+    // field directly leaves the two disagreeing. Never serialized; see
+    // models/money_guard.rs. Seeded at creation and at load, moved by
+    // earn/spend, resynced by set_money.
+    pub money_guard: MoneyGuard,
 }
 
 impl Default for Profile {
@@ -510,6 +525,7 @@ impl Default for Profile {
             radio_favorites: Vec::new(),
             recent_lanes: Vec::new(),
             needs_migration_resave: false,
+            money_guard: MoneyGuard::seeded(STARTING_MONEY),
         }
     }
 }
@@ -551,6 +567,63 @@ impl Profile {
             current_city: current_city.to_string(),
             ..Self::default()
         }
+    }
+
+    // -- money -----------------------------------------------------------------
+
+    /// Verify the live `money` field against the shadow the money guard
+    /// keeps. A balance rewritten outside the game's own paths (a memory
+    /// editor mid-session) leaves the two disagreeing; the first legitimate
+    /// transaction or save then marks the career the same way an edited save
+    /// file is marked. Legitimate bulk writes go through `set_money`, which
+    /// resyncs the shadow instead. Returns false when a divergence was seen.
+    pub fn audit_money(&mut self) -> bool {
+        if self.money_guard.check(self.money) {
+            return true;
+        }
+        log::warn!(
+            "{}: balance changed outside a game transaction; marking career modified",
+            self.name
+        );
+        self.integrity_modified = true;
+        self.integrity_notice_pending = true;
+        origin::forget_origin(&self.name);
+        false
+    }
+
+    /// Clear the modified mark after the server accepted the career on
+    /// review; where it arrived from no longer matters.
+    pub fn absolve(&mut self) {
+        self.integrity_modified = false;
+        self.integrity_notice_pending = false;
+        origin::forget_origin(&self.name);
+    }
+
+    /// The career balance in dollars.
+    pub fn money(&self) -> f64 {
+        self.money
+    }
+
+    /// Credit `amount` dollars through the money guard.
+    pub fn earn(&mut self, amount: f64) {
+        self.audit_money();
+        self.money += amount;
+        self.money_guard.apply(amount);
+    }
+
+    /// Debit `amount` dollars through the money guard.
+    pub fn spend(&mut self, amount: f64) {
+        self.audit_money();
+        self.money -= amount;
+        self.money_guard.apply(-amount);
+    }
+
+    /// Set the balance outright (start options, scenario levers, settlement
+    /// corrections): the guard adopts the new number rather than flagging
+    /// it. Shadows the `set_money` trait methods, which resync the same way.
+    pub fn set_money(&mut self, money: f64) {
+        self.money = money;
+        self.money_guard.resync(money);
     }
 
     // -- truck -----------------------------------------------------------------
@@ -894,6 +967,9 @@ impl Profile {
     /// Write the signed, packed save atomically; returns its path.
     pub fn save(&self) -> std::io::Result<PathBuf> {
         let path = self.path();
+        if !self.money_guard.matches(self.money) {
+            origin::forget_origin(&self.name);
+        }
         let tmp = path.with_extension("ffsave.tmp");
         std::fs::write(&tmp, encode_save_bytes(&self.to_dict()))?;
         std::fs::rename(&tmp, &path)?;
@@ -957,15 +1033,47 @@ impl Profile {
             } else {
                 tampered = true;
             }
-        } else if !signed && packed && !skip {
-            // The game only ever writes packed saves signed; a packed save with
-            // no signature was unpacked, edited, and repacked. Plain unsigned
-            // JSON, by contrast, is how every save from before signing looks,
-            // so that legacy shape keeps its amnesty (it is re-signed and
-            // packed by the resave below).
+        } else if !signed && !skip {
+            // Every build of the 1.9 line signs what it writes, and a save
+            // from before the line was refused above, so a save that reaches
+            // here unsigned had its signature taken off by hand -- packed or
+            // plain. Plain unsigned JSON used to keep an amnesty as the shape
+            // of saves from before signing; none of those load any more, and
+            // the amnesty had become the easy way to edit a career: write the
+            // numbers as JSON and the game signed them for you.
             tampered = true;
         }
         let mut profile = Profile::from_dict(&data);
+        let money_impossible =
+            plausibility::money_is_impossible(profile.money, profile.career.total_earnings);
+        if !skip && money_impossible {
+            // Signed or not: a balance rewritten while the game ran is signed
+            // by the game itself, so the file looks honest and the number
+            // does not.
+            log::warn!(
+                "{}: balance {} is more than {} of lifetime earnings could hold",
+                path.display(),
+                profile.money,
+                profile.career.total_earnings
+            );
+            tampered = true;
+        }
+        if tampered || resign {
+            // Only a copy from another computer (a good file whose signature
+            // this data directory cannot check) records where it came from:
+            // the raw dict, before migration or marking, is what the other
+            // computer backed up. Any other reason forgets an earlier record.
+            let copied = signed
+                && !skip
+                && !money_impossible
+                && !data.get("integrity_modified").is_some_and(py_truthy);
+            if copied {
+                let (_, hash) = origin::cloud_content(&Value::Object(data.clone()));
+                origin::record_origin(&profile.name, &hash);
+            } else {
+                origin::forget_origin(&profile.name);
+            }
+        }
         if tampered && !profile.integrity_modified {
             profile.integrity_modified = true;
             profile.integrity_notice_pending = true;
@@ -1007,6 +1115,7 @@ impl Profile {
     /// Remove this profile's save files (packed and legacy).
     pub fn delete(&self) {
         let path = self.path();
+        origin::forget_origin(&self.name);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("json"));
     }

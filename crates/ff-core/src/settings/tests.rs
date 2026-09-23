@@ -80,16 +80,18 @@ fn old_stopping_toggles_migrate_to_the_one_facility_assist() {
 // -- the field table -----------------------------------------------------------
 
 #[test]
-fn the_struct_carries_the_seventy_nine_persisted_fields_in_python_order() {
+fn the_struct_carries_the_eighty_persisted_fields_in_python_order() {
     // 73 came over from the Python dataclass; backup_announcements,
     // duty_notifications and braille_only (2026-09-02) and real_fuel_prices
-    // (2026-09-12) and the two shortcut tables (2026-09-14) were added on
-    // the Rust side.
-    assert_eq!(Settings::FIELD_NAMES.len(), 79);
+    // (2026-09-12), the two shortcut tables (2026-09-14),
+    // radio_shuffle_playlists and steering_guide_inverted (2026-09-18), and
+    // synth_music and music_seed (2026-09-21) were added on the Rust side;
+    // lane_centering_assist was retired for 1.9.
+    assert_eq!(Settings::FIELD_NAMES.len(), 82);
     assert_eq!(Settings::FIELD_NAMES[0], "online_services");
-    assert_eq!(Settings::FIELD_NAMES[76], "settings_layout_notice_from");
+    assert_eq!(Settings::FIELD_NAMES[78], "settings_layout_notice_from");
     let pairs = Settings::default().ordered_values();
-    assert_eq!(pairs.len(), 79);
+    assert_eq!(pairs.len(), 82);
     for ((name, _), field) in pairs.iter().zip(Settings::FIELD_NAMES) {
         assert_eq!(name, field);
     }
@@ -111,17 +113,19 @@ fn the_defaults_match_the_python_dataclass() {
         "pace_retired_notice_left": 0, "real_weather": false, "real_traffic": false,
         "real_parking": false, "real_fuel_prices": true,
         "live_weather_controls_calendar": true,
-        "hos_mode": "realistic", "lane_keeping": "off", "lane_keeping_rename_notice_left": 0,
+        "hos_mode": "realistic", "lane_keeping": "partial", "lane_keeping_rename_notice_left": 0,
         "lane_cue_loudness": "standard", "lane_guide_tone": false,
-        "driving_assistance_preset": "realistic", "automatic_emergency_braking": true,
+        "driving_assistance_preset": "balanced", "automatic_emergency_braking": true,
         "lane_departure_warning": true, "stop_and_go_assist": true,
-        "lane_centering_assist": false, "descent_speed_control": "realistic",
-        "exit_speed_assist": true, "destination_approach_assist": false,
+        "descent_speed_control": "balanced",
+        "exit_speed_assist": true, "destination_approach_assist": true,
         "selected_stop_assist": false, "curve_speed_assist": true,
         "route_transition_assist": true, "speed_keeper": true, "predictive_cruise": true,
         "pedal_latch": "on", "curve_callouts": true, "master_volume": 1.0,
-        "sfx_volume": 0.8, "music_volume": 0.5, "radio_volume": 0.25, "radio_enabled": true,
+        "sfx_volume": 0.8, "music_volume": 0.5, "synth_music": false, "music_seed": 48213,
+        "radio_volume": 0.25, "radio_enabled": true,
         "radio_station_id": "route_playlist", "radio_streamer_safe": false,
+        "radio_shuffle_playlists": false,
         "weather_volume": 0.65, "engine_volume": 0.55, "ui_volume": 0.9,
         "duck_audio_for_speech": false, "driving_speech": "standard", "chatter_parks": true,
         "chatter_rivers": true, "chatter_passes": true, "chatter_museums": true,
@@ -136,14 +140,14 @@ fn the_defaults_match_the_python_dataclass() {
         "mastodon_sharing": false, "mastodon_linked": false, "mastodon_linked_handle": "",
         "controller_enabled": true, "haptics_enabled": true, "online_offer_seen": false,
         "settings_version": 3, "settings_layout_notice_from": -1,
-        "key_bindings": "", "pad_bindings": ""
+        "key_bindings": "", "pad_bindings": "", "steering_guide_inverted": false
     }"#,
     )
     .unwrap();
     let Value::Object(expected) = expected else {
         unreachable!()
     };
-    assert_eq!(expected.len(), 79);
+    assert_eq!(expected.len(), 82);
     for (name, value) in s.ordered_values() {
         assert_eq!(Some(&value), expected.get(name), "{name}");
     }
@@ -155,7 +159,10 @@ fn the_file_text_is_what_json_dump_wrote() {
     let s = Settings::default();
     let text = s.to_file_text();
     assert!(text.starts_with("{\n  \"online_services\": true,\n  \"imperial_units\": true,\n"));
-    assert!(text.ends_with("  \"pad_bindings\": \"\",\n  \"steering_assist\": \"realistic\"\n}"));
+    assert!(text.ends_with(
+        "  \"pad_bindings\": \"\",\n  \"steering_guide_inverted\": false,\n  \
+         \"steering_assist\": \"light\"\n}"
+    ));
     assert!(text.contains("\n  \"time_scale\": 10.0,\n"));
     assert!(text.contains("\n  \"radio_volume\": 0.25,\n"));
     // ensure_ascii: a non-ASCII voice name is escaped the way Python wrote it.
@@ -219,7 +226,6 @@ fn unknown_keys_are_ignored_and_wrong_shapes_take_the_python_fallbacks() {
     assert_eq!(s.lane_keeping, "full");
     assert!(s.lane_keeping_unreadable);
     assert!(!s.lane_departure_warning);
-    assert!(!s.lane_centering_assist);
     assert_eq!(s.lane_cue_loudness, "standard");
     assert_eq!(s.descent_speed_control, "realistic");
     assert_eq!(s.acc_following_gap, "normal");
@@ -342,20 +348,24 @@ fn test_driving_assistance_presets_apply_complete_mappings() {
 }
 
 #[test]
-fn test_a_fresh_install_is_the_realistic_preset() {
-    // The shipped defaults ARE the realistic preset, and the row says so.
+fn test_a_fresh_install_is_the_balanced_preset() {
+    // The shipped defaults ARE a named preset, and the row says so -- the
+    // point of the 2026-08-09 ruling, which the preset must keep honouring
+    // whichever preset that is. For months the row read "Realistic" while
+    // lane keeping was fully automated, because the preset could not see that
+    // field, so a player reading the row believed something false.
     //
-    // For months the row read "Realistic" while lane keeping was fully
-    // automated, because the preset could not see that field -- so a player
-    // reading the row believed they were driving the realistic ruleset. This
-    // makes the truck match the label those players have been reading,
-    // rather than renaming the label to match a setting nobody chose.
+    // It moved from Realistic to Balanced on 2026-09-18, when the lane model
+    // grew a heading: "off" stopped being a mild drift and became a
+    // continuous driving task, so shipping it would hand every new driver a
+    // job they cannot yet do. Partial steers for the error and still leaves
+    // them something to feel.
     let mut settings = Settings::default();
-    assert_eq!(settings.lane_keeping, "off");
+    assert_eq!(settings.lane_keeping, "partial");
     assert!(settings.lane_is_manual());
     assert!(!settings.lane_is_automated());
-    assert_eq!(settings.driving_assistance_preset, "realistic");
-    assert_eq!(settings.refresh_driving_assistance_preset(), "realistic");
+    assert_eq!(settings.driving_assistance_preset, "balanced");
+    assert_eq!(settings.refresh_driving_assistance_preset(), "balanced");
 }
 
 #[test]
@@ -426,6 +436,22 @@ fn test_legacy_settings_preserve_lane_keeping_choice() {
         assert!(!loaded.stop_and_go_assist);
         assert_eq!(loaded.descent_speed_control, "off");
         assert_eq!(loaded.driving_assistance_preset, "custom");
+        // Not the class default, which is on since the Balanced fresh
+        // install: this save predates the setting and never opted in, so the
+        // truck must not start braking itself at the gate.
+        assert!(!loaded.destination_approach_assist);
+    });
+}
+
+#[test]
+fn test_a_legacy_save_that_opted_into_stopping_keeps_it() {
+    // The other half of the same rule. Either old toggle counts as the opt-in
+    // the blanket "everything off" is not allowed to take back.
+    with_data_dir(|_| {
+        write_settings_file(r#"{"steering_assist": "off", "selected_stop_assist": true}"#);
+        let loaded = Settings::load();
+        assert!(loaded.destination_approach_assist);
+        assert!(!loaded.automatic_emergency_braking);
     });
 }
 
@@ -470,7 +496,9 @@ fn test_a_fresh_install_hears_no_rename_notice() {
             std::fs::remove_file(&path).unwrap();
         }
         let loaded = Settings::load();
-        assert_eq!(loaded.lane_keeping, "off"); // the realistic default, not the fallback
+        // The shipped default, not the unreadable-value fallback (which is
+        // "full"): a fresh install must land on what the preset promises.
+        assert_eq!(loaded.lane_keeping, "partial");
         assert_eq!(loaded.lane_keeping_rename_notice_left, 0);
         assert!(!loaded.lane_keeping_unreadable);
     });
@@ -531,6 +559,26 @@ fn test_realistic_pacing_migrates_to_standard_and_is_explained() {
 }
 
 #[test]
+fn test_retired_lane_centering_assist_is_dropped_on_load_and_save() {
+    // Owner 1.9: retire the phantom row. Old saves still carry the key;
+    // load must ignore it, and the next save must not write it back.
+    with_data_dir(|_| {
+        write_settings_file(
+            r#"{"lane_centering_assist": true, "lane_keeping": "partial", "driving_assistance_preset": "balanced"}"#,
+        );
+        let loaded = Settings::load();
+        assert!(!Settings::FIELD_NAMES.contains(&"lane_centering_assist"));
+        loaded.save().unwrap();
+        let saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(Settings::path()).unwrap()).unwrap();
+        assert!(
+            saved.get("lane_centering_assist").is_none(),
+            "retired key must not be rewritten: {saved}"
+        );
+    });
+}
+
+#[test]
 fn test_a_pacing_the_row_still_offers_is_left_alone() {
     // The migration is for the one retired value, not a clamp on the field.
     //
@@ -549,9 +597,8 @@ fn test_a_pacing_the_row_still_offers_is_left_alone() {
 
 /// Fields with no consumer anywhere outside settings.py and the settings
 /// menu. Each one needs a reason to be here, because "a menu row and nothing
-/// else" is exactly what a phantom setting looks like: lane_centering_assist
-/// offered blind players steering help for months while nothing in the
-/// driving code read it.
+/// else" is exactly what a phantom setting looks like (lane_centering_assist
+/// was one until it was retired for 1.9).
 ///
 /// Internal flags -- machinery the player never chooses, read inside
 /// settings.py or by the settings menu itself.
@@ -589,12 +636,10 @@ const SETTINGS_INTERNAL_FLAGS: [&str; 11] = [
 
 /// Pending features -- a real row a player can set, for behaviour that does
 /// not exist yet. Different from an internal flag: a player CAN choose it
-/// and hear nothing happen, so the help text must say so plainly. Owner
-/// direction 2026-08-15 keeps this row as the slot the work will land in.
-const SETTINGS_PENDING_FEATURES: [&str; 1] = [
-    // No steering help is implemented; the help text says exactly that.
-    "lane_centering_assist",
-];
+/// and hear nothing happen, so the help text must say so plainly. Empty
+/// after lane_centering_assist was retired for 1.9 (owner: retire, do not
+/// implement).
+const SETTINGS_PENDING_FEATURES: [&str; 0] = [];
 
 /// Every Settings field must reach the game, or be listed above with a
 /// reason. A field whose only appearances are its own definition and a menu
@@ -738,7 +783,7 @@ fn test_flavor_is_independent_of_the_rung() {
 }
 
 #[test]
-fn test_the_cab_is_categorised_so_quiet_is_actually_quiet() {
+fn test_quiet_keeps_short_cab_confirmations() {
     // Owner playtest, 2026-08-17: "quiet still feels busy". (The source
     // scan of the driving states for the three cab lines goes with the
     // states port.)
@@ -746,7 +791,7 @@ fn test_the_cab_is_categorised_so_quiet_is_actually_quiet() {
     quiet.driving_speech = "quiet".to_string();
     assert_eq!(
         quiet.speech_disposition(Some(SpeechCategory::Confirmation)),
-        Disposition::Earcon
+        Disposition::Terse
     );
 }
 
@@ -882,6 +927,8 @@ fn test_radio_defaults_are_full_dial_and_quiet() {
     assert_eq!(s.radio_volume, 0.25);
     // Streamer-safe mode is the opt-out a broadcaster takes, not the default.
     assert!(!s.radio_streamer_safe);
+    // A playlist file plays in its own order unless the player asks otherwise.
+    assert!(!s.radio_shuffle_playlists);
 }
 
 #[test]
@@ -943,10 +990,13 @@ fn a_file_that_is_not_an_object_reads_as_an_empty_one() {
         let loaded = Settings::load();
         assert_eq!(loaded.driving_assistance_preset, "custom");
         assert_eq!(loaded.lane_keeping, "full");
+        // Unparseable text is not a file at all, so this reads as a fresh
+        // install and lands on the shipped defaults -- Balanced since
+        // 2026-09-18 -- rather than on the corrupt-value fallback above.
         write_settings_file("{not json");
         let loaded = Settings::load();
-        assert_eq!(loaded.driving_assistance_preset, "realistic");
-        assert_eq!(loaded.lane_keeping, "off");
+        assert_eq!(loaded.driving_assistance_preset, "balanced");
+        assert_eq!(loaded.lane_keeping, "partial");
     });
 }
 

@@ -59,7 +59,7 @@ fn back_row() -> Row {
 }
 
 /// `(field, label, help)` for each driving assist row.
-pub(super) const DRIVING_ASSIST_SPECS: [(&str, &str, &str); 13] = [
+pub(super) const DRIVING_ASSIST_SPECS: [(&str, &str, &str); 12] = [
     (
         "automatic_emergency_braking",
         "Automatic emergency braking",
@@ -74,16 +74,6 @@ pub(super) const DRIVING_ASSIST_SPECS: [(&str, &str, &str); 13] = [
         "stop_and_go_assist",
         "Stop-and-go assistance",
         "Adaptive cruise slows behind traffic and resumes when it is safe.",
-    ),
-    // Nothing in the driving code reads this yet, and the row used to
-    // promise steering help that never arrived. It stays as the slot
-    // the help will land in, and says plainly that it is not doing
-    // anything today -- a blind driver cannot see that the wheel is
-    // unchanged, so the row has to tell them.
-    (
-        "lane_centering_assist",
-        "Lane centering assistance",
-        "Reserved for steering help the truck does not do yet: on or off makes no difference today. Lane keeping decides how much of the lane work is yours; Lane-departure warning speaks when you drift.",
     ),
     (
         "descent_speed_control",
@@ -102,8 +92,8 @@ pub(super) const DRIVING_ASSIST_SPECS: [(&str, &str, &str); 13] = [
     ),
     (
         "curve_speed_assist",
-        "Curve speed assistance",
-        "Slows for mapped bends on the service brakes, never the engine brake; you still steer. On a real downgrade it does raise the jake.",
+        "Curve assistance",
+        "Takes mapped bends for you: slows to the advised speed on the service brakes, never the engine brake, and holds the wheel through the bend. On a real downgrade it does raise the jake. Lane keeping is a separate setting and holds you between the lines the rest of the time.",
     ),
     (
         "route_transition_assist",
@@ -146,7 +136,6 @@ pub(super) fn assist_flag(s: &Settings, field: &str) -> bool {
         "automatic_emergency_braking" => s.automatic_emergency_braking,
         "lane_departure_warning" => s.lane_departure_warning,
         "stop_and_go_assist" => s.stop_and_go_assist,
-        "lane_centering_assist" => s.lane_centering_assist,
         "exit_speed_assist" => s.exit_speed_assist,
         "destination_approach_assist" => s.destination_approach_assist,
         "curve_speed_assist" => s.curve_speed_assist,
@@ -183,10 +172,12 @@ impl SettingsCategoryState {
                 action: adjust(|s, ctx, d| s.cycle_driving_speech(ctx, d)),
                 help: "How much the road tells you. Standard speaks every \
                        confirmation and status update, and a driving tip once \
-                       per leg. Quiet turns confirmations and status into short \
-                       sounds. Urgent only also turns the heads-up about a bend \
-                       or a town into a short sound, keeping safety calls, costs, \
-                       and the turn itself. Billboards, place names, and \
+                       per leg. Quiet speaks short confirmations, lane openings, \
+                       and status updates. Urgent only keeps safety warnings \
+                       and directions requiring action, with sounds for road \
+                       heads-ups and confirmations. Suppressed speech stays out \
+                       of the event buffer. Readout keys always answer. \
+                       Billboards, place names, and \
                        landmarks have their own switches below.",
             },
             SpeechSpec {
@@ -377,14 +368,18 @@ impl SettingsCategoryState {
                 adjust(|s, ctx, d| s.volume(ctx, "master_volume", 0.1 * d as f64)),
                 adjust(|s, ctx, d| s.volume(ctx, "sfx_volume", 0.1 * d as f64)),
                 adjust(|s, ctx, d| s.cycle_cue_loudness(ctx, d)),
+                adjust(|s, ctx, d| s.toggle_steering_guide_inverted(ctx, d)),
                 adjust(|s, ctx, d| s.toggle_lane_guide_tone(ctx, d)),
                 adjust(|s, ctx, d| s.volume(ctx, "weather_volume", 0.1 * d as f64)),
                 adjust(|s, ctx, d| s.volume(ctx, "engine_volume", 0.1 * d as f64)),
                 adjust(|s, ctx, d| s.toggle_engine_voice(ctx, d)),
                 adjust(|s, ctx, d| s.toggle_jake_voice(ctx, d)),
                 adjust(|s, ctx, d| s.volume(ctx, "music_volume", 0.1 * d as f64)),
+                adjust(|s, ctx, d| s.toggle_music_source(ctx, d)),
+                adjust(|s, ctx, d| s.roll_music_seed(ctx, d)),
                 adjust(|s, ctx, d| s.volume(ctx, "radio_volume", 0.1 * d as f64)),
                 adjust(|s, ctx, d| s.toggle_radio_streamer_safe(ctx, d)),
+                adjust(|s, ctx, d| s.toggle_radio_shuffle_playlists(ctx, d)),
                 adjust(|s, ctx, d| s.toggle_duck_for_speech(ctx, d)),
                 adjust(|s, ctx, d| s.volume(ctx, "ui_volume", 0.1 * d as f64)),
             ],
@@ -725,17 +720,36 @@ impl SettingsCategoryState {
             row(
                 dyn_label(|s| {
                     format!(
+                        "Steering guide: {}",
+                        if s.steering_guide_inverted {
+                            "steer away from the lean"
+                        } else {
+                            "steer toward the lean"
+                        }
+                    )
+                }),
+                adjust(|s, ctx, d| s.toggle_steering_guide_inverted(ctx, d)),
+                "Which way to steer when the engine leans. Toward the lean \
+                 is the default: the engine pans the way you have to turn, \
+                 and comes back to the middle as you turn. Away from the \
+                 lean flips it, for drivers who learned the other habit in \
+                 audio racing games. Everything else about the guide is the \
+                 same either way.",
+            ),
+            row(
+                dyn_label(|s| {
+                    format!(
                         "Lane guide sound: {}",
-                        if s.lane_guide_tone { "tone" } else { "road noise" }
+                        if s.lane_guide_tone { "tone" } else { "engine" }
                     )
                 }),
                 adjust(|s, ctx, d| s.toggle_lane_guide_tone(ctx, d)),
-                "What leans toward the side to steer. Road noise is the \
-                 road you already hear, moving toward the side you need \
-                 and going quiet when you are straight. Tone plays a soft \
-                 note instead, panned the same way, for setups where the \
-                 road is too quiet under the engine. Road noise is the \
-                 default; a held note is tiring over a long haul.",
+                "What leans toward the side to steer. The engine is the \
+                 default: the engine you already hear, moving toward the \
+                 side you need and coming back to the middle once you are \
+                 through. Tone plays a soft note instead, panned the same \
+                 way, for setups where the engine is hard to place. A held \
+                 note is tiring over a long haul.",
             ),
             row(
                 dyn_label(|s| format!("Weather sounds volume: {} percent", pct(s.weather_volume))),
@@ -772,6 +786,24 @@ impl SettingsCategoryState {
                 "Menu and facility background music volume.",
             ),
             row(
+                dyn_label(|s| {
+                    format!(
+                        "Music source: {}",
+                        if s.synth_music { "Synthesized" } else { "Original" }
+                    )
+                }),
+                adjust(|s, ctx, d| s.toggle_music_source(ctx, d)),
+                "Synthesized plays menu music and the Roadhouse station made by the \
+                 game itself, with no AI-made songs or voices, and takes Freight \
+                 Fate's other stations off the dial. Original plays the full \
+                 soundtrack.",
+            ),
+            row(
+                dyn_label(|s| format!("Music seed: {}", s.music_seed)),
+                adjust(|s, ctx, d| s.roll_music_seed(ctx, d)),
+                "Enter rolls a new seed. Every synthesized piece changes with it.",
+            ),
+            row(
                 dyn_label(|s| format!("In-cab radio volume: {} percent", pct(s.radio_volume))),
                 adjust(|s, ctx, d| s.volume(ctx, "radio_volume", 0.1 * d as f64)),
                 "Radio volume while driving. Low by default so speech, engine, and safety cues stay clear.",
@@ -783,7 +815,20 @@ impl SettingsCategoryState {
                 adjust(|s, ctx, d| s.toggle_radio_streamer_safe(ctx, d)),
                 "Off plays the full dial, including real public streams and \
                  personal playlists. On keeps the radio to built-in safe \
-                 stations, for streaming or recording.",
+                 stations, for streaming or recording. With Music source set to \
+                 Synthesized, On keeps the radio on the Roadhouse and station \
+                 keys do nothing.",
+            ),
+            row(
+                dyn_label(|s| {
+                    format!(
+                        "Shuffle personal playlists: {}",
+                        on_off(s.radio_shuffle_playlists)
+                    )
+                }),
+                adjust(|s, ctx, d| s.toggle_radio_shuffle_playlists(ctx, d)),
+                "On plays each of your playlists in a random order, every track \
+                 once before any repeats. Off plays the file top to bottom.",
             ),
             row(
                 dyn_label(|s| {

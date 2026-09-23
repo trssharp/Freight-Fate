@@ -69,14 +69,22 @@ pub trait FuelPump: Menu {
     }
 
     fn refuel(&mut self, ctx: &mut GameContext) {
-        let Some((mut need, region)) = self.drive().with(ctx, |d, _| {
+        let Some((mut need, region, engine_on)) = self.drive().with(ctx, |d, _| {
             (
                 d.trip.truck.specs.fuel_tank_gal - d.trip.truck.fuel_gal,
                 d.trip.current_region().to_string(),
+                d.trip.truck.engine_on,
             )
         }) else {
             return;
         };
+        // Same bar as a car pump: tractor must be off before the nozzle goes
+        // in. Reefer/APU is not this flag and is not required off here.
+        if engine_on {
+            ctx.audio.play("ui/error");
+            ctx.say("Shut the engine off before you fuel.");
+            return;
+        }
         if need < 1.0 {
             ctx.say("The tank is already full.");
             return;
@@ -86,9 +94,9 @@ pub trait FuelPump: Menu {
         let mut cost = 0.0;
         if !carrier_card {
             cost = ctx.economy.fuel_cost(&region, need) + 35.0;
-            if profile_of(ctx).money < cost {
+            if profile_of(ctx).money() < cost {
                 let partial_gal =
-                    ((profile_of(ctx).money - 35.0) / ctx.economy.fuel_price(&region)).max(0.0);
+                    ((profile_of(ctx).money() - 35.0) / ctx.economy.fuel_price(&region)).max(0.0);
                 if partial_gal < 5.0 {
                     ctx.audio.play("ui/error");
                     ctx.say("You cannot afford fuel here.");
@@ -97,7 +105,7 @@ pub trait FuelPump: Menu {
                 need = partial_gal;
                 cost = ctx.economy.fuel_cost(&region, need) + 35.0;
             }
-            profile_mut_of(ctx).money -= cost;
+            profile_mut_of(ctx).spend(cost);
         }
         let margin_kg = self.drive().clone().with(ctx, |d, ctx| {
             d.trip.truck.refuel(Some(need));
@@ -127,7 +135,7 @@ pub trait FuelPump: Menu {
                 fmt_f(FUEL_STOP_MIN, 0)
             ));
         } else {
-            let money = profile_of(ctx).money;
+            let money = profile_of(ctx).money();
             ctx.say(&format!(
                 "Refueled {} gallons for {} dollars. You have {} dollars. Fueling took {} \
                  minutes. {margin}. {loyalty_text}",

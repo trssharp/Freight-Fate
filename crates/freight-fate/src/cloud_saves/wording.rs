@@ -62,6 +62,10 @@ pub const REJECTED_UPLOAD_REASONS: &[&str] = &[
     // forever while the player was told nothing at all.
     "too_many_slots",
     "signing_unavailable",
+    // A career carrying the "changed outside the game" mark waits for the
+    // owner to review it; a retry cannot change that answer, so the queue
+    // must stop instead of retrying every two minutes forever.
+    "review_declined",
 ];
 
 /// Sort an `upload_save` failure `reason` into the family its
@@ -128,6 +132,12 @@ pub const SERVER_FAULT_REJECTION_REASONS: &[&str] = &["signing_unavailable"];
 /// the same story for the same reason code.
 pub fn rejection_status(name: &str, reason: Option<&str>) -> String {
     let reason = reason.unwrap_or("");
+    if reason == "review_declined" {
+        return format!(
+            "{name}: backup declined after review. This career no longer backs \
+up to your orinks.net account. Your local career is safe."
+        );
+    }
     if ARITHMETIC_REJECTION_REASONS.contains(&reason) {
         return format!(
             "{name}: backup not accepted. The numbers in this save do not \

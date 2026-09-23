@@ -239,6 +239,12 @@ pub struct Trip {
     pub outbound: bool,
     pub position_mi: f64,
     pub game_minutes: f64,
+    /// Diesel burned on this run, in gallons. Observed as a per-frame DROP in
+    /// the tank rather than plumbed out of the burn model, so a refuel stop
+    /// mid-run adds fuel without ever subtracting from what was spent.
+    pub fuel_used_gal: f64,
+    /// Last tank level seen, for the line above.
+    fuel_seen_gal: Option<f64>,
     /// Real seconds spent in trip.update: the sitting budget chatter reads.
     pub sitting_s: f64,
     /// When the last billboard / flavor landmark was generated, on sitting_s.
@@ -253,6 +259,14 @@ pub struct Trip {
     pub waiting: bool,
     /// set by the UI layer; gates inspections
     pub hos_violation: bool,
+    /// How much more often than a clean driver a routine roadside inspection
+    /// stops this truck (`roadside_inspection::roadside_inspection_scale`):
+    /// set by the UI layer from the safety record, the hours mode and the
+    /// calendar; zero switches the routine stops off.
+    pub roadside_inspection_scale: f64,
+    /// The career clock is inside CVSA's Roadcheck blitz: the CB says so
+    /// once, early in the run. Set by the UI layer with the scale above.
+    pub roadcheck_blitz: bool,
     pub seed: Option<i64>,
     pub rng: PyRandom,
     pub insp_rng: PyRandom,
@@ -290,6 +304,8 @@ pub struct Trip {
     pub pull_over_active: bool,
     /// True from a street corner's approach call until the corner resolves.
     pub controlled_turn: bool,
+    /// True while curve assistance is still taking speed off for a bend.
+    pub curve_shed_active: bool,
     /// Road left to an exit the driver has signalled for.
     pub exit_approach_mi: Option<f64>,
     pub exit_approach_release_s: f64,
@@ -409,6 +425,8 @@ impl Trip {
             outbound: opts.outbound,
             position_mi: 0.0,
             game_minutes: 0.0,
+            fuel_used_gal: 0.0,
+            fuel_seen_gal: None,
             sitting_s: 0.0,
             last_chatter_s: None,
             finished: false,
@@ -417,6 +435,8 @@ impl Trip {
             facility_leg: 0,
             waiting: false,
             hos_violation: false,
+            roadside_inspection_scale: 1.0,
+            roadcheck_blitz: false,
             seed,
             rng: make_rng(None),
             insp_rng: make_rng(Some(0x5EED)),
@@ -444,6 +464,7 @@ impl Trip {
             dock_run_in: false,
             pull_over_active: false,
             controlled_turn: false,
+            curve_shed_active: false,
             exit_approach_mi: None,
             exit_approach_release_s: 0.0,
             announced_chain_law: HashSet::new(),
@@ -558,6 +579,17 @@ impl Trip {
         }
         if self.severe_curve_decompression() {
             // Same law for a hard bend (owner, 2026-07-24).
+            return full.min(1.0);
+        }
+        if self.curve_shed_active {
+            // And while curve assistance is still shedding for one. The law
+            // above lets go at the advisory plus the pacenote margin; the
+            // assist aims at the advisory itself, so the last three miles an
+            // hour were shed on the compressed clock, where the road left
+            // passes seventeen times faster than the truck slows and the
+            // only profile that still lands on the number is a full
+            // application (AZ-260 bench trace, 2026-09-18: 0.35 of the
+            // pedal one frame, all of it the next, to take off 3 mph).
             return full.min(1.0);
         }
         if self.armed_exit_decompression() {
@@ -878,6 +910,19 @@ impl Trip {
             }
         }
         0
+    }
+
+    /// The design speed of the leg under the truck, in mph.
+    ///
+    /// What the curve bake priced this leg's advisories and its bank with, so
+    /// anything reading the bank at run time (the lane model's cornering
+    /// ceiling) asks the same question of the same road.
+    pub fn leg_design_speed_mph(&self) -> f64 {
+        self.route
+            .legs
+            .get(self.current_leg_index())
+            .map(|leg| crate::data::curves::leg_design_speed(leg))
+            .unwrap_or(55.0)
     }
 
     /// The world city the current leg heads toward; panics (Python:

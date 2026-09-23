@@ -182,6 +182,10 @@
       "category": "career",
       "description": "Fifty career deliveries logged. The board knows your handle now, and the windshield's collected a small nation of bugs."
     },
+    "fifty_five_mph": {
+      "category": "hidden",
+      "description": "It isn't the mid-90s anymore like Jim Kitchen had you believe in Trucker. It's okay, floor it and hit 88."
+    },
     "fifty_thousand_miles": {
       "category": "career",
       "description": "Fifty thousand miles of trailers and two-lane towns behind you. You answer to a long ribbon of road now, and it is not the sort of job a person walks away from."
@@ -642,6 +646,10 @@
       "category": "career",
       "description": "Ten career deliveries in the books. It has been a long, strange stretch of road to get here, and the receipts are piling up faster than the war stories."
     },
+    "ten_four_day": {
+      "category": "hidden",
+      "description": "A load settled on the fourth of October, which every driver reads as ten-four. Some white knight on the channel started it, and by noon the whole band was saying the date back."
+    },
     "ten_thousand_miles": {
       "category": "career",
       "description": "Ten thousand lifetime miles behind you. The white-line fever stopped being a symptom a long way back -- now it's just the job."
@@ -786,6 +794,7 @@
     "farm_load",
     "fifteen_states",
     "fifty_deliveries",
+    "fifty_five_mph",
     "fifty_thousand_miles",
     "first_day",
     "first_delivery",
@@ -901,6 +910,7 @@
     "storm_driving",
     "tank_load",
     "ten_deliveries",
+    "ten_four_day",
     "ten_thousand_miles",
     "texas_triangle",
     "thirty_states",
@@ -967,6 +977,7 @@
     "farm_load": "Feed, Seed, and Freight",
     "fifteen_states": "Fifteen State Lines Behind You",
     "fifty_deliveries": "Fifty Loads Down the Road",
+    "fifty_five_mph": "Wrong Game, No Limit",
     "fifty_thousand_miles": "Highway Lifer",
     "first_day": "First Day",
     "first_delivery": "Signed, Sealed, Hauled",
@@ -1082,6 +1093,7 @@
     "storm_driving": "Dark Line on the Radar",
     "tank_load": "The Load That Pushes Back",
     "ten_deliveries": "What a Long, Strange Haul",
+    "ten_four_day": "Copy That, October",
     "ten_thousand_miles": "Ten Thousand Down the Line",
     "texas_triangle": "All Your Loads Live in Texas",
     "thirty_states": "Thirty States and Counting",
@@ -1788,6 +1800,39 @@
     "yuma_az_us": "Yuma, Arizona",
     "zanesville_oh_us": "Zanesville, Ohio"
   },
+  "companyCareerTitles": [
+    "Yard Trainee",
+    "New Hire Company Driver",
+    "Solo Company Driver",
+    "Regional Company Driver",
+    "Regional Regular",
+    "Experienced Company Driver",
+    "Long-Haul Company Driver",
+    "Heavy Freight Driver",
+    "High-Value Company Driver",
+    "Lead Company Driver",
+    "Specialized Company Driver",
+    "Premium Lane Driver",
+    "Carrier Mentor Driver",
+    "Business Prep Driver",
+    "Dedicated Company Driver",
+    "Fleet Senior Driver",
+    "Lead Fleet Driver",
+    "Company Fleet Captain",
+    "Veteran Company Hauler",
+    "Senior Fleet Regular",
+    "Carrier Elite Driver",
+    "Premium Company Lane Driver",
+    "Master Company Driver",
+    "Distinguished Fleet Driver",
+    "Senior Fleet Mentor",
+    "Carrier Lifetime Driver",
+    "Elite Specialized Company Driver",
+    "Top-Seniority Company Driver",
+    "Company Career Veteran",
+    "Freight Fate Company Driver"
+  ],
+  "companyRankForkLevel": 18,
   "endorsements": {
     "doubles_triples": {
       "label": "doubles",

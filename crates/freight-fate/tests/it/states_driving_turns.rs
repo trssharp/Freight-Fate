@@ -7,9 +7,10 @@
 
 use std::sync::Arc;
 
+use ff_core::data::corners::corner_speed_mph;
 use ff_core::data::curves::{curve_severity, leg_curves, route_curves, RouteCurve};
 use ff_core::data::world::get_world;
-use ff_core::data::world_models::{CorridorDetail, Landmark, Leg, Route};
+use ff_core::data::world_models::{CorridorDetail, Landmark, Leg, Route, RouteCheckpoint};
 use ff_core::models::jobs::{Job, CARGO_CATALOG};
 use ff_core::models::profile::Profile;
 use ff_core::settings::Settings;
@@ -21,9 +22,10 @@ use freight_fate::app::testing::TestApp;
 use freight_fate::states::base::{InputEvent, Key, Mods};
 use freight_fate::states::driving::DrivingState;
 use freight_fate::states::driving_core::*;
+use freight_fate::states::driving_location::NEAREST_TOWN_MI;
 use freight_fate::states::driving_turns::{
-    RAMP_GUIDE_DEMAND, TURN_COMMIT_TAIL_MI, TURN_CORNER_MAX_MPH, TURN_MISS_LOOP_MIN,
-    TURN_WINDOW_MAX_MI, TURN_WINDOW_MIN_MI,
+    is_judged_turn, RAMP_GUIDE_DEMAND, TURN_COMMIT_TAIL_MI, TURN_CORNER_MAX_MPH,
+    TURN_MISS_LOOP_MIN, TURN_WINDOW_MAX_MI, TURN_WINDOW_MIN_MI,
 };
 
 // -- rigging -------------------------------------------------------------------------
@@ -83,20 +85,24 @@ fn street_chain(d: &mut DrivingState, time_scale: f64, short_block_mi: f64) {
             "Start on East Navarre Street.",
             25.0,
         ),
+        // A square city corner, and a sharper one into the service way, so the
+        // chain exercises two different baked angles rather than one.
         Leg::local(
             &city,
             short_block_mi,
             "North Michigan Street",
             "Turn left onto North Michigan Street.",
             25.0,
-        ),
+        )
+        .with_turn_deg(90.0),
         Leg::local(
             &city,
             0.5,
             "West Sample Street",
             "Turn right onto West Sample Street.",
             15.0,
-        ),
+        )
+        .with_turn_deg(105.0),
     ];
     let route = Route::from_legs(vec![city.clone(); 4], legs);
     let truck = d.trip.truck.clone();
@@ -175,7 +181,7 @@ fn test_approach_call_names_the_side_street_distance_and_speed() {
     assert_eq!(spoken.len(), 1);
     assert_eq!(
         spoken[0],
-        "Left turn onto North Michigan Street, a quarter mile. Advise 20 miles per hour."
+        "Left turn onto North Michigan Street, a quarter mile. Advise 11 miles per hour."
     );
     assert!(d.turn_grace_s > 0.0);
     d.update_turn_commitment(&mut app.ctx, 0.016);
@@ -216,7 +222,7 @@ fn test_the_approach_call_says_the_speed_keeper_is_taking_the_corner() {
     d.update_turn_commitment(&mut app.ctx, 0.016);
     assert_eq!(
         app.event_lines()[0],
-        "Left turn onto North Michigan Street, a quarter mile. Advise 20 miles per hour. \
+        "Left turn onto North Michigan Street, a quarter mile. Advise 11 miles per hour. \
          Speed keeper easing."
     );
 }
@@ -231,15 +237,15 @@ fn test_the_approach_call_stays_quiet_about_a_keeper_with_nothing_to_shed() {
     // Manual speed control leaves the call exactly as it was.
     mph(&mut d, 30.0);
     d.update_turn_commitment(&mut app.ctx, 0.016);
-    assert!(app.event_lines()[0].ends_with("Advise 20 miles per hour."));
+    assert!(app.event_lines()[0].ends_with("Advise 11 miles per hour."));
     // So does a keeper already under the corner speed: there is nothing
     // for it to shed, so there is nothing to say about it.
-    mph(&mut d, 18.0);
-    d.keeper_mph = Some(20.0);
+    mph(&mut d, 8.0);
+    d.keeper_mph = Some(8.0);
     let cue = d.turn_cue_in_play().expect("a corner is in play");
     assert!(d
         .turn_approach_text(&app.ctx, &cue, 0.2)
-        .ends_with("Advise 20 miles per hour."));
+        .ends_with("Advise 11 miles per hour."));
 }
 
 #[test]
@@ -252,11 +258,15 @@ fn test_the_planner_sees_past_the_corner_it_is_already_easing_for() {
     // shed for now, never a reason to stop looking for something slower.
     let mut app = TestApp::new();
     let mut d = a_drive(&mut app);
+    let load = d.trip.truck.roll_load_fraction();
     street_chain(&mut d, 1.0, 0.08);
     let cues = d.turn_cues_in_play();
     let (first, second) = (cues[0].clone(), cues[1].clone());
-    assert_eq!(d.turn_speed_mph(&first), 20.0);
-    assert_eq!(d.turn_speed_mph(&second), 15.0);
+    assert_eq!(d.turn_speed_mph(&first), corner_speed_mph(Some(90.0), load));
+    assert_eq!(
+        d.turn_speed_mph(&second),
+        corner_speed_mph(Some(105.0), load)
+    );
     assert!(second.at_mi - first.at_mi < 0.15); // inside the first corner's tail
 
     // Easing for the first corner, well before the second one is close.
@@ -264,7 +274,7 @@ fn test_the_planner_sees_past_the_corner_it_is_already_easing_for() {
     mph(&mut d, 25.0);
     assert_eq!(
         d.keeper_speed_ahead(&mut app.ctx),
-        Some((20.0, "turn".to_string()))
+        Some((corner_speed_mph(Some(90.0), load), "turn".to_string()))
     );
 
     // One block on, with the second corner's own window open, the planner
@@ -273,8 +283,52 @@ fn test_the_planner_sees_past_the_corner_it_is_already_easing_for() {
     mph(&mut d, 19.0);
     assert_eq!(
         d.keeper_speed_ahead(&mut app.ctx),
-        Some((15.0, "turn".to_string()))
+        Some((corner_speed_mph(Some(105.0), load), "turn".to_string()))
     );
+}
+
+#[test]
+fn test_the_turn_earcon_waits_for_the_corner_itself() {
+    // The chime used to sound the moment the approach call was armed, whether
+    // or not the words that go with it ever reached the voice: at urgent only
+    // the owner heard corners announced by sound alone (2026-09-20). It is
+    // owed to a corner the driver was told about, and spent when the truck
+    // actually turns.
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    a_street_chain(&mut d);
+    let cue = d.turn_cue_in_play().expect("a corner is in play");
+    assert!(!d.turn_announced.contains(&cue.key));
+    d.trip.position_mi = 0.4;
+    mph(&mut d, 30.0);
+    d.update_turn_commitment(&mut app.ctx, 0.016);
+    assert!(
+        d.turn_announced.contains(&cue.key),
+        "the corner was called, so its earcon is owed at the corner"
+    );
+
+    // And the corner is a JUDGED one, which is what stops its route cues
+    // sounding the same chime at the quarter-mile lead and again at the
+    // corner: `handle_trip_event` suppresses the earcon for exactly these,
+    // so the turn flow owns it outright. Three chimes on one turn out of
+    // Houston is what that cost before (owner drive, 2026-09-20).
+    assert!(is_judged_turn(&cue));
+    let straight_on = d
+        .trip
+        .navigation_cues
+        .iter()
+        .find(|other| other.kind == "local_turn" && !is_judged_turn(other));
+    if let Some(straight_on) = straight_on {
+        // A cue with no side to it never reaches the turn flow, so it keeps
+        // its own sound.
+        assert!(!d.turn_announced.contains(&straight_on.key));
+    }
+
+    // Taking it spends the earcon, once and once only.
+    d.resolve_turn(&mut app.ctx, &cue);
+    assert!(!d.turn_announced.contains(&cue.key));
+    d.resolve_turn(&mut app.ctx, &cue);
+    assert!(!d.turn_announced.contains(&cue.key));
 }
 
 #[test]
@@ -329,9 +383,10 @@ fn test_the_approach_decompresses_the_clock() {
 // -- the turn speed ----------------------------------------------------------
 
 #[test]
-fn test_turn_speed_anchors_to_the_street_and_caps_at_the_trailer_limit() {
+fn test_turn_speed_comes_from_the_corners_own_angle() {
     let mut app = TestApp::new();
     let mut d = a_drive(&mut app);
+    let load = d.trip.truck.roll_load_fraction();
     a_street_chain(&mut d);
     let cues: Vec<_> = d
         .trip
@@ -341,10 +396,37 @@ fn test_turn_speed_anchors_to_the_street_and_caps_at_the_trailer_limit() {
         .cloned()
         .collect();
     assert_eq!(cues.len(), 2);
-    // A 25 mph street is still only turnable at the trailer cap.
-    assert_eq!(d.turn_speed_mph(&cues[0]), TURN_CORNER_MAX_MPH);
-    // A 15 mph service way keeps its own, slower, posted limit.
-    assert_eq!(d.turn_speed_mph(&cues[1]), 15.0);
+    // The square corner and the sharper one get DIFFERENT speeds -- the whole
+    // point of the change. Both come from the angle, not the 25 mph street.
+    let square = d.turn_speed_mph(&cues[0]);
+    let sharp = d.turn_speed_mph(&cues[1]);
+    assert_eq!(square, corner_speed_mph(Some(90.0), load));
+    assert_eq!(sharp, corner_speed_mph(Some(105.0), load));
+    assert!(sharp < square, "{sharp} should be under {square}");
+    // And neither is the old flat clamp any more.
+    assert!(square < TURN_CORNER_MAX_MPH);
+}
+
+#[test]
+fn test_an_unmeasured_corner_is_priced_as_a_square_one() {
+    // Most of the map's approaches are estimated and carry no angle. They must
+    // still get a corner speed, and it must be the square-corner one rather
+    // than the street's posted limit.
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    let load = d.trip.truck.roll_load_fraction();
+    a_street_chain(&mut d);
+    for leg in d.trip.route.legs.iter_mut() {
+        std::sync::Arc::make_mut(leg).local_turn_deg = 0.0;
+    }
+    let cue = d
+        .trip
+        .navigation_cues
+        .iter()
+        .find(|cue| cue.key.starts_with("local:turn:"))
+        .cloned()
+        .expect("a turn cue");
+    assert_eq!(d.turn_speed_mph(&cue), corner_speed_mph(None, load));
 }
 
 #[test]
@@ -353,7 +435,9 @@ fn test_under_the_turn_speed_passes_cleanly() {
     let mut d = a_drive(&mut app);
     a_street_chain(&mut d);
     let minutes = d.trip.game_minutes;
-    at_turn(&mut d, &mut app, 0.6, 18.0);
+    // Under the square corner's own advised speed, which is a little over 9
+    // now that the corner is priced from its angle rather than clamped at 20.
+    at_turn(&mut d, &mut app, 0.6, 8.0);
     assert_eq!(d.turn_miss_count, 0);
     assert_eq!(d.trip.game_minutes, minutes);
     assert_eq!(d.trip.position_mi, 0.6);
@@ -467,7 +551,7 @@ fn test_the_loop_back_resets_every_say_once_latch() {
     assert!(!d.trip.announced_navigation.contains("local:turn:1:near"));
     assert!(!d.trip.controlled_turn);
     // And the re-approach really does speak and pass.
-    at_turn(&mut d, &mut app, 0.6, 18.0);
+    at_turn(&mut d, &mut app, 0.6, 8.0);
     assert_eq!(d.turn_miss_count, 1);
 }
 
@@ -495,12 +579,17 @@ fn test_a_repeat_miss_appends_help_to_an_identical_core_sentence() {
     let first = last_with(&app, "You missed the turn");
     assert!(!first.contains("Brake to"));
     at_turn(&mut d, &mut app, 1.1, 45.0);
+    let expected_brake = {
+        let cue = d.turn_cue_in_play().expect("a corner is in play");
+        d.turn_speed_mph(&cue).round() as i64
+    };
     let second = lines_with(&app, "You missed the turn")
         .into_iter()
         .find(|line| line.contains("Brake to"))
         .expect("the repeat miss appends help");
     assert!(second.starts_with("You missed the turn onto West Sample Street."));
-    assert!(second.contains("Brake to 15 miles per hour"));
+    assert_eq!(expected_brake, 10, "the corner this fixture misses");
+    assert!(second.contains("Brake to 10 miles per hour"));
     assert!(second.contains("Down arrow")); // the brake key this driver actually has
 }
 
@@ -671,7 +760,7 @@ fn test_a_corner_you_are_already_slow_enough_for_still_buys_real_seconds() {
     d.trip.position_mi = 0.4;
     // Under the corner's own advised speed, the way the keeper holds a
     // truck through a facility zone.
-    mph(&mut d, 10.0);
+    mph(&mut d, 8.0);
     let cue = d.turn_cue_in_play().expect("a corner is in play");
     assert!(d.trip.truck.speed_mph() <= d.turn_speed_mph(&cue));
     assert!(d.trip.effective_time_scale() > 1.0);
@@ -1396,6 +1485,38 @@ fn a_village(name: &str, at_mi: f64, off_mi: f64) -> Landmark {
     }
 }
 
+fn a_route_town(name: &str, at_mi: f64) -> RouteCheckpoint {
+    RouteCheckpoint {
+        name: name.to_string(),
+        at_mi,
+        checkpoint_type: "place".to_string(),
+        state: "New York".to_string(),
+        highway: "I-90".to_string(),
+        ..Default::default()
+    }
+}
+
+/// Replace the curated route towns on the leg the truck is currently
+/// driving (the villages are cleared with them).
+fn set_leg_checkpoints(d: &mut DrivingState, checkpoints: Vec<RouteCheckpoint>) {
+    let (index, _) = d.trip.leg_at_mile(d.trip.position_mi);
+    let old = d.trip.route.legs[index].clone();
+    let detail = CorridorDetail {
+        checkpoints,
+        ..Default::default()
+    };
+    let leg = Leg::new(
+        &old.a,
+        &old.b,
+        old.miles,
+        &old.highway,
+        &old.terrain,
+        Vec::new(),
+    )
+    .with_detail(detail);
+    d.trip.route.legs[index] = Arc::new(leg);
+}
+
 /// `_set_leg_landmarks`: replace the landmarks on the leg the truck is
 /// currently driving.
 fn set_leg_landmarks(d: &mut DrivingState, landmarks: Vec<Landmark>) {
@@ -1483,6 +1604,9 @@ fn test_alt_with_a_number_does_not_touch_the_engine_brake() {
 fn test_town_key_names_the_town_the_truck_is_in() {
     let mut app = TestApp::new();
     let mut d = a_drive(&mut app);
+    // Mid-leg, clear of both cities: the leg's own cities are towns too.
+    let (index, start) = d.trip.leg_at_mile(d.trip.position_mi);
+    d.trip.position_mi = start + d.trip.route.legs[index].miles / 2.0;
     app.clear_speech();
     let (native, _forward) = native_offset(&d);
     // A village on the road, right where the truck is: that is the town
@@ -1496,6 +1620,9 @@ fn test_town_key_names_the_town_the_truck_is_in() {
 fn test_town_key_places_a_town_off_the_road() {
     let mut app = TestApp::new();
     let mut d = a_drive(&mut app);
+    // Mid-leg, clear of both cities: the leg's own cities are towns too.
+    let (index, start) = d.trip.leg_at_mile(d.trip.position_mi);
+    d.trip.position_mi = start + d.trip.route.legs[index].miles / 2.0;
     app.clear_speech();
     let (native, forward) = native_offset(&d);
     let ahead = if forward { native + 4.0 } else { native - 4.0 };
@@ -1513,10 +1640,65 @@ fn test_town_key_says_so_when_there_is_no_town() {
     let mut d = a_drive(&mut app);
     app.clear_speech();
     set_leg_landmarks(&mut d, Vec::new());
+    // Well clear of both ends of the leg: the leg's own cities are towns too.
+    let (index, start) = d.trip.leg_at_mile(d.trip.position_mi);
+    let miles = d.trip.route.legs[index].miles;
+    d.trip.position_mi = start + miles / 2.0;
+    assert!(
+        miles / 2.0 > NEAREST_TOWN_MI,
+        "the Buffalo to Rochester leg is {miles} miles"
+    );
     d.speak_current_town(&mut app.ctx);
     assert_eq!(
         app.main_lines().last().expect("a town line"),
         "No town near here."
+    );
+}
+
+#[test]
+fn test_town_key_names_the_route_town_just_passed() {
+    // "Passing Batavia, New York on I-90" is a curated route town, not a
+    // baked village, and Alt+3 right after it used to say there was no
+    // town (owner, 2026-09-16).
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    // Mid-leg, clear of both cities: the leg's own cities are towns too.
+    let (index, start) = d.trip.leg_at_mile(d.trip.position_mi);
+    d.trip.position_mi = start + d.trip.route.legs[index].miles / 2.0;
+    app.clear_speech();
+    let (native, forward) = native_offset(&d);
+    let behind = if forward { native - 0.5 } else { native + 0.5 };
+    set_leg_checkpoints(&mut d, vec![a_route_town("Batavia", behind)]);
+    d.speak_current_town(&mut app.ctx);
+    assert_eq!(app.main_lines().last().expect("a town line"), "In Batavia.");
+
+    // Once it is a few miles back it is named as behind, not forgotten.
+    app.clear_speech();
+    let back = if forward { native - 4.0 } else { native + 4.0 };
+    set_leg_checkpoints(&mut d, vec![a_route_town("Batavia", back)]);
+    d.speak_current_town(&mut app.ctx);
+    let said = app.main_lines().last().expect("a town line").clone();
+    assert!(said.contains("Batavia") && said.contains("back"), "{said}");
+}
+
+#[test]
+fn test_town_key_names_the_city_the_leg_starts_in() {
+    // At the start of the leg the truck is in the leg's own city, whether
+    // or not the corridor bakes a village there.
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    app.clear_speech();
+    set_leg_landmarks(&mut d, Vec::new());
+    let (index, start) = d.trip.leg_at_mile(d.trip.position_mi);
+    d.trip.position_mi = start + 0.2;
+    let city = app
+        .ctx
+        .world
+        .spoken_city(&d.trip.route.cities[index], Some(false));
+    d.speak_current_town(&mut app.ctx);
+    assert_eq!(
+        app.main_lines().last().expect("a town line"),
+        &format!("In {city}.")
     );
 }
 
@@ -1759,7 +1941,7 @@ fn test_cruise_into_a_hot_bend_arrives_at_the_advisory() {
     assert!(
         !run.lines
             .iter()
-            .any(|line| line.contains("Curve speed assistance")),
+            .any(|line| line.contains("Curve assistance")),
         "cruise's line covers the bend; the assist must not speak twice: {:#?}",
         run.lines
     );
@@ -1795,7 +1977,7 @@ fn test_a_manual_driver_off_the_pedals_is_braked_to_the_advisory() {
         .find(|line| line.contains("left, half a mile"))
         .unwrap_or_else(|| panic!("a curve call: {:#?}", run.lines));
     assert!(
-        call.ends_with("Advise 35 miles per hour. Curve speed assistance slowing."),
+        call.ends_with("Advise 35 miles per hour. Curve assistance slowing."),
         "one utterance, the pacenote plus the assist clause: {call:?}"
     );
     // The reactive line inside the bend is the bare sentence; the servo owns
@@ -1803,7 +1985,7 @@ fn test_a_manual_driver_off_the_pedals_is_braked_to_the_advisory() {
     assert!(
         !run.lines
             .iter()
-            .any(|line| line == "Curve speed assistance slowing."),
+            .any(|line| line == "Curve assistance slowing."),
         "the reactive line must not double the approach line: {:#?}",
         run.lines
     );
@@ -1848,7 +2030,7 @@ fn test_a_bend_under_cruises_floor_is_braked_down_and_cruise_comes_back() {
         .find(|line| line.contains("Adaptive cruise paused for the bend"))
         .expect("the pause line");
     assert!(
-        call.contains("curve speed assistance slowing. Cruise resumes past the bend"),
+        call.contains("curve assistance slowing. Cruise resumes past the bend"),
         "{call:?}"
     );
     // Past the tail the pause is spent, and once the driver has the truck
@@ -1919,9 +2101,143 @@ fn test_the_drivers_own_brake_takes_the_bend_back_from_the_servo() {
     assert!(
         run.lines
             .iter()
-            .any(|line| line == "Curve speed assistance released."),
+            .any(|line| line == "Curve assistance released."),
         "{:#?}",
         run.lines
+    );
+}
+
+#[test]
+fn test_the_servo_holds_a_bend_on_a_downgrade_on_one_application() {
+    // Inside a 40 mph bend on a 6.1 percent downgrade, the truck a hair over
+    // the hold band. The servo used to snub for a frame, let go the moment
+    // the truck was back under the band, and get it handed straight back by
+    // the hill: a fresh application ten times a second, 125 psi to the spring
+    // brakes before the bend was over (owner's AZ-260 drive, 2026-09-18). The
+    // air system charges every RISE of the pedal, so the rises are what is
+    // counted here.
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    a_hot_bend_ahead(&mut app, &mut d, 41.5, 40, 400, 0.5);
+    let here = d.trip.position_mi;
+    d.arm_curve_servo(40.0, here - 0.1, here + 5.0, false);
+
+    let mut applied_total = 0.0;
+    let mut last = 0.0;
+    for _ in 0..(45.0 / DT) as usize {
+        d.trip.truck.grade = -0.061; // the trip normally stamps this each frame
+        d.trip.truck.brake = 0.0; // no pedal: the servo is the only thing braking
+        d.update_curve_speed_servo(&app.ctx);
+        applied_total += (d.trip.truck.brake - last).max(0.0);
+        last = d.trip.truck.brake;
+        d.trip.truck.update(DT);
+    }
+
+    assert!(
+        applied_total < 3.0,
+        "the pedal was re-made over and over: {applied_total:.1} applications in one bend"
+    );
+    assert!(
+        !d.trip.truck.air_low_warning(),
+        "the bend drained the tanks to {:.0} psi",
+        d.trip.truck.air_pressure_psi()
+    );
+    assert!(
+        d.trip.truck.speed_mph() < 40.0 + 2.0,
+        "and the hill got away from it: {:.1} mph",
+        d.trip.truck.speed_mph()
+    );
+}
+
+#[test]
+fn test_the_servo_never_fans_the_pedal_on_any_grade_at_any_advisory() {
+    // The AZ-260 bend was one grade, one advisory and one entry speed. The
+    // same hold has to be steady on every hill the map has, from a two
+    // percent roll to an eight percent pitch, at a town corner's number and
+    // a highway sweeper's, entered a hair over, just past the band, and hot.
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    for grade in [-0.02, -0.03, -0.04, -0.05, -0.061, -0.07, -0.08] {
+        for target in [15.0, 25.0, 30.0, 40.0, 55.0] {
+            for (over, push) in [(0.5, 0.0), (1.5, 0.0), (8.0, 0.0), (0.9, 0.04)] {
+                a_hot_bend_ahead(&mut app, &mut d, target + over, target as i64, 400, 0.5);
+                d.curve_servo = None;
+                let here = d.trip.position_mi;
+                d.arm_curve_servo(target, here - 0.1, here + 5.0, false);
+
+                let mut applied_total = 0.0;
+                let mut last = 0.0;
+                for _ in 0..(45.0 / DT) as usize {
+                    d.trip.truck.grade = grade;
+                    d.trip.truck.brake = 0.0;
+                    // The last row is adaptive cruise holding the same bend:
+                    // a light push on the truck the whole way through, so the
+                    // hold never quite balances and the band edge is revisited.
+                    d.trip.truck.throttle = push;
+                    d.update_curve_speed_servo(&app.ctx);
+                    applied_total += (d.trip.truck.brake - last).max(0.0);
+                    last = d.trip.truck.brake;
+                    d.trip.truck.update(DT);
+                }
+
+                let case = format!(
+                    "{:.1} percent, advise {target}, {over} over, push {push}",
+                    grade * 100.0
+                );
+                assert!(
+                    applied_total < 1.5,
+                    "{case}: {applied_total:.1} applications in one bend"
+                );
+                assert!(
+                    !d.trip.truck.air_low_warning(),
+                    "{case}: tanks down to {:.0} psi",
+                    d.trip.truck.air_pressure_psi()
+                );
+                assert!(
+                    d.trip.truck.speed_mph() < target + 2.0,
+                    "{case}: the hill got away, {:.1} mph",
+                    d.trip.truck.speed_mph()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_the_last_few_miles_an_hour_are_shed_on_the_real_clock() {
+    // A bend called late with the truck barely over the pacenote margin: the
+    // call decompresses the clock, the first touch of the brakes takes the
+    // truck under the margin, and the clock used to snap back to the
+    // compressed pacing with the servo still shedding -- so the road left
+    // ran out seventeen times faster than the truck slowed and the pedal
+    // went to the floor for 3 mph (AZ-260 bench trace, 2026-09-18).
+    let mut app = TestApp::new();
+    let clock = app.fake_pacer_clock();
+    let mut d = a_drive(&mut app);
+    d.trip.time_scale = 20.0;
+    let bend = a_hot_bend_ahead(&mut app, &mut d, 44.0, 40, 400, 0.08);
+
+    let mut servo_max: f64 = 0.0;
+    let mut armed = false;
+    drive_through_the_bend(&mut app, &mut d, &bend, &clock, |_, d| {
+        if let Some(servo) = d.curve_servo.as_ref() {
+            armed = true;
+            servo_max = servo_max.max(servo.brake);
+            if d.trip.truck.speed_mph() > servo.target_mph {
+                assert_eq!(
+                    d.trip.effective_time_scale(),
+                    1.0,
+                    "compressed clock with {:.1} mph still to shed",
+                    d.trip.truck.speed_mph() - servo.target_mph
+                );
+            }
+        }
+    });
+
+    assert!(armed, "the bend never armed the servo");
+    assert!(
+        servo_max < 0.6,
+        "four miles an hour should not take a hard application: {servo_max:.2}"
     );
 }
 
@@ -1953,7 +2269,7 @@ fn test_with_the_assist_off_a_hot_bend_still_drifts() {
     assert!(
         !run.lines
             .iter()
-            .any(|line| line.contains("Curve speed assistance")),
+            .any(|line| line.contains("Curve assistance")),
         "{:#?}",
         run.lines
     );

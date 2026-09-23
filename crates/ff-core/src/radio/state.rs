@@ -10,9 +10,9 @@ use indexmap::IndexMap;
 
 use super::playlists::{load_personal_playlists, PERSONAL_PLAYLIST_SOURCE_TYPE};
 use super::{
-    dial_category_name, dial_group, estimate_signal, identity_siblings, station_identity,
-    RadioAction, RadioPlaybackBackend, RadioReception, RadioStation, RADIO_SEARCH_LIMIT,
-    SAFE_ROUTE_PLAYLIST, SIGNAL_FULL_VOLUME,
+    dial_category_name, dial_group, estimate_signal, identity_siblings, station_distance_miles,
+    station_identity, RadioAction, RadioPlaybackBackend, RadioReception, RadioStation,
+    RADIO_SEARCH_LIMIT, SAFE_ROUTE_PLAYLIST, SIGNAL_FULL_VOLUME, STATIC_SIGNAL_THRESHOLD,
 };
 use crate::pyfmt::{fmt_f, round_py_int};
 
@@ -33,6 +33,8 @@ pub trait RadioSettingsAccess {
     fn radio_station_id(&self) -> String;
     fn radio_volume(&self) -> f64;
     fn radio_streamer_safe(&self) -> bool;
+    /// Music source Synthesized.
+    fn synth_music(&self) -> bool;
     fn set_radio_enabled(&mut self, enabled: bool);
     fn set_radio_station_id(&mut self, station_id: &str);
 }
@@ -54,6 +56,8 @@ pub struct RadioState {
     pub station_id: String,
     pub volume: f64,
     pub streamer_safe: bool,
+    /// Music source Synthesized: see `synth_dial.rs`.
+    pub synth_music: bool,
     pub position: Option<(f64, f64)>,
     pub elevation_ft: Option<f64>,
     pub favorite_ids: HashSet<String>,
@@ -71,7 +75,19 @@ pub struct RadioState {
     /// construction -- so tuning and reception lookups stay O(sites),
     /// not O(catalog), on every call.
     identity_siblings: HashMap<String, Vec<RadioStation>>,
+    /// The dial order the current sweep is stepping through, and where the
+    /// truck was when it was built. The terrestrial band runs strongest
+    /// first, and a moving truck's signals drift between presses, so an
+    /// order rebuilt on every step revisited one station and skipped
+    /// another (WRND twice in nine presses, 2026-09-16). A sweep keeps its
+    /// order until the truck has moved `DIAL_SWEEP_MI`, the radio is
+    /// switched, or a category jump starts a new one.
+    sweep_order: Vec<String>,
+    sweep_anchor: Option<(f64, f64)>,
 }
+
+/// How far the truck moves before a dial sweep's order is rebuilt.
+pub const DIAL_SWEEP_MI: f64 = 2.0;
 
 impl RadioState {
     /// A radio over `catalog` with the Python defaults: on, tuned to the
@@ -85,12 +101,15 @@ impl RadioState {
             station_id: SAFE_ROUTE_PLAYLIST.to_string(),
             volume: 0.25,
             streamer_safe: false,
+            synth_music: false,
             position: None,
             elevation_ft: None,
             favorite_ids: HashSet::new(),
             unplayable_ids: HashSet::new(),
             connect_failures: HashMap::new(),
             identity_siblings,
+            sweep_order: Vec::new(),
+            sweep_anchor: None,
         }
     }
 
@@ -137,6 +156,7 @@ impl RadioState {
             .with_station_id(&settings.radio_station_id())
             .with_volume(settings.radio_volume())
             .with_streamer_safe(settings.radio_streamer_safe())
+            .with_synth_music(settings.synth_music())
             .with_favorites(favorites)
     }
 
@@ -183,6 +203,7 @@ impl RadioState {
     pub fn apply_settings(&mut self, settings: &dyn RadioSettingsAccess) {
         self.volume = Self::clamp_volume(settings.radio_volume());
         self.streamer_safe = settings.radio_streamer_safe();
+        self.synth_music = settings.synth_music();
     }
 
     pub fn write_settings(&self, settings: &mut dyn RadioSettingsAccess) {
@@ -249,6 +270,31 @@ impl RadioState {
         }
         solo.extend(best.into_values());
         solo
+    }
+
+    /// Where the dial goes when `lost` drops out of range: the strongest
+    /// terrestrial station the truck can hear from here, or `None` when there
+    /// is nothing on the air (Brandon, 2026-09-17: a driver listening to
+    /// local radio wants the next town's station, not to be sent back to the
+    /// in-house ones).
+    ///
+    /// Only a clean signal counts. Below [`STATIC_SIGNAL_THRESHOLD`] a station
+    /// is the static smear at the edge of its own contour, and landing there
+    /// would trade one fading station for another that fades a few miles on.
+    /// A sibling site of the lost station is not a landing either: a stronger
+    /// site of the same station is a handover, which the dial already does.
+    pub fn strongest_terrestrial(&self, lost: &RadioStation) -> Option<RadioReception> {
+        let lost_identity = station_identity(lost);
+        self.receivable_stations()
+            .into_iter()
+            .filter(|r| dial_group(&r.station) == TERRESTRIAL_GROUP)
+            .filter(|r| r.signal >= STATIC_SIGNAL_THRESHOLD)
+            .filter(|r| r.station.id != lost.id && station_identity(&r.station) != lost_identity)
+            .max_by(|a, b| {
+                a.signal
+                    .partial_cmp(&b.signal)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
     }
 
     pub fn available_stations(&self) -> Vec<RadioStation> {
@@ -499,6 +545,9 @@ impl RadioState {
         // that failed to open sits in `unplayable_ids` -- so both of those
         // still land on the silent satellite below, whose guarantee is
         // exactly that it always "plays".
+        if let Some(station) = self.synth_fallback() {
+            return station;
+        }
         if let Some(station) = self
             .catalog
             .iter()
@@ -555,6 +604,7 @@ impl RadioState {
 
     pub fn toggle(&mut self, backend: Option<&mut dyn RadioPlaybackBackend>) -> RadioAction {
         self.enabled = !self.enabled;
+        self.end_sweep();
         if !self.enabled {
             Self::stop(backend);
             let station = self.current_station();
@@ -612,10 +662,13 @@ impl RadioState {
         // The dial says why rather than going silent: nothing happening with
         // no explanation is the one outcome a screen reader user cannot tell
         // from a broken key.
+        if let Some(refused) = self.locked_action() {
+            return refused;
+        }
         if !self.enabled {
             return self.dial_is_off();
         }
-        let receptions = self.receivable_stations();
+        let receptions = self.sweep_receptions();
         let current = self.current_station();
         let index = receptions
             .iter()
@@ -626,6 +679,48 @@ impl RadioState {
         self.station_id = reception.station.id.clone();
         let prefix = format!("Tuned to {}.", reception.station.display_name());
         self.play(backend, &prefix)
+    }
+
+    /// The receivable stations in this sweep's order.
+    ///
+    /// Built strongest-first when a sweep starts and held while the truck
+    /// stays within `DIAL_SWEEP_MI` of where it started; a station that has
+    /// since come into range joins at the end of its category, one that has
+    /// dropped out is skipped. So every press visits the next station, and
+    /// no station twice, however the signals drift under a moving truck.
+    pub fn sweep_receptions(&mut self) -> Vec<RadioReception> {
+        let receptions = self.receivable_stations();
+        let moved = match (self.sweep_anchor, self.position) {
+            (Some((alat, alon)), Some((plat, plon))) => {
+                let anchor = RadioStation {
+                    lat: Some(alat),
+                    lon: Some(alon),
+                    ..RadioStation::default()
+                };
+                station_distance_miles(&anchor, Some((plat, plon))).unwrap_or(0.0)
+            }
+            (None, _) => f64::INFINITY,
+            (Some(_), None) => 0.0,
+        };
+        if self.sweep_order.is_empty() || moved >= DIAL_SWEEP_MI {
+            self.sweep_order = receptions.iter().map(|r| r.station.id.clone()).collect();
+            self.sweep_anchor = self.position;
+            return receptions;
+        }
+        let rank = |id: &str| self.sweep_order.iter().position(|known| known == id);
+        let mut ordered: Vec<(usize, usize, RadioReception)> = receptions
+            .into_iter()
+            .enumerate()
+            .map(|(fresh, r)| (rank(&r.station.id).unwrap_or(usize::MAX), fresh, r))
+            .collect();
+        ordered.sort_by_key(|(known, fresh, _)| (*known, *fresh));
+        ordered.into_iter().map(|(_, _, r)| r).collect()
+    }
+
+    /// Forget the current sweep: the next dial press builds a fresh order.
+    fn end_sweep(&mut self) {
+        self.sweep_order.clear();
+        self.sweep_anchor = None;
     }
 
     /// The reply to any dial key while the radio is switched off.
@@ -656,9 +751,13 @@ impl RadioState {
         direction: i64,
         backend: Option<&mut dyn RadioPlaybackBackend>,
     ) -> RadioAction {
+        if let Some(refused) = self.locked_action() {
+            return refused;
+        }
         if !self.enabled {
             return self.dial_is_off();
         }
+        self.end_sweep();
         let receptions = self.receivable_stations();
         let mut groups: Vec<i32> = Vec::new();
         for reception in &receptions {
@@ -691,6 +790,12 @@ impl RadioState {
         station_id: &str,
         backend: Option<&mut dyn RadioPlaybackBackend>,
     ) -> RadioAction {
+        // The Roadhouse passes: it is where the game itself moves a locked dial.
+        if station_id != SAFE_ROUTE_PLAYLIST {
+            if let Some(refused) = self.locked_action() {
+                return refused;
+            }
+        }
         let station = match self.station_by_id(station_id).cloned() {
             Some(station) if self.station_allowed(&station) => station,
             _ => return self.play(backend, "Radio fallback."),
@@ -871,11 +976,11 @@ impl RadioState {
         })
     }
 
-    fn station_allowed(&self, station: &RadioStation) -> bool {
+    pub(super) fn station_allowed(&self, station: &RadioStation) -> bool {
         if !station.supported {
             return false;
         }
-        if self.unplayable_ids.contains(&station.id) {
+        if self.unplayable_ids.contains(&station.id) || !self.synth_allows(station) {
             return false;
         }
         if !station.real_stream && station.source_type != PERSONAL_PLAYLIST_SOURCE_TYPE {
@@ -960,6 +1065,9 @@ impl RadioState {
 
     /// Save or unsave the current station; the spoken confirmation.
     pub fn toggle_favorite(&mut self) -> String {
+        if self.station_locked() {
+            return String::new();
+        }
         let station = self.current_station();
         if station.fallback {
             return "The safety fallback is always on the dial.".to_string();
