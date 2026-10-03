@@ -636,8 +636,8 @@ def test_career_19_snapshot_workflow_contract():
     # this is the only workflow that builds the Rust game, so it is the
     # nightly. build.yml's schedule was retired in the same change because it
     # builds the Python game, which dev no longer has.
-    # This fork keeps its existing branch name for manual snapshots.
-    assert "inputs.branch || 'feat/career-1.9'" in workflow
+    # This fork builds its active 2.0 branch for manual snapshots.
+    assert "inputs.branch || 'feat/career-2.0'" in workflow
     # Tag pushes build the tagged ref, not tip-of-dev by accident.
     assert "github.event_name == 'push' && github.ref" in workflow
     assert "group: career-19-snapshot\n" in workflow

@@ -22,7 +22,7 @@ on:
       branch:
         description: "Branch to build (a dry run is the way to try one)"
         type: string
-        default: feat/career-1.9
+        default: feat/career-2.0
 
 permissions:
   contents: write
@@ -49,7 +49,7 @@ env:
   # Tag pushes build the tagged commit. Schedule/dispatch still build
   # `dev` (or the dispatch branch). A tag that only exists on another
   # tip must not silently rebuild today's dev.
-  CAREER_BRANCH: ${{ github.event_name == 'push' && github.ref || inputs.branch || 'feat/career-1.9' }}
+  CAREER_BRANCH: ${{ github.event_name == 'push' && github.ref || inputs.branch || 'feat/career-2.0' }}
 
 jobs:
   prepare:

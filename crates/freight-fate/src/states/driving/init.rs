@@ -26,7 +26,7 @@ use ff_core::sim::surge::{liquid_load_for, LiquidCargo};
 use ff_core::sim::trip_traffic::TrafficProvider;
 use ff_core::sim::truck_parking::TruckParkingProvider;
 use ff_core::sim::turn_guide::TurnGuide;
-use ff_core::sim::vehicle::TruckState;
+use ff_core::sim::vehicle::{TrailerSet, TruckState};
 use ff_core::sim::weather::WeatherProvider;
 
 use crate::app::GameContext;
@@ -84,6 +84,17 @@ impl DrivingState {
         // A reposition run is the tractor alone -- nothing on the fifth
         // wheel. Pickup deadheads haul their empty box.
         truck.trailer_attached = !job.bobtail;
+        // A loaded run pulls the trailer set the job was booked on: a set of
+        // doubles weighs two trailers and a dolly, carries its route's gross
+        // cap, and handles like doubles. Pickup deadheads haul one empty.
+        // New jobs on a lane through a state with no recorded turnpike cap
+        // are refused at the board and the route menu. A trip already under
+        // way on one (an old save, dispatched under the old rules) is
+        // grandfathered and finishes clean at its legacy limit.
+        if phase == DRIVE_PHASE_DELIVERY && !job.bobtail {
+            truck.trailer_set =
+                TrailerSet::legacy_trip_on_route(job.cargo.key, ctx.world, Some(&route));
+        }
         truck.transmission.automatic = ctx.settings.automatic_transmission;
         // How well this freight survives being thrown about. Fed to the truck
         // because the forces that move a load are the truck's, but what the
@@ -94,6 +105,10 @@ impl DrivingState {
             None
         };
         truck.cargo_fragility = cargo_fragility(delivery_cargo);
+        // Profile fuel (and wear) must land before the reefer auto-start, or a
+        // saved empty tank looks full and the TRU comes on with nothing to burn.
+        profile_of(ctx).load_truck_condition(&mut truck);
+        truck.set_cargo_needs_reefer(delivery_cargo.is_some_and(|c| c.needs_reefer()));
         // A tank load is the only freight that keeps moving after the truck
         // stops. How full the shell is comes straight from the load's weight,
         // so the wave is a deterministic property of the job -- the same run
@@ -103,7 +118,6 @@ impl DrivingState {
             delivery_cargo.map(|cargo| cargo as &dyn LiquidCargo),
             job.weight_tons,
         );
-        profile_of(ctx).load_truck_condition(&mut truck);
         truck.set_cold_air_start();
 
         let start_damage = profile_of(ctx).truck_damage_pct();
@@ -475,6 +489,7 @@ impl DrivingState {
             ramp_green_roll_said: false,
             ramp_assist_brake: 0.0,
             approach_pull_ahead: false,
+            rear_whip_cooldown_s: 0.0,
             approach_pull_ahead_canceled: false,
             street_bar_mi: None,
             street_control_kind: String::new(),

@@ -350,6 +350,88 @@ fn test_garage_offers_partial_fuel_and_repairs_when_cash_is_short() {
 }
 
 #[test]
+fn test_garage_refuel_requires_engine_off() {
+    let mut app = TestApp::new();
+    career(&mut app, "Garage Engine Gate", "Chicago");
+    {
+        let p = profile_mut(&mut app);
+        p.business_status = LEASED_OWNER_OPERATOR.to_string();
+        p.set_money(5_000.0);
+        p.set_truck_fuel_gal(20.0);
+        p.set_truck_engine_on(true);
+    }
+    app.push_state(GarageState::new());
+
+    app.clear_speech();
+    select::<GarageState>(&mut app, "Refuel");
+    let said = app.main_lines().last().cloned().unwrap_or_default();
+    assert!(
+        said.contains("Shut the engine off before you fuel."),
+        "{said}"
+    );
+    assert!((profile(&app).truck_fuel_gal() - 20.0).abs() < 1e-9);
+
+    app.clear_speech();
+    select::<GarageState>(&mut app, "Shut down the engine");
+    let said = app.main_lines().last().cloned().unwrap_or_default();
+    assert!(said.contains("Engine off."), "{said}");
+    assert!(!profile(&app).truck_engine_on());
+
+    with_state_mut::<GarageState, _>(&mut app, |g, ctx| {
+        freight_fate::states::base::Menu::refresh(g, ctx, true)
+    });
+
+    app.clear_speech();
+    select::<GarageState>(&mut app, "Refuel");
+    let said = app.main_lines().join(" ");
+    assert!(
+        !said.contains("Shut the engine off before you fuel."),
+        "{said}"
+    );
+    assert!(profile(&app).truck_fuel_gal() > 20.0);
+}
+
+#[test]
+fn test_garage_full_tank_with_engine_on_speaks_the_engine_refusal() {
+    // Engine first, then the tank, as at the fuel island.
+    let mut app = TestApp::new();
+    career(&mut app, "Garage Engine Order", "Chicago");
+    {
+        let p = profile_mut(&mut app);
+        p.business_status = LEASED_OWNER_OPERATOR.to_string();
+        p.set_money(5_000.0);
+        p.set_truck_fuel_gal(10_000.0);
+        p.set_truck_engine_on(true);
+    }
+    app.push_state(GarageState::new());
+
+    app.clear_speech();
+    select::<GarageState>(&mut app, "Fuel: tank is full");
+    let said = app.main_lines().last().cloned().unwrap_or_default();
+    assert!(
+        said.contains("Shut the engine off before you fuel."),
+        "{said}"
+    );
+    assert!(profile(&app).truck_engine_on());
+}
+
+#[test]
+fn test_garage_help_strings_have_no_double_spaces() {
+    let mut app = TestApp::new();
+    career(&mut app, "Garage Help", "Chicago");
+    profile_mut(&mut app).set_truck_engine_on(true);
+    app.push_state(GarageState::new());
+    let helps = labels_and_help::<GarageState>(&app);
+    assert!(!helps.is_empty());
+    for (label, help) in helps {
+        assert!(
+            !help.contains("  "),
+            "garage help for {label:?} has a double space: {help:?}"
+        );
+    }
+}
+
+#[test]
 fn test_garage_services_tires_and_wash() {
     let mut app = TestApp::new();
     career(&mut app, "Maintenance", "Chicago");
@@ -838,6 +920,37 @@ fn endorsement_courses_price_each_unearned_endorsement() {
         help.contains("unlocks fresh food and refrigerated goods"),
         "{help}"
     );
+}
+
+#[test]
+fn test_staying_with_no_carrier_stays_on_the_path_not_in_a_seat() {
+    // With no carrier there is no company-driver seat to stay in.
+    let mut app = TestApp::new();
+    career(&mut app, "Stay Path", "Chicago");
+    {
+        let p = profile_mut(&mut app);
+        p.career.xp = LEVEL_XP[(OWNER_OPERATOR_LEVEL - 1) as usize];
+        p.career.deliveries = OWNER_OPERATOR_DELIVERIES;
+        p.career.reputation = OWNER_OPERATOR_REPUTATION;
+        p.set_money(OWNER_OPERATOR_BUY_IN + OWNER_OPERATOR_WORKING_CAPITAL + 500.0);
+    }
+    // The row is offered only with a carrier; the carrier goes while the
+    // screen is open, so the choice is made with none.
+    app.push_state(BusinessStatusState::new());
+    {
+        let p = profile_mut(&mut app);
+        p.carrier_key.clear();
+        p.carrier_name.clear();
+        assert!(p.is_unassigned_company_driver());
+    }
+    app.clear_speech();
+    select::<BusinessStatusState>(&mut app, "Stay a company driver");
+    let said = app.main_lines().join(" ");
+    assert!(
+        said.contains("Staying on the company-driver path."),
+        "{said}"
+    );
+    assert!(!said.contains("Staying a company driver"), "{said}");
 }
 
 #[test]

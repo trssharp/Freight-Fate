@@ -82,7 +82,7 @@ pub trait FuelPump: Menu {
         // in. Reefer/APU is not this flag and is not required off here.
         if engine_on {
             ctx.audio.play("ui/error");
-            ctx.say("Shut the engine off before you fuel.");
+            ctx.say(REFUEL_ENGINE_ON_REFUSAL);
             return;
         }
         if need < 1.0 {
@@ -162,5 +162,41 @@ pub trait FuelPump: Menu {
             let name = self.stop().spoken_name();
             ctx.say(&format!("Saved at {name}."));
         }
+    }
+}
+
+/// The one spoken refusal for fueling with the tractor running, shared by the
+/// fuel island and the terminal garage.
+pub const REFUEL_ENGINE_ON_REFUSAL: &str = "Shut the engine off before you fuel.";
+
+/// Tractor must be off to fuel. Reefer and APU are not part of this gate.
+pub fn refuel_engine_gate_message(engine_on: bool) -> Option<&'static str> {
+    if engine_on {
+        Some(REFUEL_ENGINE_ON_REFUSAL)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{refuel_engine_gate_message, REFUEL_ENGINE_ON_REFUSAL};
+
+    #[test]
+    fn refuel_refused_with_engine_on() {
+        assert_eq!(
+            refuel_engine_gate_message(true),
+            Some(REFUEL_ENGINE_ON_REFUSAL)
+        );
+        assert_eq!(
+            REFUEL_ENGINE_ON_REFUSAL,
+            "Shut the engine off before you fuel."
+        );
+    }
+
+    #[test]
+    fn refuel_allowed_with_engine_off_even_if_hotel_units_run() {
+        // Hotel units are not arguments: the gate only reads the tractor.
+        assert_eq!(refuel_engine_gate_message(false), None);
     }
 }

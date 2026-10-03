@@ -13,6 +13,7 @@ use crate::meaningful_play::MeaningfulPlayReason;
 use crate::states::base::{Label, Menu, MenuCore, MenuItem};
 use crate::states::city::{profile, profile_mut};
 use crate::states::city_business::{TrailerProgramState, TruckShopState, UpgradeShopState};
+use crate::states::driving_rest_states::refuel_engine_gate_message;
 
 pub const TERMINAL_FUEL_MIN: f64 = 20.0;
 pub const TERMINAL_REPAIR_MIN: f64 = 60.0;
@@ -33,7 +34,7 @@ pub const CHAIN_SET_COST: f64 = 750.0;
 pub const TERMINAL_CHAINS_MIN: f64 = 10.0;
 
 fn record_terminal_duty(ctx: &mut GameContext, start_hour: f64, end_hour: f64, note: &str) {
-    let terminal = crate::states::city::home_terminal(ctx);
+    let terminal = crate::states::city::parked_at(ctx);
     profile_mut(ctx).duty_log.record(
         "on_duty_not_driving",
         start_hour,
@@ -160,7 +161,27 @@ impl GarageState {
         )
     }
 
+    /// Shut the tractor off so the island (and this bay) will fuel.
+    pub fn shut_down_engine(&mut self, ctx: &mut GameContext) {
+        if !profile(ctx).truck_engine_on() {
+            ctx.say("The engine is already off.");
+            return;
+        }
+        profile_mut(ctx).set_truck_engine_on(false);
+        ctx.save_profile();
+        ctx.audio.play("ui/notify");
+        ctx.say("Engine off.");
+        self.refresh(ctx, true);
+    }
+
     pub fn refuel(&mut self, ctx: &mut GameContext) {
+        // Engine first, then the tank: the same order as the fuel island.
+        // Reefer and APU may stay on; only the tractor must be off.
+        if let Some(msg) = refuel_engine_gate_message(profile(ctx).truck_engine_on()) {
+            ctx.audio.play("ui/error");
+            ctx.say(msg);
+            return;
+        }
         let tank = Self::tank_gal(ctx);
         let need = tank - profile(ctx).truck_fuel_gal();
         if need < 1.0 {
@@ -873,16 +894,27 @@ impl Menu for GarageState {
         &mut self.menu
     }
 
-    fn build_items(&mut self, _ctx: &mut GameContext) -> Vec<MenuItem<Self>> {
-        vec![
+    fn build_items(&mut self, ctx: &mut GameContext) -> Vec<MenuItem<Self>> {
+        let mut items = Vec::new();
+        if profile(ctx).truck_engine_on() {
+            items.push(
+                MenuItem::new("Shut down the engine", |s: &mut Self, ctx| {
+                    s.shut_down_engine(ctx)
+                })
+                .help("The tractor must be off before this bay will fuel."),
+            );
+        }
+        items.push(
             MenuItem::new(
                 Label::dynamic(|_s: &Self, ctx| Self::fuel_label(ctx)),
                 |s: &mut Self, ctx| s.refuel(ctx),
             )
             .help(
-                "Company drivers bill the carrier, owner-operators pay the regional diesel \
-                 price.",
+                "Company drivers bill the carrier, owner-operators pay the regional \
+                 diesel price. Shut the engine off first.",
             ),
+        );
+        items.extend([
             MenuItem::new(
                 Label::dynamic(|_s: &Self, ctx| Self::repair_label(ctx)),
                 |s: &mut Self, ctx| s.repair(ctx),
@@ -893,8 +925,8 @@ impl Menu for GarageState {
                 |s: &mut Self, ctx| s.service_tires(ctx),
             )
             .help(
-                "Worn tires grip less. Company drivers bill the carrier, owner-operators pay \
-                 the shop.",
+                "Worn tires grip less. Company drivers bill the carrier, owner-operators \
+                 pay the shop.",
             ),
             MenuItem::new(
                 Label::dynamic(|_s: &Self, ctx| Self::tire_swap_label(ctx)),
@@ -925,8 +957,9 @@ impl Menu for GarageState {
                 |s: &mut Self, ctx| s.service_engine(ctx),
             )
             .help(
-                "A worn engine is down on power and burns more fuel. Over-revving and lugging \
-                 wear it fast. Company drivers bill the carrier, owner-operators pay the shop.",
+                "A worn engine is down on power and burns more fuel. Over-revving and \
+                 lugging wear it fast. Company drivers bill the carrier, owner-operators \
+                 pay the shop.",
             ),
             MenuItem::new(
                 Label::dynamic(|_s: &Self, ctx| Self::wash_label(ctx)),
@@ -934,8 +967,8 @@ impl Menu for GarageState {
             )
             .help("Company drivers bill the carrier, owner-operators pay."),
             MenuItem::new("Upgrades", |s: &mut Self, ctx| s.upgrades(ctx)).help(
-                "Performance upgrades for owned tractors: more torque, less drag, a bigger \
-                 tank, stronger brakes.",
+                "Performance upgrades for owned tractors: more torque, less drag, a \
+                 bigger tank, stronger brakes.",
             ),
             MenuItem::new("Trucks", |s: &mut Self, ctx| s.trucks(ctx))
                 .help("Owner-operators can buy a new truck, or switch between trucks they own."),
@@ -944,7 +977,8 @@ impl Menu for GarageState {
             ),
             MenuItem::new("Back", |s: &mut Self, ctx| s.go_back(ctx))
                 .help("Return to the terminal menu."),
-        ]
+        ]);
+        items
     }
 }
 

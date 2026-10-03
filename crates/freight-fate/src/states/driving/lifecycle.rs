@@ -232,7 +232,7 @@ impl DrivingState {
                      Weather: {report_lead}. Parked. {speed_control}{engine} At air ready, {} \
                      releases the parking brake.",
                     self.job.weight_tons,
-                    self.job.cargo.label,
+                    self.job.spoken_cargo_label(),
                     self.job.deadline_game_h,
                     ctx.control_hint("parking_brake")
                 );
@@ -241,7 +241,7 @@ impl DrivingState {
         } else {
             let objective = if self.phase == DRIVE_PHASE_PICKUP {
                 format!(
-                    "Pickup dispatch: deadhead from the terminal to {}. ",
+                    "Pickup dispatch: deadhead to {}. ",
                     self.pickup_facility_text(ctx)
                 )
             } else {
@@ -283,6 +283,12 @@ impl DrivingState {
     /// radio's dial written to settings, the world's audio silenced.
     pub fn exit_drive(&mut self, ctx: &mut GameContext) {
         ctx.audio.horn_stop();
+        // The siren's dead-man's switch only ticks from inside update(), so
+        // once this state stops running it can never time itself out --
+        // leave to the menu mid pull-over and it outlived every drive that
+        // followed, until the game closed. Stop it explicitly, the same call
+        // a resolved stop already makes (`end_stop_audio`).
+        self.siren.stop(ctx.audio.as_mut());
         self.stop_liquid_cues(ctx);
         {
             let mut settings = RadioSettingsMut(&mut ctx.settings);

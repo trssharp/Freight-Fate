@@ -15,7 +15,6 @@ use chrono::{DateTime, Datelike, Local, Timelike};
 use ff_core::models::business::status_label;
 use ff_core::models::jobs::facility_text;
 use ff_core::models::profile::{data_dir, LegacyCareerError, LoadError, Profile};
-use ff_core::models::start_options::option_for_profile;
 use ff_core::music::{select_menu_music_sequence, MenuMusicProfile};
 use ff_core::playtest_levers::apply_continue_levers;
 use ff_core::pyfmt::{fmt_f, fmt_grouped};
@@ -33,6 +32,7 @@ use crate::states::online_hub::OnlineHubState;
 use crate::states::online_offer::OnlineOfferState;
 use crate::states::save_notice::{
     DrivingRecordNoticeState, SaveMigrationNoticeState, SaveModifiedNoticeState,
+    TurnpikeProgramNoticeState,
 };
 use crate::states::text_entry::{TextEntry, TextEntryCore};
 use crate::updater;
@@ -191,6 +191,9 @@ pub fn pending_notice_state(ctx: &GameContext) -> Option<SharedState> {
     if profile.driving_record.notice_pending {
         return Some(share(DrivingRecordNoticeState::new()));
     }
+    if profile.turnpike_program_notice_due() {
+        return Some(share(TurnpikeProgramNoticeState::new()));
+    }
     None
 }
 
@@ -204,44 +207,13 @@ pub fn should_offer_online(ctx: &GameContext) -> bool {
     IdentityStore::platform(&data_dir()).load().is_none()
 }
 
-/// The first-day welcome spoken at career creation.
-// TODO(lead): belongs in `states::city` (`first_day_orientation_message`);
-// reproduced here, word for word, until that module lands.
+/// The first-day welcome spoken at career creation (the `states::city`
+/// briefing, joined).
 pub fn first_day_orientation_message(ctx: &GameContext, prefix: &str) -> String {
-    let Some(p) = ctx.profile.as_ref() else {
+    if ctx.profile.is_none() {
         return String::new();
-    };
-    let terminal = ctx
-        .world
-        .home_terminal(&p.current_city)
-        .map(|t| t.spoken_name())
-        .unwrap_or_default();
-    let option = option_for_profile(p);
-    // Spoken city, never the map key (same fix as the states::city copy).
-    let location = format!(
-        "{terminal} in the {} service area",
-        ctx.world.spoken_city(&p.current_city, None)
-    );
-    if option.is_owner_operator() {
-        return format!(
-            "{prefix}First-day briefing: leased to {}, parked at {location}. You own a new \
-             truck with a full tank and {} dollars of working capital. Fuel, repairs, truck \
-             wear, trailer programs, and business reserves come out of your cash. First \
-             objective: open the dispatch board and choose an unlocked load with a deadline \
-             you can protect.",
-            option.carrier_name,
-            fmt_grouped(p.money(), 0)
-        );
     }
-    format!(
-        "{prefix}First-day briefing: welcome aboard {}. Your assigned truck is parked at \
-         {location}. The carrier covers fuel, repairs, insurance, and trailer support. \
-         Dispatch style: {}. As a new hire, dispatch assigns your load and route, and \
-         refusing an assignment goes on your service record. First objective: open the \
-         dispatch board, accept the assigned load, and deliver it cleanly.",
-        option.carrier_name,
-        option.dispatch.summary()
-    )
+    crate::states::city::first_day_orientation_message(ctx, prefix)
 }
 
 /// The city menu, or the one-time orinks.net offer ahead of it.
@@ -487,14 +459,11 @@ pub fn career_location(ctx: &GameContext, profile: &Profile) -> String {
         }
         return format!("on the road to {facility}");
     }
-    match ctx.world.home_terminal(&profile.current_city) {
-        Ok(terminal) => format!(
-            "at {} in {}",
-            terminal.name,
-            ctx.world.spoken_city(&profile.current_city, None)
-        ),
-        Err(_) => format!("in {}", profile.current_city),
+    if profile.is_unassigned_company_driver() {
+        // No truck to be parked: the driver is just in the city.
+        return format!("in {}", ctx.world.spoken_city(&profile.current_city, None));
     }
+    profile.parked_at(ctx.world).phrase(ctx.world)
 }
 
 /// `Mon D, YYYY at H:MM AM` for a save file's modification time.
@@ -526,11 +495,15 @@ pub fn career_summary(
 ) -> String {
     let mut parts = vec![
         format!("{}: level {}", profile.name, profile.career.level()),
-        format!(
-            "{} {}",
-            profile.carrier_name,
-            status_label(&profile.business_status)
-        ),
+        if profile.is_unassigned_company_driver() {
+            format!("{} with no carrier", status_label(&profile.business_status))
+        } else {
+            format!(
+                "{} {}",
+                profile.carrier_name,
+                status_label(&profile.business_status)
+            )
+        },
         format!("{} dollars", fmt_grouped(profile.money(), 0)),
         career_location(ctx, profile),
         format!("{} deliveries", profile.career.deliveries),
@@ -592,15 +565,10 @@ impl MainMenuState {
         let welcome = if p.active_trip.is_some() {
             format!("Welcome back, {}.", p.name)
         } else {
-            let terminal_name = ctx
-                .world
-                .home_terminal(&p.current_city)
-                .map(|t| t.name)
-                .unwrap_or_default();
             format!(
-                "Welcome back, {}. You are parked at {terminal_name} in {} with {} dollars.",
+                "Welcome back, {}. You are parked {} with {} dollars.",
                 p.name,
-                ctx.world.spoken_city(&p.current_city, None),
+                p.parked_at(ctx.world).phrase(ctx.world),
                 fmt_grouped(p.money(), 0)
             )
         };
@@ -1008,7 +976,7 @@ impl TextEntry for NameEntryState {
             trimmed => trimmed.to_string(),
         };
         ctx.audio.play("ui/menu_select");
-        ctx.push_state(CareerStartState::new(&name));
+        ctx.push_state(HomeTerminalState::new(ctx, &name));
     }
 }
 

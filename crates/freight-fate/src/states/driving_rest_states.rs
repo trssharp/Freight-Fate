@@ -25,10 +25,10 @@ mod rest_stop;
 mod roadside;
 mod shoulder;
 
-pub use fuel_pump::FuelPump;
+pub use fuel_pump::{refuel_engine_gate_message, FuelPump};
 pub use loyalty::LoyaltyRewardsState;
 pub use parking_full::ParkingFullState;
-pub use rest_stop::{RestFocus, RestStopState};
+pub use rest_stop::{walk_around_minutes, RestFocus, RestStopState};
 pub use roadside::{EnforcementStopState, FelonyStopState, RoadsideExit, TrafficStopState};
 pub use shoulder::ShoulderSleepConfirmationState;
 

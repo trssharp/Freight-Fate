@@ -4,10 +4,20 @@
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 
+use ff_core::data::lcv_turnpikes::{
+    cargo_requires_lcv_turnpike, filter_lcv_turnpike_routes, LCV_TURNPIKE_REROUTE_NOTE,
+    LCV_TURNPIKE_ROUTE_REFUSAL,
+};
+use ff_core::data::national_network::{
+    cargo_requires_national_network, city_key_outside_lower_48, city_outside_lower_48,
+    filter_staa_doubles_routes, route_outside_lower_48, STAA_DOUBLES_CORRIDOR_REFUSAL,
+    STAA_DOUBLES_REROUTE_NOTE, STAA_DOUBLES_ROUTE_REFUSAL,
+};
 use ff_core::data::world::World;
 use ff_core::data::world_models::Route;
 use ff_core::models::business_constants::is_owner_operator;
 use ff_core::models::dispatch_policy::dispatch_policy;
+use ff_core::models::doubles::{doubles_hook_extra_min, doubles_hook_text, is_doubles_cargo};
 use ff_core::models::jobs::{job_from_payload, job_payload, plan_hos, Job};
 use ff_core::models::trailer_yard::{
     pickup_plan, replacement_trailer, PickupPlan, TrailerUnit, TRAILER_SWAP_MIN,
@@ -23,7 +33,7 @@ use ff_core::sim::route_roadwork::{
 use ff_core::sim::season::{adjust_for_calendar, real_clock_game_hours, temperature_c};
 use ff_core::sim::surge::{liquid_load_for, LiquidCargo};
 use ff_core::sim::trip_traffic::TrafficProvider;
-use ff_core::sim::vehicle::TruckState;
+use ff_core::sim::vehicle::{TrailerSet, TruckState};
 use ff_core::sim::weather::WeatherSystem;
 
 use crate::app::GameContext;
@@ -474,8 +484,14 @@ impl PickupFacilityState {
         }
         let Some(defect) = trailer.defect() else {
             ctx.audio.play("ui/notify");
+            let covered = if is_doubles_cargo(self.job.cargo.key) {
+                ", both trailers and the converter dolly"
+            } else {
+                ""
+            };
             ctx.say(&format!(
-                "Walking {}: lamps lit, brakes in adjustment, tires with tread. It checks out.{}",
+                "Walking {}{covered}: lamps lit, brakes in adjustment, tires with tread. It \
+                 checks out.{}",
                 trailer.spoken_name(),
                 self.tank_walk_around_clause()
             ));
@@ -605,10 +621,11 @@ impl PickupFacilityState {
         self.refresh(ctx, false);
         ctx.audio.play("ui/notify");
         let plan = self.pickup_plan(ctx);
+        let doubles = self.doubles_clause();
         if plan.is_drop_hook() {
             ctx.say(&format!(
                 "Checked in at {facility}. Your load is on {} in the drop yard. Stop, then \
-                 drop and hook.",
+                 drop and hook.{doubles}",
                 plan.trailer
                     .as_ref()
                     .map(|t| t.spoken_name())
@@ -616,8 +633,20 @@ impl PickupFacilityState {
             ));
         } else {
             ctx.say(&format!(
-                "Checked in at {facility}. Dock assigned. Stop, then load cargo."
+                "Checked in at {facility}. Dock assigned. Stop, then load cargo.{doubles}"
             ));
+        }
+    }
+
+    /// The hook-up and walk-around a set of doubles adds, with a leading
+    /// space, or empty for a single trailer. Spoken at check-in and loading
+    /// and shown on the pickup screen.
+    fn doubles_clause(&self) -> String {
+        let text = doubles_hook_text(self.job.cargo.key);
+        if text.is_empty() {
+            text
+        } else {
+            format!(" {text}")
         }
     }
 
@@ -650,13 +679,14 @@ impl PickupFacilityState {
                 "Hooking the loaded trailer",
                 format!(
                     "Dropping your empty at {facility} and hooking {}, loaded with {} tons \
-                     of {}.",
+                     of {}.{}",
                     plan.trailer
                         .as_ref()
                         .map(|t| t.spoken_name())
                         .unwrap_or_default(),
                     fmt_f(self.job.weight_tons, 0),
-                    self.job.cargo.label
+                    self.job.spoken_cargo_label(),
+                    self.doubles_clause()
                 ),
                 "Dropping and hooking.",
             )
@@ -664,9 +694,10 @@ impl PickupFacilityState {
             (
                 "Loading cargo",
                 format!(
-                    "Loading {} tons of {} at {facility}.",
+                    "Loading {} tons of {} at {facility}.{}",
                     fmt_f(self.job.weight_tons, 0),
-                    self.job.cargo.label
+                    self.job.spoken_cargo_label(),
+                    self.doubles_clause()
                 ),
                 "Loading cargo.",
             )
@@ -699,10 +730,12 @@ impl PickupFacilityState {
             let start = p.game_hours;
             p.game_hours += plan.minutes / 60.0;
             let end = p.game_hours;
-            let activity = if plan.is_drop_hook() {
-                "dropping and hooking"
-            } else {
-                "loading"
+            let doubles = is_doubles_cargo(self.job.cargo.key);
+            let activity = match (plan.is_drop_hook(), doubles) {
+                (true, true) => "dropping and hooking a set of doubles",
+                (true, false) => "dropping and hooking",
+                (false, true) => "loading and hooking a set of doubles",
+                (false, false) => "loading",
             };
             p.duty_log
                 .record("on_duty_not_driving", start, end, &facility, activity);
@@ -738,6 +771,67 @@ impl PickupFacilityState {
             ctx.say("Dispatch cannot find a route for this load.");
             return;
         }
+        // STAA twin trailers: refuse ALCAN / Canada / Alaska by policy, then
+        // keep only National Network / reasonable-access lanes. Dropping some
+        // options is a reroute; dropping all refuses with the matching line.
+        let (routes, staa_note) = if cargo_requires_national_network(self.job.cargo.key) {
+            let origin_key = ctx.world.resolve_city_key(&self.job.origin);
+            let dest_key = ctx.world.resolve_city_key(&self.job.destination);
+            let city_blocked = |key: &str| {
+                ctx.world
+                    .cities
+                    .get(key)
+                    .map(city_outside_lower_48)
+                    .unwrap_or_else(|| city_key_outside_lower_48(key))
+            };
+            if city_blocked(&origin_key)
+                || city_blocked(&dest_key)
+                || routes.iter().all(route_outside_lower_48)
+            {
+                ctx.audio.play("ui/error");
+                ctx.say(STAA_DOUBLES_CORRIDOR_REFUSAL);
+                return;
+            }
+            let before = routes.len();
+            let filtered = filter_staa_doubles_routes(&routes);
+            if filtered.is_empty() {
+                ctx.audio.play("ui/error");
+                ctx.say(STAA_DOUBLES_ROUTE_REFUSAL);
+                return;
+            }
+            let note = if filtered.len() < before {
+                Some(STAA_DOUBLES_REROUTE_NOTE)
+            } else {
+                None
+            };
+            (filtered, note)
+        } else if cargo_requires_lcv_turnpike(self.job.cargo.key) {
+            let before = routes.len();
+            // The turnpike allowlist, and a recorded LCV cap in every state
+            // the lane touches: a state without one makes the lane illegal
+            // for this set at any weight, so it is dropped, never capped at
+            // 80,000 lb.
+            let filtered: Vec<_> = filter_lcv_turnpike_routes(&routes)
+                .into_iter()
+                .filter(|route| {
+                    TrailerSet::for_cargo_on_route(self.job.cargo.key, ctx.world, Some(route))
+                        .is_some()
+                })
+                .collect();
+            if filtered.is_empty() {
+                ctx.audio.play("ui/error");
+                ctx.say(LCV_TURNPIKE_ROUTE_REFUSAL);
+                return;
+            }
+            let note = if filtered.len() < before {
+                Some(LCV_TURNPIKE_REROUTE_NOTE)
+            } else {
+                None
+            };
+            (filtered, note)
+        } else {
+            (routes, None)
+        };
         // The world ranks the options by distance; dispatch re-ranks them by
         // the construction the state 511 feeds report on each, the way a
         // dispatcher checks 511 before naming the lane.
@@ -748,6 +842,10 @@ impl PickupFacilityState {
             let construction = dispatch_route_line(&routes, &routing, ctx.world, &ctx.settings);
             let route = routes[routing.pick()].clone();
             let mut lead = String::new();
+            if let Some(note) = staa_note {
+                lead.push_str(note);
+                lead.push(' ');
+            }
             if !construction.is_empty() {
                 lead.push_str(&construction);
                 lead.push(' ');
@@ -771,12 +869,18 @@ impl PickupFacilityState {
             );
             return;
         }
-        ctx.say(&format!(
+        let mut planning = String::new();
+        if let Some(note) = staa_note {
+            planning.push_str(note);
+            planning.push(' ');
+        }
+        planning.push_str(&format!(
             "Route planning to {}. {} route option{}.",
             self.job.destination_facility_text(),
             routes.len(),
             if routes.len() != 1 { "s" } else { "" }
         ));
+        ctx.say(&planning);
         // Dispatch's pick reads as route 1; each option says what 511 has on it.
         let dispatch_note = route_planning_note(&routes, &routing, ctx.world);
         let notes: Vec<String> = routing
@@ -843,7 +947,7 @@ impl PickupFacilityState {
              pressure {} psi, {brake}.{}",
             self.facility(),
             fmt_f(self.job.weight_tons, 0),
-            self.job.cargo.label,
+            self.job.spoken_cargo_label(),
             self.job.destination_facility_text(),
             ctx.settings.speed_text(self.truck.speed_mph()),
             fmt_f(self.truck.air_pressure_psi(), 0),
@@ -860,14 +964,23 @@ impl PickupFacilityState {
     }
 
     fn cancel(&mut self, ctx: &mut GameContext) {
+        let at_shipper = ctx.world.resolve_city_key(&self.job.origin)
+            == ctx.world.resolve_city_key(&profile(ctx).current_city);
         {
             let p = profile_mut(ctx);
             p.active_trip = None;
             p.dispatch_board_cache = None;
+            // The truck is at the shipper it was picking up from.
+            if at_shipper && !self.job.bobtail {
+                p.parked_facility = self.job.origin_location.clone();
+            }
         }
         ctx.save_profile();
-        let terminal = crate::states::city::home_terminal(ctx);
-        ctx.say(&format!("Pickup canceled. Returned to {}.", terminal.name));
+        let parked = crate::states::city::parked_at(ctx);
+        ctx.say(&format!(
+            "Pickup canceled. Parked {}.",
+            parked.phrase(ctx.world)
+        ));
         let city = CityMenuState::new(ctx, false);
         ctx.reset_to(city);
     }
@@ -910,7 +1023,7 @@ impl Menu for PickupFacilityState {
             activity,
             &format!(
                 "{} for {}",
-                self.job.cargo.label,
+                self.job.spoken_cargo_label(),
                 self.job.spoken_destination()
             ),
         ))
@@ -1092,10 +1205,19 @@ impl Menu for PickupFacilityState {
             format!(
                 "Cargo: {} tons of {}",
                 fmt_f(self.job.weight_tons, 0),
-                self.job.cargo.label
+                self.job.spoken_cargo_label()
             ),
             format!("Destination: {}", self.job.spoken_destination()),
             format!("Status: {state}"),
+        ];
+        if is_doubles_cargo(self.job.cargo.key) {
+            lines.push(format!(
+                "Doubles: two hook-ups and a walk-around of both trailers and the dolly, {} \
+                 extra minutes on duty",
+                fmt_f(doubles_hook_extra_min(self.job.cargo.key), 0)
+            ));
+        }
+        lines.extend([
             format!(
                 "Speed: {}",
                 ctx.settings.hud_speed_text(self.truck.speed_mph())
@@ -1118,7 +1240,7 @@ impl Menu for PickupFacilityState {
                     "parking released"
                 }
             ),
-        ];
+        ]);
         if self.speed_control_armed {
             let target = match self.speed_control_target_mph {
                 Some(mph) => ctx.settings.speed_text(mph),

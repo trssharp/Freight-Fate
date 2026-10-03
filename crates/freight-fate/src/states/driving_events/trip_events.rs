@@ -1200,13 +1200,18 @@ impl DrivingState {
             // or duty still takes the ten hours. Fine and reputation are
             // applied by the stop itself, not here.
             let break_only = hos_of(ctx).is_break_only_violation(&mode);
+            let oos_minutes = hos_of(ctx).out_of_service_minutes(&mode);
             let oos_phrase = if break_only {
                 "thirty minutes"
+            } else if oos_minutes >= hos::RESTART_MIN {
+                "thirty-four hours"
             } else {
                 "ten hours"
             };
             let return_message = if break_only {
                 "Back on the highway after the 30-minute break. Keep the logbook clean."
+            } else if oos_minutes >= hos::RESTART_MIN {
+                "Back on the highway with a fresh cycle. Keep the logbook clean."
             } else {
                 "Back on the highway with a reset clock. Keep the logbook clean."
             };
@@ -1266,7 +1271,11 @@ impl DrivingState {
         // 383.51 Table 4) has no path in the game.
         let written_h = crate::states::driving_rest_states::record_hours(ctx, self);
         advance_rest_clock(self, ctx, minutes, None, "");
-        if minutes >= hos::SLEEP_MIN {
+        if minutes >= hos::RESTART_MIN {
+            hos_mut_of(ctx).restart();
+            let profile = profile_mut_of(ctx);
+            profile.fatigue = hos::rest_sleep(profile.fatigue);
+        } else if minutes >= hos::SLEEP_MIN {
             hos_mut_of(ctx).sleep();
             let profile = profile_mut_of(ctx);
             profile.fatigue = hos::rest_sleep(profile.fatigue);

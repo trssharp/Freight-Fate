@@ -29,10 +29,11 @@ fn new_career_to_city(app: &mut TestApp) {
     select::<MainMenuState>(app, "New career");
     assert!(is::<NameEntryState>(app));
     key(app, Key::Return); // default name
+    assert!(is::<HomeTerminalState>(app));
+    key(app, Key::Return); // default region
+    key(app, Key::Return); // default home city
     assert!(is::<CareerStartState>(app));
     key(app, Key::Return); // default start
-    key(app, Key::Return); // default region
-    key(app, Key::Return); // default home terminal
     assert!(is::<CityMenuState>(app));
 }
 
@@ -183,12 +184,12 @@ fn test_full_game_flow_headless() {
         app.dispatch_to_state(&InputEvent::typed(ch));
     }
     key(&mut app, Key::Return);
-    assert!(is::<CareerStartState>(&app));
-    key(&mut app, Key::Return); // default start: Northstar
     assert!(is::<HomeTerminalState>(&app));
     key(&mut app, Key::Return); // default region: Great Lakes
     assert!(is::<HomeCityState>(&app));
     key(&mut app, Key::Return); // default city: Chicago
+    assert!(is::<CareerStartState>(&app));
+    key(&mut app, Key::Return); // default start: Northstar
     assert!(is::<CityMenuState>(&app));
     assert_eq!(profile(&app).name, "Smoke");
     assert_eq!(profile(&app).current_city, "chicago_il_us");
@@ -355,15 +356,42 @@ fn test_full_game_flow_headless() {
     // continue back to the destination terminal hub
     select::<ArrivalState>(&mut app, "Continue to");
     assert!(is::<CityMenuState>(&app));
-    let terminal = app
-        .ctx
-        .world
-        .home_terminal(&destination)
-        .expect("the destination has a terminal");
+    // Parked where the load was delivered (unless that is the home
+    // terminal city, where the carrier's own terminal wins).
+    let parked = profile(&app).parked_at(app.ctx.world);
+    assert!(!parked.name.is_empty() && parked.name != "Terminal");
+    assert_eq!(
+        parked.city_key,
+        app.ctx.world.resolve_city_key(&destination)
+    );
     assert_eq!(
         with_state::<CityMenuState, _>(&app, |s, _| s.menu().title.clone()),
-        terminal.name
+        parked.name
     );
+
+    // The next dispatch deadheads from the delivered facility, not a
+    // terminal, and the pickup line must not claim otherwise.
+    key(&mut app, Key::Return); // job board
+    assert!(is::<JobBoardState>(&app));
+    accept_assigned_freight_with_deadhead(&mut app);
+    assert_eq!(
+        with_state::<DrivingState, _>(&app, |d, _| d.phase.to_string()),
+        DRIVE_PHASE_PICKUP
+    );
+    let spoken: Vec<String> = app
+        .main_lines()
+        .into_iter()
+        .chain(app.event_lines())
+        .collect();
+    assert!(
+        spoken
+            .iter()
+            .any(|l| l.contains("Pickup dispatch: deadhead to ")),
+        "{spoken:?}"
+    );
+    for line in &spoken {
+        assert!(!line.contains("from the terminal"), "{line}");
+    }
 
     // render a frame of every reachable lines() output
     app.render();

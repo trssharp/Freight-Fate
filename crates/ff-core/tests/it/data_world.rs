@@ -196,28 +196,101 @@ fn test_every_city_has_locations_with_known_cargo() {
             );
             assert!(!loc.spoken_name().is_empty());
             assert!(!loc.source_note.is_empty());
-            assert!(!loc.roles.is_empty());
-            assert!(!loc.ships.is_empty() || !loc.receives.is_empty());
+            let service_only = matches!(
+                loc.facility_type.as_str(),
+                "travel_center" | "truck_parking"
+            );
+            if service_only {
+                // Fuel / parking / rest pins: no freight roles by design.
+                assert!(loc.ships.is_empty() && loc.receives.is_empty());
+                assert!(loc.roles.is_empty());
+            } else {
+                assert!(!loc.roles.is_empty());
+                assert!(!loc.ships.is_empty() || !loc.receives.is_empty());
+            }
         }
     }
 }
 
 #[test]
-fn test_home_terminal_prefers_explicit_terminal_and_falls_back_to_yard() {
+fn test_world_yard_pins_are_freight_endpoints_not_homes() {
+    // World terminal/company_yard pins only name freight endpoints (and the
+    // fallback garage); homes are the hiring carrier's own terminals.
     let world = world();
-    let explicit = world.home_terminal("Nashville").unwrap();
-    let fallback = world.home_terminal("Chicago").unwrap();
-
-    assert_eq!(explicit.name, "Music City Freight");
-    assert_eq!(explicit.label(), "company terminal");
-    assert_eq!(
-        explicit.spoken_name(),
-        "company terminal: Music City Freight"
+    assert_eq!(world.yard_pin_name("Nashville"), Some("Music City Freight"));
+    assert_eq!(world.yard_pin_name("Chicago"), Some("Chicago Company Yard"));
+    // Healy's only curated pin is Fisher Fuel (travel_center): no yard pin,
+    // no default freight facility, and no borrowed Nenana stand-in.
+    assert_eq!(world.yard_pin_name("healy_ak_us"), None);
+    let err = world
+        .default_facility("healy_ak_us")
+        .expect_err("Healy has no company_yard/terminal on its own pin");
+    assert!(
+        err.to_string().contains("no freight facilities"),
+        "unexpected default_facility error: {err}"
     );
-    assert_eq!(explicit.service_area(), "Nashville, Tennessee");
-    assert_eq!(fallback.name, "Chicago Company Yard");
-    assert_eq!(fallback.label(), "company yard");
-    assert_eq!(fallback.spoken_name(), "company yard: Chicago Company Yard");
+    assert!(world
+        .yard_pin_name("anchorage_ak_us")
+        .is_some_and(|name| name.contains("Port of Alaska")));
+}
+
+#[test]
+fn test_home_base_offerability_follows_carrier_hiring() {
+    use ff_core::models::carriers::{carrier, home_terminal_city_for, is_offerable_home_city};
+    let world = world();
+    // Healy: nationals hire in the lower 48 only; the Alaska regional hires
+    // there out of Fairbanks, so it is offered. Canada stays closed.
+    assert!(is_offerable_home_city(world, "healy_ak_us"));
+    assert!(!is_offerable_home_city(world, "whitehorse_yt_ca"));
+    assert!(!is_offerable_home_city(world, "surrey_bc_ca"));
+    // Chicago: offered, into Northstar's own Chicago terminal.
+    assert!(is_offerable_home_city(world, "chicago_il_us"));
+    let northstar = carrier("northstar").expect("northstar");
+    let home = home_terminal_city_for(Some(northstar), world, "Chicago").expect("home");
+    assert_eq!(home, "chicago_il_us");
+    let terminal = northstar.home_terminal(world, &home).expect("terminal");
+    assert_eq!(terminal.name, "Northstar Freight Lines Chicago terminal");
+    assert_eq!(terminal.service_area(), "Chicago, Illinois");
+}
+
+#[test]
+fn test_regional_home_terminal_stays_inside_the_hiring_radius() {
+    use ff_core::models::carriers::{carrier, carrier_catalog, home_terminal_city_for};
+    let world = world();
+    let prairie = carrier("prairie_link").expect("prairie link");
+    // Out of range (and, for Surrey, out of country): no Prairie Link home,
+    // never KC or Omaha.
+    for city in ["seattle_wa_us", "surrey_bc_ca"] {
+        assert!(world.cities.contains_key(city), "{city} missing");
+        assert_eq!(
+            home_terminal_city_for(Some(prairie), world, city),
+            None,
+            "{city}"
+        );
+    }
+    assert_eq!(
+        home_terminal_city_for(Some(prairie), world, "wichita_ks_us").as_deref(),
+        Some("wichita_ks_us")
+    );
+    // No BC or Yukon city is ever a home terminal, and an Alaska terminal
+    // only ever homes an Alaska career, from an Alaska carrier.
+    for c in carrier_catalog().values() {
+        for city in [
+            "healy_ak_us",
+            "anchorage_ak_us",
+            "surrey_bc_ca",
+            "whitehorse_yt_ca",
+        ] {
+            if let Some(home) = home_terminal_city_for(Some(c), world, city) {
+                let st = world.cities[&home].state_code.to_ascii_uppercase();
+                assert!(!matches!(st.as_str(), "BC" | "YT"), "{} -> {home}", c.key);
+                if st == "AK" {
+                    assert!(city.ends_with("_ak_us"), "{} -> {home}", c.key);
+                    assert!(!c.is_national(), "{} -> {home}", c.key);
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -271,23 +344,83 @@ fn test_each_metro_expands_to_representative_facilities() {
             .map(|loc| loc.facility_type.as_str())
             .collect();
         let curated = city.locations.iter().any(|loc| !loc.template);
-        if is_stand_in_market(&city.key) && !curated {
-            assert!(
-                templates.len() <= 1,
-                "{}: a stand-in market gets one yard, not {:?}",
-                city.name,
-                templates
-            );
-            assert!(templates.iter().all(|kind| *kind == "company_yard"));
+        if is_stand_in_market(&city.key) {
+            let parking_only_curated = curated
+                && city.locations.iter().all(|loc| {
+                    matches!(
+                        loc.facility_type.as_str(),
+                        "company_yard" | "terminal" | "travel_center" | "truck_parking"
+                    )
+                })
+                && !city.locations.iter().any(|loc| loc.template);
+            if parking_only_curated {
+                // ALCAN: public truck lots / travel centers stay thin pins —
+                // no invented warehouse skyline on a stand-in market.
+                assert!(
+                    city.locations.len() <= 2,
+                    "{}: parking-only stand-in should stay thin, not {:?}",
+                    city.name,
+                    city.locations
+                        .iter()
+                        .map(|l| l.facility_type.as_str())
+                        .collect::<Vec<_>>()
+                );
+            } else if !curated {
+                assert!(
+                    templates.len() <= 1,
+                    "{}: a stand-in market gets one yard, not {:?}",
+                    city.name,
+                    templates
+                );
+                assert!(templates.iter().all(|kind| *kind == "company_yard"));
+            } else if city.locations.iter().any(|loc| loc.template) {
+                // Stand-in list + ordinary curated freight (Winona, …): full market.
+                assert!(city.locations.len() >= 5);
+            } else {
+                // Curated-complete stand-in (Fairbanks job-board pins): authored
+                // freight only — no invented warehouse skyline.
+                assert!(
+                    city.locations.iter().all(|loc| !loc.template),
+                    "{}: curated-complete stand-in must not stamp templates",
+                    city.name
+                );
+                assert!(
+                    city.locations.len() >= 2,
+                    "{}: curated-complete stand-in should keep authored pins",
+                    city.name
+                );
+            }
         } else {
             assert!(city.locations.len() >= 5);
         }
         assert!(!city.market_tags.is_empty());
-        assert!(city.locations.iter().any(|loc| loc.template));
-        assert!(city
-            .locations
-            .iter()
-            .any(|loc| loc.facility_type == "company_yard" || loc.facility_type == "terminal"));
+        let parking_only_curated = is_stand_in_market(&city.key)
+            && curated
+            && city.locations.iter().all(|loc| {
+                matches!(
+                    loc.facility_type.as_str(),
+                    "company_yard" | "terminal" | "travel_center" | "truck_parking"
+                )
+            })
+            && !city.locations.iter().any(|loc| loc.template);
+        let curated_complete_stand_in = is_stand_in_market(&city.key)
+            && curated
+            && !city.locations.iter().any(|loc| loc.template)
+            && city.locations.iter().any(|loc| {
+                !matches!(
+                    loc.facility_type.as_str(),
+                    "company_yard" | "terminal" | "travel_center" | "truck_parking"
+                )
+            });
+        if !parking_only_curated && !curated_complete_stand_in {
+            assert!(city.locations.iter().any(|loc| loc.template));
+        }
+        assert!(city.locations.iter().any(|loc| {
+            matches!(
+                loc.facility_type.as_str(),
+                "company_yard" | "terminal" | "travel_center" | "truck_parking"
+            )
+        }));
     }
 }
 
@@ -870,26 +1003,861 @@ fn test_every_city_has_coordinates_and_a_known_region() {
             city.region
         );
         assert!(
-            24.0 < city.lat && city.lat < 50.0,
+            // ALCAN Phase A Fairbanks (~64.8°N / ~-147.7°W) and Phase B1 Anchorage
+            // (~61.2°N / ~-149.9°W) fit these ceilings (lon floor -150.0 clears -149.9).
+            24.0 < city.lat && city.lat < 66.0,
             "{}: lat {}",
             city.name,
             city.lat
         );
         assert!(
-            -125.0 < city.lon && city.lon < -66.0,
+            -150.0 < city.lon && city.lon < -66.0,
             "{}: lon {}",
             city.name,
             city.lon
         );
-        let floor = if is_stand_in_market(&city.key) && city.locations.iter().all(|l| l.template) {
-            1
-        } else {
-            2
-        };
+        let floor = if is_stand_in_market(&city.key) { 1 } else { 2 };
         assert!(
             city.locations.len() >= floor,
             "{}: too few freight locations",
             city.name
+        );
+    }
+}
+
+#[test]
+fn test_alcan_phase_a_tip_is_bidirectional() {
+    let world = world();
+    let south = world
+        .shortest_route("surrey_bc_ca", "bellingham_wa_us", None, false)
+        .expect("surrey loads")
+        .expect("southbound ALCAN tip must route");
+    assert_eq!(
+        south.cities,
+        vec![
+            "surrey_bc_ca".to_string(),
+            "blaine_wa_us".to_string(),
+            "bellingham_wa_us".to_string()
+        ]
+    );
+    let north = world
+        .shortest_route("bellingham_wa_us", "surrey_bc_ca", None, false)
+        .expect("bellingham loads")
+        .expect("northbound ALCAN tip must route");
+    assert_eq!(
+        north.cities,
+        vec![
+            "bellingham_wa_us".to_string(),
+            "blaine_wa_us".to_string(),
+            "surrey_bc_ca".to_string()
+        ]
+    );
+    // Authored reverse edges exist (FIX 1), not only undirected adjacency.
+    let directed: Vec<_> = world
+        .legs
+        .iter()
+        .map(|leg| (leg.a.as_str(), leg.b.as_str()))
+        .collect();
+    assert!(directed.contains(&("surrey_bc_ca", "blaine_wa_us")));
+    assert!(directed.contains(&("blaine_wa_us", "bellingham_wa_us")));
+    assert!(directed.contains(&("blaine_wa_us", "surrey_bc_ca")));
+    assert!(directed.contains(&("bellingham_wa_us", "blaine_wa_us")));
+    // Curated truck lots (FIX 3).
+    let surrey = world.city("surrey_bc_ca").expect("surrey");
+    assert!(surrey
+        .locations
+        .iter()
+        .any(|loc| loc.name.contains("17768") || loc.name.contains("Truck Parking")));
+    let blaine = world.city("blaine_wa_us").expect("blaine");
+    assert!(blaine
+        .locations
+        .iter()
+        .any(|loc| loc.name.contains("TA Express")));
+}
+
+#[test]
+fn test_alcan_phase_a_inland_filament_to_dawson_creek() {
+    let world = world();
+    let north = world
+        .shortest_route("surrey_bc_ca", "dawson_creek_bc_ca", None, false)
+        .expect("surrey loads")
+        .expect("inland ALCAN filament must reach Dawson Creek Mile 0");
+    assert_eq!(
+        north.cities,
+        vec![
+            "surrey_bc_ca".to_string(),
+            "prince_george_bc_ca".to_string(),
+            "dawson_creek_bc_ca".to_string(),
+        ]
+    );
+    let south = world
+        .shortest_route("dawson_creek_bc_ca", "surrey_bc_ca", None, false)
+        .expect("dawson creek loads")
+        .expect("southbound inland filament must route");
+    assert_eq!(
+        south.cities,
+        vec![
+            "dawson_creek_bc_ca".to_string(),
+            "prince_george_bc_ca".to_string(),
+            "surrey_bc_ca".to_string(),
+        ]
+    );
+    // Fort St. John is the Alaska Hwy pass-through north of Mile 0 (not a skip).
+    let fsj = world
+        .shortest_route("dawson_creek_bc_ca", "fort_st_john_bc_ca", None, false)
+        .expect("dawson creek loads")
+        .expect("Dawson Creek must reach Fort St. John on the Alaska Highway");
+    assert_eq!(
+        fsj.cities,
+        vec![
+            "dawson_creek_bc_ca".to_string(),
+            "fort_st_john_bc_ca".to_string(),
+        ]
+    );
+    // Inland BC filament is authored as directed edges both ways (no border
+    // on these legs — border_crossing stays Blaine POE only in source JSON).
+    let directed: Vec<_> = world
+        .legs
+        .iter()
+        .map(|leg| (leg.a.as_str(), leg.b.as_str()))
+        .collect();
+    for (a, b) in [
+        ("surrey_bc_ca", "prince_george_bc_ca"),
+        ("prince_george_bc_ca", "surrey_bc_ca"),
+        ("prince_george_bc_ca", "dawson_creek_bc_ca"),
+        ("dawson_creek_bc_ca", "prince_george_bc_ca"),
+        ("dawson_creek_bc_ca", "fort_st_john_bc_ca"),
+        ("fort_st_john_bc_ca", "dawson_creek_bc_ca"),
+    ] {
+        assert!(
+            directed.contains(&(a, b)),
+            "missing directed inland leg {a}->{b}"
+        );
+    }
+    // Paid inland miles stay in the honest truck-routed band (not short-hop).
+    let pg = world
+        .legs
+        .iter()
+        .find(|leg| leg.a == "surrey_bc_ca" && leg.b == "prince_george_bc_ca")
+        .expect("surrey->prince george");
+    assert!(
+        (400.0..=520.0).contains(&pg.miles),
+        "Surrey–Prince George must be real Hwy 1/97 miles, got {}",
+        pg.miles
+    );
+    let dc = world
+        .legs
+        .iter()
+        .find(|leg| leg.a == "prince_george_bc_ca" && leg.b == "dawson_creek_bc_ca")
+        .expect("prince george->dawson creek");
+    assert!(
+        (200.0..=300.0).contains(&dc.miles),
+        "Prince George–Dawson Creek must be real Hwy 97 miles, got {}",
+        dc.miles
+    );
+}
+
+#[test]
+fn test_alcan_phase_a_north_filament_to_whitehorse() {
+    let world = world();
+    let north = world
+        .shortest_route("fort_st_john_bc_ca", "whitehorse_yt_ca", None, false)
+        .expect("fort st john loads")
+        .expect("ALCAN north filament must reach Whitehorse");
+    assert_eq!(
+        north.cities,
+        vec![
+            "fort_st_john_bc_ca".to_string(),
+            "fort_nelson_bc_ca".to_string(),
+            "watson_lake_yt_ca".to_string(),
+            "whitehorse_yt_ca".to_string(),
+        ]
+    );
+    let south = world
+        .shortest_route("whitehorse_yt_ca", "fort_st_john_bc_ca", None, false)
+        .expect("whitehorse loads")
+        .expect("southbound ALCAN north filament must route");
+    assert_eq!(
+        south.cities,
+        vec![
+            "whitehorse_yt_ca".to_string(),
+            "watson_lake_yt_ca".to_string(),
+            "fort_nelson_bc_ca".to_string(),
+            "fort_st_john_bc_ca".to_string(),
+        ]
+    );
+    // Directed edges both ways on the north filament (Tok/Fairbanks covered by terminus test).
+    let directed: Vec<_> = world
+        .legs
+        .iter()
+        .map(|leg| (leg.a.as_str(), leg.b.as_str()))
+        .collect();
+    for (a, b) in [
+        ("fort_st_john_bc_ca", "fort_nelson_bc_ca"),
+        ("fort_nelson_bc_ca", "fort_st_john_bc_ca"),
+        ("fort_nelson_bc_ca", "watson_lake_yt_ca"),
+        ("watson_lake_yt_ca", "fort_nelson_bc_ca"),
+        ("watson_lake_yt_ca", "whitehorse_yt_ca"),
+        ("whitehorse_yt_ca", "watson_lake_yt_ca"),
+    ] {
+        assert!(
+            directed.contains(&(a, b)),
+            "missing directed north ALCAN leg {a}->{b}"
+        );
+    }
+    // Tok/Fairbanks + Poker Creek border land in
+    // test_alcan_phase_a_terminus_to_fairbanks (Phase A AK terminus slice).
+    let fsj_fn = world
+        .legs
+        .iter()
+        .find(|leg| leg.a == "fort_st_john_bc_ca" && leg.b == "fort_nelson_bc_ca")
+        .expect("fsj->fort nelson");
+    assert!(
+        (220.0..=260.0).contains(&fsj_fn.miles),
+        "Fort St. John–Fort Nelson must be real Alaska Highway miles, got {}",
+        fsj_fn.miles
+    );
+    let fn_wl = world
+        .legs
+        .iter()
+        .find(|leg| leg.a == "fort_nelson_bc_ca" && leg.b == "watson_lake_yt_ca")
+        .expect("fort nelson->watson lake");
+    assert!(
+        (290.0..=350.0).contains(&fn_wl.miles),
+        "Fort Nelson–Watson Lake must be real Alaska Highway miles, got {}",
+        fn_wl.miles
+    );
+    let wl_wh = world
+        .legs
+        .iter()
+        .find(|leg| leg.a == "watson_lake_yt_ca" && leg.b == "whitehorse_yt_ca")
+        .expect("watson lake->whitehorse");
+    assert!(
+        (240.0..=310.0).contains(&wl_wh.miles),
+        "Watson Lake–Whitehorse must be real Alaska Highway miles, got {}",
+        wl_wh.miles
+    );
+}
+
+#[test]
+fn test_alcan_phase_a_terminus_to_fairbanks() {
+    let world = world();
+    let north = world
+        .shortest_route("whitehorse_yt_ca", "fairbanks_ak_us", None, false)
+        .expect("whitehorse loads")
+        .expect("ALCAN Phase A terminus must reach Fairbanks");
+    assert_eq!(
+        north.cities,
+        vec![
+            "whitehorse_yt_ca".to_string(),
+            "tok_ak_us".to_string(),
+            "fairbanks_ak_us".to_string(),
+        ]
+    );
+    let south = world
+        .shortest_route("fairbanks_ak_us", "whitehorse_yt_ca", None, false)
+        .expect("fairbanks loads")
+        .expect("southbound ALCAN terminus filament must route");
+    assert_eq!(
+        south.cities,
+        vec![
+            "fairbanks_ak_us".to_string(),
+            "tok_ak_us".to_string(),
+            "whitehorse_yt_ca".to_string(),
+        ]
+    );
+    // Continuous Lower 48 → Fairbanks through Blaine (no Anchorage; no teleport).
+    let full = world
+        .shortest_route("bellingham_wa_us", "fairbanks_ak_us", None, false)
+        .expect("bellingham loads")
+        .expect("Lower 48 must reach Fairbanks on the Phase A ALCAN corridor");
+    assert!(
+        full.cities.iter().any(|c| c == "blaine_wa_us"),
+        "must enter Canada via Blaine Pacific Highway, got {:?}",
+        full.cities
+    );
+    assert!(
+        full.cities.iter().any(|c| c == "dawson_creek_bc_ca"),
+        "must pass Dawson Creek Mile 0, got {:?}",
+        full.cities
+    );
+    assert!(
+        full.cities.iter().any(|c| c == "whitehorse_yt_ca"),
+        "must pass Whitehorse, got {:?}",
+        full.cities
+    );
+    assert!(
+        !full.cities.iter().any(|c| c == "anchorage_ak_us"),
+        "Anchorage is Phase B, not Phase A terminus"
+    );
+    let directed: Vec<_> = world
+        .legs
+        .iter()
+        .map(|leg| (leg.a.as_str(), leg.b.as_str()))
+        .collect();
+    for (a, b) in [
+        ("whitehorse_yt_ca", "tok_ak_us"),
+        ("tok_ak_us", "whitehorse_yt_ca"),
+        ("tok_ak_us", "fairbanks_ak_us"),
+        ("fairbanks_ak_us", "tok_ak_us"),
+    ] {
+        assert!(
+            directed.contains(&(a, b)),
+            "missing directed terminus ALCAN leg {a}->{b}"
+        );
+    }
+    // Poker Creek / Beaver Creek border_crossing on both CA↔US directions.
+    let yt = include_str!("../../../../data/world_data/ca/legs/YT.json");
+    let ak = include_str!("../../../../data/world_data/us/legs/AK.json");
+    assert!(
+        yt.contains("\"from\": \"whitehorse_yt_ca\"")
+            && yt.contains("\"to\": \"tok_ak_us\"")
+            && yt.contains("poker_creek_beaver_creek")
+            && yt.contains("through_freight")
+            && yt.contains("\"cabotage\": \"forbidden\""),
+        "CA→US Whitehorse→Tok must carry poker_creek_beaver_creek through_freight border stub"
+    );
+    assert!(
+        ak.contains("\"from\": \"tok_ak_us\"")
+            && ak.contains("\"to\": \"whitehorse_yt_ca\"")
+            && ak.contains("poker_creek_beaver_creek")
+            && ak.contains("through_freight")
+            && ak.contains("\"cabotage\": \"forbidden\""),
+        "US→CA Tok→Whitehorse must carry poker_creek_beaver_creek through_freight border stub"
+    );
+    let wh_tok = world
+        .legs
+        .iter()
+        .find(|leg| leg.a == "whitehorse_yt_ca" && leg.b == "tok_ak_us")
+        .expect("whitehorse->tok");
+    assert!(
+        (360.0..=420.0).contains(&wh_tok.miles),
+        "Whitehorse–Tok must be real Alaska Highway miles, got {}",
+        wh_tok.miles
+    );
+    let tok_fb = world
+        .legs
+        .iter()
+        .find(|leg| leg.a == "tok_ak_us" && leg.b == "fairbanks_ak_us")
+        .expect("tok->fairbanks");
+    assert!(
+        (180.0..=230.0).contains(&tok_fb.miles),
+        "Tok–Fairbanks must be real Alaska/Richardson Highway miles, got {}",
+        tok_fb.miles
+    );
+    // Stand-in fuel lots.
+    let tok = world.city("tok_ak_us").expect("tok");
+    assert!(tok
+        .locations
+        .iter()
+        .any(|loc| loc.name.contains("Chevron") || loc.name.contains("Young")));
+    let fb = world.city("fairbanks_ak_us").expect("fairbanks");
+    assert!(fb
+        .locations
+        .iter()
+        .any(|loc| loc.name.contains("Sourdough") || loc.name.contains("Airport")));
+}
+
+#[test]
+fn test_alcan_phase_b1_tok_cutoff_glenn_to_anchorage() {
+    let world = world();
+    let south = world
+        .shortest_route("tok_ak_us", "anchorage_ak_us", None, false)
+        .expect("tok loads")
+        .expect("ALCAN Phase B1 must reach Anchorage via Glennallen and Palmer");
+    assert_eq!(
+        south.cities,
+        vec![
+            "tok_ak_us".to_string(),
+            "glennallen_ak_us".to_string(),
+            "palmer_ak_us".to_string(),
+            "anchorage_ak_us".to_string(),
+        ]
+    );
+    let north = world
+        .shortest_route("anchorage_ak_us", "tok_ak_us", None, false)
+        .expect("anchorage loads")
+        .expect("northbound Phase B1 filament must route");
+    assert_eq!(
+        north.cities,
+        vec![
+            "anchorage_ak_us".to_string(),
+            "palmer_ak_us".to_string(),
+            "glennallen_ak_us".to_string(),
+            "tok_ak_us".to_string(),
+        ]
+    );
+    // Continuous Lower 48 → Anchorage through Blaine + Phase A corridor (no teleport).
+    let full = world
+        .shortest_route("bellingham_wa_us", "anchorage_ak_us", None, false)
+        .expect("bellingham loads")
+        .expect("Lower 48 must reach Anchorage on ALCAN + Phase B1");
+    assert!(
+        full.cities.iter().any(|c| c == "blaine_wa_us"),
+        "must enter Canada via Blaine, got {:?}",
+        full.cities
+    );
+    assert!(
+        full.cities.iter().any(|c| c == "tok_ak_us"),
+        "must pass Tok, got {:?}",
+        full.cities
+    );
+    assert!(
+        full.cities.iter().any(|c| c == "glennallen_ak_us"),
+        "must pass Glennallen on Tok Cutoff/Glenn, got {:?}",
+        full.cities
+    );
+    assert!(
+        !full.cities.iter().any(|c| c == "fairbanks_ak_us"),
+        "B1 Tok→Anchorage must not detour Fairbanks/Parks, got {:?}",
+        full.cities
+    );
+    let directed: Vec<_> = world
+        .legs
+        .iter()
+        .map(|leg| (leg.a.as_str(), leg.b.as_str()))
+        .collect();
+    for (a, b) in [
+        ("tok_ak_us", "glennallen_ak_us"),
+        ("glennallen_ak_us", "tok_ak_us"),
+        ("glennallen_ak_us", "palmer_ak_us"),
+        ("palmer_ak_us", "glennallen_ak_us"),
+        ("palmer_ak_us", "anchorage_ak_us"),
+        ("anchorage_ak_us", "palmer_ak_us"),
+    ] {
+        assert!(
+            directed.contains(&(a, b)),
+            "missing directed Phase B1 leg {a}->{b}"
+        );
+    }
+    let tok_gl = world
+        .legs
+        .iter()
+        .find(|leg| leg.a == "tok_ak_us" && leg.b == "glennallen_ak_us")
+        .expect("tok->glennallen");
+    assert!(
+        (130.0..=150.0).contains(&tok_gl.miles),
+        "Tok–Glennallen must be ~139 mi, got {}",
+        tok_gl.miles
+    );
+    let gl_pa = world
+        .legs
+        .iter()
+        .find(|leg| leg.a == "glennallen_ak_us" && leg.b == "palmer_ak_us")
+        .expect("glennallen->palmer");
+    assert!(
+        (gl_pa.miles - 145.0).abs() < 0.5,
+        "Glennallen–Palmer paid miles must be milepost 145, got {}",
+        gl_pa.miles
+    );
+    let pa_anc = world
+        .legs
+        .iter()
+        .find(|leg| leg.a == "palmer_ak_us" && leg.b == "anchorage_ak_us")
+        .expect("palmer->anchorage");
+    assert!(
+        (pa_anc.miles - 42.0).abs() < 0.5,
+        "Palmer–Anchorage paid miles must be milepost 42, got {}",
+        pa_anc.miles
+    );
+    let glenn = world.city("glennallen_ak_us").expect("glennallen");
+    assert!(
+        glenn
+            .locations
+            .iter()
+            .any(|loc| loc.name.contains("Hub of Alaska")),
+        "Glennallen primary pin must be Hub of Alaska"
+    );
+    assert!(
+        glenn
+            .locations
+            .iter()
+            .any(|loc| loc.name.contains("Glennallen Fuel")),
+        "Glennallen alternate pin must be Glennallen Fuel"
+    );
+    let palmer = world.city("palmer_ak_us").expect("palmer");
+    assert!(
+        !palmer
+            .locations
+            .iter()
+            .any(|loc| loc.name.to_lowercase().contains("chevron")),
+        "Palmer must not pin unverified Chevron truck stop"
+    );
+    let anc = world.city("anchorage_ak_us").expect("anchorage");
+    assert!(
+        anc.locations
+            .iter()
+            .any(|loc| loc.name.contains("Essential One")),
+        "Anchorage fuel pin must be Essential One"
+    );
+    assert!(
+        anc.locations
+            .iter()
+            .any(|loc| { loc.name.contains("Port of Alaska") || loc.name.contains("Ship Creek") }),
+        "Anchorage delivery end must be Port/Ship Creek industrial, not a truck stop"
+    );
+    assert!(
+        !anc.locations.iter().any(|loc| loc.name.contains("gakona")),
+        "gakona must not appear"
+    );
+}
+
+#[test]
+fn test_alcan_phase_b2_parks_to_anchorage() {
+    let world = world();
+    let south = world
+        .shortest_route("fairbanks_ak_us", "anchorage_ak_us", None, false)
+        .expect("fairbanks loads")
+        .expect("ALCAN Phase B2 Parks must reach Anchorage");
+    assert_eq!(
+        south.cities,
+        vec![
+            "fairbanks_ak_us".to_string(),
+            "nenana_ak_us".to_string(),
+            "healy_ak_us".to_string(),
+            "wasilla_ak_us".to_string(),
+            "anchorage_ak_us".to_string(),
+        ]
+    );
+    assert!(
+        !south.cities.iter().any(|c| c == "cantwell_ak_us"),
+        "Cantwell must stay collapsed, got {:?}",
+        south.cities
+    );
+    let north = world
+        .shortest_route("anchorage_ak_us", "fairbanks_ak_us", None, false)
+        .expect("anchorage loads")
+        .expect("northbound Parks filament must route");
+    assert_eq!(
+        north.cities,
+        vec![
+            "anchorage_ak_us".to_string(),
+            "wasilla_ak_us".to_string(),
+            "healy_ak_us".to_string(),
+            "nenana_ak_us".to_string(),
+            "fairbanks_ak_us".to_string(),
+        ]
+    );
+    // Mat-Su connector both ways; Palmer remains Mat-Su market, Wasilla pass-through.
+    let directed: Vec<_> = world
+        .legs
+        .iter()
+        .map(|leg| (leg.a.as_str(), leg.b.as_str()))
+        .collect();
+    for (a, b) in [
+        ("fairbanks_ak_us", "nenana_ak_us"),
+        ("nenana_ak_us", "fairbanks_ak_us"),
+        ("nenana_ak_us", "healy_ak_us"),
+        ("healy_ak_us", "nenana_ak_us"),
+        ("healy_ak_us", "wasilla_ak_us"),
+        ("wasilla_ak_us", "healy_ak_us"),
+        ("wasilla_ak_us", "anchorage_ak_us"),
+        ("anchorage_ak_us", "wasilla_ak_us"),
+        ("palmer_ak_us", "wasilla_ak_us"),
+        ("wasilla_ak_us", "palmer_ak_us"),
+    ] {
+        assert!(
+            directed.contains(&(a, b)),
+            "missing directed Phase B2 leg {a}->{b}"
+        );
+    }
+    let fbx_nen = world
+        .legs
+        .iter()
+        .find(|leg| leg.a == "fairbanks_ak_us" && leg.b == "nenana_ak_us")
+        .expect("fairbanks->nenana");
+    assert!(
+        (fbx_nen.miles - 53.0).abs() < 0.5,
+        "Fairbanks–Nenana must be Parks milepost ~53 (MP358→MP305), got {}",
+        fbx_nen.miles
+    );
+    let nen_hea = world
+        .legs
+        .iter()
+        .find(|leg| leg.a == "nenana_ak_us" && leg.b == "healy_ak_us")
+        .expect("nenana->healy");
+    assert!(
+        (nen_hea.miles - 56.0).abs() < 0.5,
+        "Nenana–Healy must be Parks milepost ~56 (MP305→MP249), got {}",
+        nen_hea.miles
+    );
+    let hea_was = world
+        .legs
+        .iter()
+        .find(|leg| leg.a == "healy_ak_us" && leg.b == "wasilla_ak_us")
+        .expect("healy->wasilla");
+    assert!(
+        (hea_was.miles - 207.0).abs() < 0.5,
+        "Healy–Wasilla (Cantwell collapsed) must be ~207, got {}",
+        hea_was.miles
+    );
+    let was_anc = world
+        .legs
+        .iter()
+        .find(|leg| leg.a == "wasilla_ak_us" && leg.b == "anchorage_ak_us")
+        .expect("wasilla->anchorage");
+    assert!(
+        (was_anc.miles - 42.0).abs() < 0.5,
+        "Wasilla–Anchorage must be Parks milepost ~42 (MP42→MP0), got {}",
+        was_anc.miles
+    );
+    let pal_was = world
+        .legs
+        .iter()
+        .find(|leg| leg.a == "palmer_ak_us" && leg.b == "wasilla_ak_us")
+        .expect("palmer->wasilla");
+    assert!(
+        (10.0..=15.0).contains(&pal_was.miles),
+        "Palmer–Wasilla connector must be ~11–13, got {}",
+        pal_was.miles
+    );
+    let healy = world.city("healy_ak_us").expect("healy");
+    assert!(
+        healy
+            .locations
+            .iter()
+            .any(|loc| loc.name.contains("Fisher Fuel")),
+        "Healy thin pin must be Fisher Fuel"
+    );
+    let nenana = world.city("nenana_ak_us").expect("nenana");
+    assert!(
+        !nenana
+            .locations
+            .iter()
+            .any(|loc| loc.name.to_lowercase().contains("a-frame")),
+        "Nenana must not pin unverified A-Frame"
+    );
+    let wasilla = world.city("wasilla_ak_us").expect("wasilla");
+    assert!(
+        !wasilla.locations.iter().any(|loc| {
+            let n = loc.name.to_lowercase();
+            n.contains("holiday") || n.contains("three bears") || n.contains("fishers")
+        }),
+        "Wasilla must not pin unverified travel-center lots"
+    );
+    assert!(
+        world.city("cantwell_ak_us").is_err(),
+        "cantwell_ak_us must not exist while collapsed"
+    );
+}
+
+#[test]
+fn test_alcan_public_lots_use_travel_center_or_truck_parking() {
+    let world = world();
+    let cases = [
+        ("blaine_wa_us", "TA Express", "travel_center"),
+        ("surrey_bc_ca", "Truck Parking", "truck_parking"),
+        ("tok_ak_us", "Chevron", "travel_center"),
+        ("fairbanks_ak_us", "Sourdough", "travel_center"),
+        ("glennallen_ak_us", "Hub of Alaska", "travel_center"),
+        ("anchorage_ak_us", "Essential One", "travel_center"),
+        ("healy_ak_us", "Fisher Fuel", "travel_center"),
+    ];
+    for (city, needle, want) in cases {
+        let c = world.city(city).unwrap_or_else(|_| panic!("{city}"));
+        let loc = c
+            .locations
+            .iter()
+            .find(|l| l.name.contains(needle))
+            .unwrap_or_else(|| panic!("{city} missing {needle}"));
+        assert_eq!(loc.facility_type, want, "{city} {needle} type");
+    }
+    // Stand-in placeholders stay company_yard; Port stays terminal.
+    let palmer = world.city("palmer_ak_us").expect("palmer");
+    assert!(palmer
+        .locations
+        .iter()
+        .all(|l| l.facility_type == "company_yard"));
+    let anc = world.city("anchorage_ak_us").expect("anchorage");
+    assert!(anc
+        .locations
+        .iter()
+        .any(|l| { l.name.contains("Port of Alaska") && l.facility_type == "terminal" }));
+    // Stand-in ALCAN cities with only public-lot types must not grow a skyline.
+    let tok = world.city("tok_ak_us").expect("tok");
+    assert_eq!(
+        tok.locations.len(),
+        1,
+        "Tok stand-in must keep a single curated lot, got {}",
+        tok.locations.len()
+    );
+    let surrey = world.city("surrey_bc_ca").expect("surrey");
+    assert_eq!(surrey.locations.len(), 1);
+}
+
+#[test]
+fn test_alcan_retyped_lots_are_fuel_rest_only_not_freight() {
+    use ff_core::data::world_constants::{
+        facility_cargo_roles, lookup, DEFAULT_POI_ACTIONS, FACILITY_APPROACH_MILES,
+        FACILITY_APPROACH_ROADS,
+    };
+    let world = world();
+    let cases = [
+        ("blaine_wa_us", "TA Express", "travel_center"),
+        ("surrey_bc_ca", "Truck Parking", "truck_parking"),
+        ("prince_george_bc_ca", "Husky / Esso", "travel_center"),
+        ("dawson_creek_bc_ca", "Husky", "travel_center"),
+        ("fort_st_john_bc_ca", "Smith Fuel", "travel_center"),
+        ("fort_nelson_bc_ca", "Esso", "travel_center"),
+        ("watson_lake_yt_ca", "Petro-Canada", "travel_center"),
+        ("whitehorse_yt_ca", "McCrae", "travel_center"),
+        ("tok_ak_us", "Chevron", "travel_center"),
+        ("fairbanks_ak_us", "Sourdough", "travel_center"),
+        ("glennallen_ak_us", "Hub of Alaska", "travel_center"),
+        ("glennallen_ak_us", "Glennallen Fuel", "travel_center"),
+        ("anchorage_ak_us", "Essential One", "travel_center"),
+        ("healy_ak_us", "Fisher Fuel", "travel_center"),
+    ];
+    assert_eq!(cases.len(), 14, "all ALCAN retyped public lots");
+    for (city, needle, want) in cases {
+        let c = world.city(city).unwrap_or_else(|_| panic!("{city}"));
+        let loc = c
+            .locations
+            .iter()
+            .find(|l| l.name.contains(needle))
+            .unwrap_or_else(|| panic!("{city} missing {needle}"));
+        assert_eq!(loc.facility_type, want, "{city} {needle}");
+        assert!(
+            loc.ships.is_empty() && loc.receives.is_empty(),
+            "{city} {needle} must ship/receive no freight"
+        );
+        let (ships, receives) = facility_cargo_roles(want).expect("roles table");
+        assert!(
+            ships.is_empty() && receives.is_empty(),
+            "{want} cargo roles"
+        );
+        let actions = lookup(DEFAULT_POI_ACTIONS, want).expect("poi actions");
+        assert!(actions.contains(&"park"), "{want} must support parking");
+        assert!(
+            actions.iter().any(|a| *a == "break" || *a == "sleep"),
+            "{want} must support rest"
+        );
+        if want == "travel_center" {
+            assert!(actions.contains(&"fuel"), "travel_center must support fuel");
+        }
+        assert!(
+            lookup(FACILITY_APPROACH_MILES, want).is_some(),
+            "{want} approach miles"
+        );
+        assert!(
+            lookup(FACILITY_APPROACH_ROADS, want).is_some(),
+            "{want} approach road"
+        );
+    }
+}
+
+#[test]
+fn test_fairbanks_has_curated_freight_job_endpoints() {
+    use ff_core::models::jobs::JobBoard;
+    let world = world();
+    let fb = world.city("fairbanks_ak_us").expect("fairbanks");
+    let by_name = |needle: &str| {
+        fb.locations
+            .iter()
+            .find(|l| l.name.contains(needle))
+            .unwrap_or_else(|| panic!("Fairbanks missing {needle}"))
+    };
+
+    let costco = by_name("Costco");
+    assert_eq!(costco.facility_type, "retail_distribution");
+    assert!(costco.ships.is_empty(), "Costco must be receive-only");
+    assert!(
+        JobBoard::cargo_for_location(costco, "ships", None).is_empty(),
+        "board must not re-inflate Costco ships from type defaults"
+    );
+    assert!(!JobBoard::cargo_for_location(costco, "receives", None).is_empty());
+    assert!(costco.roles.iter().all(|r| r == "receiver"));
+    for key in ["food", "retail", "refrigerated", "general"] {
+        assert!(
+            costco.receives.iter().any(|k| k == key),
+            "Costco receives {key}"
+        );
+    }
+    assert!(!costco.receives.iter().any(|k| k == "frozen"));
+
+    let fred = by_name("Fred Meyer");
+    assert_eq!(fred.facility_type, "retail_distribution");
+    assert!(fred.ships.is_empty(), "Fred Meyer must be receive-only");
+    assert!(fred.roles.iter().all(|r| r == "receiver"));
+    for key in ["food", "retail", "refrigerated", "general"] {
+        assert!(
+            fred.receives.iter().any(|k| k == key),
+            "Fred Meyer receives {key}"
+        );
+    }
+
+    let sbs = by_name("Spenard");
+    assert_eq!(sbs.facility_type, "construction_materials_yard");
+    assert!(sbs.ships.is_empty(), "SBS must be receive-only");
+    for key in ["construction", "lumber_paper", "steel"] {
+        assert!(sbs.receives.iter().any(|k| k == key), "SBS receives {key}");
+    }
+    assert!(
+        !sbs.receives.iter().any(|k| k == "bulk"),
+        "SBS must not receive bulk"
+    );
+
+    let carlile = by_name("Carlile");
+    assert_eq!(carlile.facility_type, "cross_dock");
+    assert!(carlile.roles.iter().any(|r| r == "shipper"));
+    assert!(carlile.roles.iter().any(|r| r == "receiver"));
+    for key in ["general", "retail", "parcel", "container"] {
+        assert!(
+            carlile.ships.iter().any(|k| k == key),
+            "Carlile ships {key}"
+        );
+        assert!(
+            carlile.receives.iter().any(|k| k == key),
+            "Carlile receives {key}"
+        );
+    }
+    assert!(
+        carlile.traits.iter().any(|t| t == "thin_outbound"),
+        "Carlile must carry thin_outbound"
+    );
+    assert!(
+        !JobBoard::cargo_for_location(carlile, "ships", None).is_empty(),
+        "Carlile must remain a board shipper"
+    );
+    assert!(
+        !JobBoard::cargo_for_location(carlile, "receives", None).is_empty(),
+        "Carlile must remain a board receiver"
+    );
+
+    let sourdough = by_name("Sourdough");
+    assert_eq!(sourdough.facility_type, "travel_center");
+    assert!(sourdough.ships.is_empty() && sourdough.receives.is_empty());
+
+    assert!(
+        !fb.locations.iter().any(|l| l.template),
+        "Fairbanks must not stamp invented template warehouses"
+    );
+    assert!(
+        !fb.locations.iter().any(|l| l.name.contains("Petro Star")),
+        "Petro Star Fairbanks Terminal is held; must not land yet"
+    );
+
+    // Pass-through / fuel-only corridor towns stay without freight endpoints.
+    for city_key in [
+        "healy_ak_us",
+        "tok_ak_us",
+        "glennallen_ak_us",
+        "blaine_wa_us",
+        "dawson_creek_bc_ca",
+        "fort_st_john_bc_ca",
+        "fort_nelson_bc_ca",
+        "watson_lake_yt_ca",
+        "whitehorse_yt_ca",
+        "prince_george_bc_ca",
+    ] {
+        let city = world
+            .city(city_key)
+            .unwrap_or_else(|_| panic!("{city_key}"));
+        assert!(
+            city.locations
+                .iter()
+                .all(|loc| loc.ships.is_empty() && loc.receives.is_empty()),
+            "{city_key} must stay empty of freight roles"
         );
     }
 }
@@ -920,12 +1888,16 @@ fn test_legs_are_sane_and_unique() {
             (10.0..=800.0).contains(&leg.miles),
             "absurd mileage: {leg:?}"
         );
-        let pair = if leg.a <= leg.b {
-            (leg.a.clone(), leg.b.clone())
-        } else {
-            (leg.b.clone(), leg.a.clone())
-        };
-        assert!(seen.insert(pair), "duplicate leg {}-{}", leg.a, leg.b);
+        // Directed uniqueness: the graph may author both A→B and B→A (ALCAN
+        // Phase A FIX 1 southbound reverse edges). Undirected adjacency still
+        // walks either orientation via Leg::other.
+        let pair = (leg.a.clone(), leg.b.clone());
+        assert!(
+            seen.insert(pair),
+            "duplicate directed leg {}-{}",
+            leg.a,
+            leg.b
+        );
     }
 }
 

@@ -241,8 +241,14 @@ class World(WorldServiceMixin):
                 raise ValueError(f"{city} facility {location.name!r} has no spoken name")
             if not location.source_note:
                 raise ValueError(f"{city} facility {location.name!r} has no source note")
-            if not location.ships and not location.receives:
+            service_only = location.type in ("travel_center", "truck_parking")
+            if not location.ships and not location.receives and not service_only:
                 raise ValueError(f"{city} facility {location.name!r} has no cargo roles")
+            if service_only and (location.ships or location.receives):
+                raise ValueError(
+                    f"{city} facility {location.name!r} is a fuel/rest pin and "
+                    "must not carry freight cargo roles"
+                )
             self._facilities_by_id[location.id] = location
 
     @classmethod
@@ -342,46 +348,39 @@ class World(WorldServiceMixin):
         return self._legacy_facility_ids.get(facility_id, facility_id)
 
     def default_facility(self, city: str) -> Location:
-        """Stable fallback for legacy jobs that only named a city."""
+        """Stable fallback for legacy jobs that only named a city.
+
+        Only ``company_yard`` or ``terminal`` may be returned. Travel centers
+        and truck parking are fuel/rest pins, never dispatch yards. When the
+        city has neither, raises ``KeyError`` (``{city} has no freight
+        facilities``) rather than inventing a warehouse or picking a fuel stop.
+        """
         city = self.resolve_city_key(city)
         if city not in self.cities:
             raise KeyError(f"Unknown city: {city}")
         locations = self.cities[city].locations
-        preferred = (
-            "company_yard",
-            "terminal",
-            "dry_warehouse",
-            "warehouse",
-            "distribution",
-            "cross_dock",
-        )
+        preferred = ("company_yard", "terminal")
         for facility_type in preferred:
             for location in locations:
                 if location.type == facility_type:
                     return location
-        return locations[0]
+        raise KeyError(f"{city} has no freight facilities")
 
-    def home_terminal(self, city: str) -> HomeTerminal:
-        """Return the player's dispatch yard for a service area.
+    def yard_pin_name(self, city: str) -> str | None:
+        """Name of the city's own ``terminal`` (preferred) or ``company_yard``
+        freight pin, for cosmetic naming only (the fallback garage).
 
-        The world data mostly lists shippers and receivers rather than company
-        yards, so explicit terminal facilities are preferred and every other
-        city gets a stable fallback yard name. ``HomeTerminal.city`` carries the
-        spoken city name -- the terminal object exists to be announced.
+        World pins are freight endpoints and are never a player's home
+        terminal: that is the hiring carrier's own yard (``data/carriers.json``).
         """
-        key = self.resolve_city_key(city)
-        if key not in self.cities:
-            raise KeyError(f"Unknown city: {city}")
-        city_obj = self.cities[key]
-        for location in city_obj.locations:
-            if location.type == "terminal":
-                return HomeTerminal(location.name, city_obj.name, city_obj.state, "terminal")
-        for location in city_obj.locations:
-            if location.type == "company_yard":
-                return HomeTerminal(location.name, city_obj.name, city_obj.state, "company_yard")
-        return HomeTerminal(
-            f"{city_obj.name} Company Yard", city_obj.name, city_obj.state, "company_yard"
-        )
+        city_obj = self.cities.get(self.resolve_city_key(city))
+        if city_obj is None:
+            return None
+        for facility_type in ("terminal", "company_yard"):
+            for location in city_obj.locations:
+                if location.type == facility_type:
+                    return location.name
+        return None
 
     def shortest_route(
         self,

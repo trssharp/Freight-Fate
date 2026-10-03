@@ -31,8 +31,8 @@ use super::world_local_data::{
     load_local_approaches, load_local_geometries, CityServiceData,
 };
 use super::world_models::{
-    City, CorridorDetail, DataError, DetailSource, FacilityApproach, FacilityEndpoint,
-    HomeTerminal, Leg, LocalApproach, LocalGeometry, Location, Route,
+    City, CorridorDetail, DataError, DetailSource, FacilityApproach, FacilityEndpoint, Leg,
+    LocalApproach, LocalGeometry, Location, Route,
 };
 use super::world_parsing::{
     expand_market_locations, is_legacy_market_name, market_tags_for_city, merge_overlay,
@@ -678,71 +678,43 @@ impl World {
     }
 
     /// Stable fallback for legacy jobs that only named a city.
+    ///
+    /// Only `company_yard` or `terminal` may be returned. Travel centers and
+    /// truck parking are fuel/rest pins, never dispatch yards. When the city
+    /// has neither, this errors (`{city} has no freight facilities`) rather
+    /// than inventing a warehouse or picking a fuel stop — callers should
+    /// treat that city as not offering a default freight endpoint.
     pub fn default_facility(&self, city: &str) -> Result<&Location, DataError> {
         let key = self.resolve_city_key(city);
         let Some(city_obj) = self.cities.get(&key) else {
             return Err(DataError::key(format!("Unknown city: {city}")));
         };
         let locations = &city_obj.locations;
-        const PREFERRED: &[&str] = &[
-            "company_yard",
-            "terminal",
-            "dry_warehouse",
-            "warehouse",
-            "distribution",
-            "cross_dock",
-        ];
+        const PREFERRED: &[&str] = &["company_yard", "terminal"];
         for facility_type in PREFERRED {
             if let Some(location) = locations.iter().find(|l| l.facility_type == *facility_type) {
                 return Ok(location);
             }
         }
-        locations
-            .first()
-            .ok_or_else(|| DataError::key(format!("{city} has no freight facilities")))
+        Err(DataError::key(format!("{city} has no freight facilities")))
     }
 
-    /// Return the player's dispatch yard for a service area.
-    ///
-    /// The world data mostly lists shippers and receivers rather than company
-    /// yards, so explicit terminal facilities are preferred and every other
-    /// city gets a stable fallback yard name. `HomeTerminal.city` carries the
-    /// spoken city name -- the terminal object exists to be announced.
-    pub fn home_terminal(&self, city: &str) -> Result<HomeTerminal, DataError> {
+    /// Name of this city's own `terminal` (preferred) or `company_yard`
+    /// freight pin, for cosmetic naming only (the fallback garage). World
+    /// pins are freight endpoints and are never a player's home terminal:
+    /// that is the hiring carrier's own yard (see `models::carriers`).
+    pub fn yard_pin_name(&self, city: &str) -> Option<&str> {
         let key = self.resolve_city_key(city);
-        let Some(city_obj) = self.cities.get(&key) else {
-            return Err(DataError::key(format!("Unknown city: {city}")));
-        };
-        if let Some(location) = city_obj
-            .locations
+        let city = self.cities.get(&key)?;
+        city.locations
             .iter()
             .find(|l| l.facility_type == "terminal")
-        {
-            return Ok(HomeTerminal::new(
-                &location.name,
-                &city_obj.name,
-                &city_obj.state,
-                "terminal",
-            ));
-        }
-        if let Some(location) = city_obj
-            .locations
-            .iter()
-            .find(|l| l.facility_type == "company_yard")
-        {
-            return Ok(HomeTerminal::new(
-                &location.name,
-                &city_obj.name,
-                &city_obj.state,
-                "company_yard",
-            ));
-        }
-        Ok(HomeTerminal::new(
-            &format!("{} Company Yard", city_obj.name),
-            &city_obj.name,
-            &city_obj.state,
-            "company_yard",
-        ))
+            .or_else(|| {
+                city.locations
+                    .iter()
+                    .find(|l| l.facility_type == "company_yard")
+            })
+            .map(|l| l.name.as_str())
     }
 
     // ------------------------------------------------------------ routing
@@ -978,4 +950,19 @@ pub fn get_world() -> &'static World {
 /// Whether the shared world has been loaded yet.
 pub fn world_is_loaded() -> bool {
     WORLD.get().is_some()
+}
+
+/// Great-circle distance in statute miles (carrier terminal and hiring radius).
+pub fn air_miles(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    const EARTH_MI: f64 = 3958.7613;
+    let (lat1, lon1, lat2, lon2) = (
+        lat1.to_radians(),
+        lon1.to_radians(),
+        lat2.to_radians(),
+        lon2.to_radians(),
+    );
+    let dlat = lat2 - lat1;
+    let dlon = lon2 - lon1;
+    let a = (dlat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().powi(2);
+    EARTH_MI * 2.0 * a.sqrt().asin()
 }

@@ -88,6 +88,18 @@ pub fn facility_offer_text(
     format!("{location_name}{place} in {city}")
 }
 
+/// Ice cream and frozen-food docks still use the single chilled setpoint, so the
+/// spoken cargo label says chilled rather than frozen. The facility name itself
+/// is never rewritten.
+pub fn facility_ships_frozen_as_chilled(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.contains("ice cream")
+        || n.contains("frozen food")
+        || n.contains("frozen foods")
+        || n.contains("fresh frozen")
+        || (n.contains("frozen") && (n.contains("warehouse") || n.contains("distribution")))
+}
+
 fn is_legacy_facility_name(city: &str, location_name: &str) -> bool {
     let normalized = location_name.trim().to_lowercase();
     let city_lower = city.to_lowercase();
@@ -276,7 +288,7 @@ impl Job {
         format!(
             "{prefix}{} tons of {} {origin} {dest}. {distance}. {pay_label} {} dollars. Deadline {} hours{rest}Equipment: {}.{trailer}{preview}{market}{endorsement}",
             fmt_f(self.weight_tons, 0),
-            self.cargo.label,
+            self.spoken_cargo_label(),
             fmt_grouped(pay, 0),
             fmt_f(self.deadline_game_h, 0),
             self.cargo.equipment_text(),
@@ -317,6 +329,20 @@ impl Job {
             self.spoken_destination(),
             &self.destination_locality,
         )
+    }
+
+    /// Player-facing cargo name. Frozen-food docks keep their real facility
+    /// names; the load is still labeled chilled at the v1 setpoint.
+    pub fn spoken_cargo_label(&self) -> &'static str {
+        let frozen_dock = facility_ships_frozen_as_chilled(&self.origin_location)
+            || facility_ships_frozen_as_chilled(&self.destination_location);
+        if frozen_dock && self.cargo.key == "food" {
+            return "chilled food";
+        }
+        if frozen_dock && self.cargo.needs_reefer() {
+            return "chilled goods";
+        }
+        self.cargo.label
     }
 
     pub fn equipment_text(&self) -> String {
@@ -660,6 +686,11 @@ pub const SPECIALIZED_FREIGHT_WEIGHT: f64 = 1.25;
 // favoured when it ships something the driver is credentialed for.
 pub const HELD_CREDENTIAL_CARGO_WEIGHT: f64 = 4.0;
 pub const HELD_CREDENTIAL_FACILITY_BONUS: f64 = 1.5;
+
+/// Origin-selection multiplier for facilities tagged `thin_outbound`.
+/// Keeps inbound (destination) weight unchanged while cutting how often the
+/// pin is chosen as a shipper so inbound clearly outweighs outbound.
+pub const THIN_OUTBOUND_ORIGIN_WEIGHT: f64 = 0.25;
 pub const PREMIUM_LANE_LEVEL: i64 = 12;
 pub const PREMIUM_LANE_LONG_HAUL_BIAS: f64 = 0.5;
 

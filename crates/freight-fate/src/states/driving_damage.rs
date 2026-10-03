@@ -203,7 +203,13 @@ impl DrivingState {
             }
         };
         let speed_mph = self.trip.truck.speed_mph();
+        let ambient = self
+            .trip
+            .weather
+            .temperature_c()
+            .unwrap_or(ff_core::sim::vehicle::AMBIENT_C);
         let t = &mut self.trip.truck;
+        t.ambient_temp_c = ambient;
         t.corner_overspeed_mph =
             advisory_mph.map_or(0.0, |advisory| (speed_mph - advisory).max(0.0));
         // The advisory itself as well as the excess: a liquid load needs the

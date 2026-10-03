@@ -34,7 +34,7 @@ use crate::states::driving_updates::pending::EnforcementStopParams;
 /// just enforced, and there would be no way off the shoulder at all. In that
 /// case the run ends here the way the felony stop already ends -- the load
 /// goes back to dispatch and the driver is released to the terminal, where
-/// "Wait out the CDL suspension" is waiting for them.
+/// "Wait out the CDL suspension" (or disqualification) is waiting for them.
 pub trait RoadsideExit: Menu {
     fn drive(&self) -> &DriveRef;
 
@@ -72,16 +72,15 @@ pub trait RoadsideExit: Menu {
         let load = if d.phase == DRIVE_PHASE_DELIVERY && !d.job.bobtail {
             format!(
                 "Dispatch takes the {} load back and reassigns it",
-                d.job.cargo.label
+                d.job.spoken_cargo_label()
             )
         } else {
             "There is no loaded trailer to hand back, and the assignment is canceled".to_string()
         };
-        let terminal = ctx
-            .world
-            .home_terminal(&profile.current_city)
+        let terminal = profile
+            .carrier_home_terminal(ctx.world)
             .map(|t| t.spoken_name())
-            .unwrap_or_else(|_| "the terminal".to_string());
+            .unwrap_or_else(|| "the terminal".to_string());
         if profile.driving_record.lifetime_disqualified {
             return format!(
                 " The licence is gone for good, so the truck stays here. {load}, and a relief \
@@ -444,6 +443,14 @@ impl EnforcementStopState {
                     clock_text(d.trip.local_hour()),
                     wake_air_instruction(d, ctx, false)
                 )
+            } else if minutes >= hos::RESTART_MIN {
+                format!(
+                    "{lead}{why} Out of service: thirty-four hours parked on the shoulder. It \
+                     is {}, your 70-hour cycle is fresh, you wake rested, and the delivery \
+                     deadline kept counting.{}",
+                    clock_text(d.trip.local_hour()),
+                    wake_air_instruction(d, ctx, false)
+                )
             } else {
                 format!(
                     "{lead}{why} Out of service: ten hours parked on the shoulder. It is {}, \
@@ -631,16 +638,15 @@ impl FelonyStopState {
         let load_text = if self.load_lost {
             format!(
                 "Dispatch cancels the {} load. No pay for this run.",
-                d.job.cargo.label
+                d.job.spoken_cargo_label()
             )
         } else {
             "No loaded trailer to lose, but the assignment is canceled.".to_string()
         };
-        let terminal = ctx
-            .world
-            .home_terminal(&profile_of(ctx).current_city)
+        let terminal = profile_of(ctx)
+            .carrier_home_terminal(ctx.world)
             .map(|t| t.spoken_name())
-            .unwrap_or_else(|_| "the terminal".to_string());
+            .unwrap_or_else(|| "the terminal".to_string());
         self.summary = format!(
             "Troopers laid spike strips across the lane after you kept driving with lights and \
              siren behind you. Felony failure-to-stop fine: {} dollars, paid on the spot, with a \

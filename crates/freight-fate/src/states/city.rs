@@ -28,13 +28,14 @@ use once_cell::sync::Lazy;
 use serde_json::{Map, Value};
 
 use ff_core::data::world::World;
-use ff_core::data::world_models::{HomeTerminal, Route};
+use ff_core::data::world_models::Route;
 use ff_core::models::business::{is_owner_operator, COMPANY_DRIVER, INDEPENDENT_AUTHORITY};
 use ff_core::models::career_objectives::career_objective;
 use ff_core::models::career_training::{
     is_company_training_profile, training_guidance, TrainingStage,
 };
 use ff_core::models::enforcement;
+use ff_core::models::home_base::{city_service_area, ParkedAt, ParkedKind};
 use ff_core::models::jobs::relay::{relay_load, RelayRequest};
 use ff_core::models::jobs::{
     board_offer_count, dispatch_deadline_hours, job_from_payload, job_payload,
@@ -63,7 +64,7 @@ pub use board::{
     describe_job, locked_reason, trailer_note, JobBoardState, JobDetailState, JOB_BOARD_INTRO_HELP,
 };
 pub use close_out::CloseOutCareerState;
-pub use extras::{BobtailDestState, PayDebtState};
+pub use extras::{ApplyToCarrierState, BobtailDestState, PayDebtState};
 pub use terminal::CityMenuState;
 pub use truck_status::TruckStatusState;
 
@@ -96,14 +97,13 @@ pub(crate) fn profile_mut(ctx: &mut GameContext) -> &mut Profile {
         .expect("the terminal screens run with a loaded career")
 }
 
-/// The terminal the truck is parked at. An unknown current city is a data
-/// bug the Python surfaced as `KeyError`; here it falls back to a plain
-/// "Terminal" rather than taking the hub screen down.
-pub(crate) fn home_terminal(ctx: &GameContext) -> HomeTerminal {
-    let city = &profile(ctx).current_city;
-    ctx.world
-        .home_terminal(city)
-        .unwrap_or_else(|_| HomeTerminal::new("Terminal", city, "", "yard"))
+/// Where the truck is parked right now: the carrier terminal in the home
+/// terminal city, else the facility it last delivered or dropped at, else
+/// the city's travel center or truck parking, else just the city. Never a
+/// yard in another city and never a bare "Terminal" (see
+/// `ff_core::models::home_base`).
+pub(crate) fn parked_at(ctx: &GameContext) -> ParkedAt {
+    profile(ctx).parked_at(ctx.world)
 }
 
 /// Python `str.capitalize()`: first character upper, the rest lower.
@@ -121,10 +121,10 @@ pub(crate) fn record_city_duty(
     if ctx.profile.is_none() {
         return;
     }
-    let terminal = home_terminal(ctx);
+    let place = parked_at(ctx).name;
     profile_mut(ctx)
         .duty_log
-        .record(status, start_hour, end_hour, &terminal.name, note);
+        .record(status, start_hour, end_hour, &place, note);
 }
 
 /// 10-hour sleeps required to cover `drive_h`, given the driving hours left
@@ -179,22 +179,35 @@ pub fn first_day_orientation_message(ctx: &GameContext, prefix: &str) -> String 
 /// screen; `first_day_orientation_message` is these joined.
 pub fn first_day_orientation_lines(ctx: &GameContext, prefix: &str) -> Vec<String> {
     let p = profile(ctx);
-    let terminal = home_terminal(ctx);
+    if p.is_unassigned_company_driver() {
+        return vec![format!(
+            "{prefix}You have no carrier right now. {}",
+            ff_core::models::career_objectives::NO_CARRIER_OBJECTIVE
+        )];
+    }
     let option = option_for_profile(p);
-    // Spoken city, never the map key: the raw key read "parked at Chicago
-    // Company Yard in the chicago_il_us service area" (found by the first
-    // agent-driven playtest, 2026-08-30).
-    let location = format!(
-        "{} in the {} service area",
-        terminal.spoken_name(),
-        ctx.world.spoken_city(&p.current_city, None)
-    );
+    let location = first_day_parked_location(ctx);
+    // At the carrier terminal (where every new career starts), say what
+    // happens there: orientation and truck assignment. Anywhere else, just
+    // where the truck is.
+    let parked = parked_at(ctx);
+    let at_terminal = parked.kind == ParkedKind::CarrierTerminal;
+    let area = city_service_area(&ctx.world.spoken_city(&p.current_city, None));
     if option.is_owner_operator() {
-        return vec![
+        let first = if at_terminal {
             format!(
-                "{prefix}First-day briefing: leased to {}, parked at {location}.",
+                "{prefix}First-day briefing: leased to {}. Lease orientation is at {} in \
+                 {area}, where your truck is parked.",
+                option.carrier_name, parked.name
+            )
+        } else {
+            format!(
+                "{prefix}First-day briefing: leased to {}, parked {location}.",
                 option.carrier_name
-            ),
+            )
+        };
+        return vec![
+            first,
             format!(
                 "You own a new truck with a full tank and {} dollars of working capital.",
                 fmt_grouped(p.money(), 0)
@@ -207,26 +220,94 @@ pub fn first_day_orientation_lines(ctx: &GameContext, prefix: &str) -> Vec<Strin
                 .to_string(),
         ];
     }
-    vec![
+    let mut lines = vec![
         format!(
             "{prefix}First-day briefing: welcome aboard {}.",
             option.carrier_name
         ),
-        format!("Your assigned truck is parked at {location}."),
+        if at_terminal {
+            format!(
+                "Orientation and truck assignment are at {} in {area}, \
+                 where your assigned truck is parked.",
+                parked.name
+            )
+        } else {
+            format!("Your assigned truck is parked {location}.")
+        },
+    ];
+    // A new hire whose carrier terminal is in another city got there on the
+    // carrier: say so, instead of letting the terminal city pass as home.
+    if let Some(home) = travelled_from_home_city(ctx, p) {
+        lines.push(format!(
+            "The carrier covered your travel from {home} and a hotel for orientation."
+        ));
+    }
+    lines.extend([
         "The carrier covers fuel, repairs, insurance, and trailer support.".to_string(),
-        format!("Dispatch style: {}.", option.dispatch.summary()),
+        format!("Dispatch style: {}.", option.dispatch_profile().summary()),
         "As a new hire, dispatch assigns your load and route, and refusing an assignment \
          goes on your service record."
             .to_string(),
         "First objective: open the dispatch board, accept the assigned load, and deliver \
          it cleanly."
             .to_string(),
-    ]
+    ]);
+    lines
+}
+
+/// The spoken home city a company hire travelled from, when the career's
+/// picked home city is not its carrier terminal city.
+fn travelled_from_home_city(ctx: &GameContext, p: &Profile) -> Option<String> {
+    if p.home_city.trim().is_empty() {
+        return None;
+    }
+    let home = ctx.world.resolve_city_key(&p.home_city);
+    if home == ctx.world.resolve_city_key(&p.home_terminal_city) {
+        return None;
+    }
+    Some(ctx.world.spoken_city(&home, None))
+}
+
+/// "at {place} in the {city} service area" (or "in the {city} service area" when
+/// only the city is known) for the first-day briefing. Spoken city, never
+/// the map key: the raw key read "parked at Chicago Company Yard in the
+/// chicago_il_us service area" (found by the first agent-driven playtest,
+/// 2026-08-30).
+pub(crate) fn first_day_parked_location(ctx: &GameContext) -> String {
+    parked_at(ctx).service_area_phrase(ctx.world)
+}
+
+/// The refusal for any drive started from the terminal while the CDL is
+/// suspended or disqualified, or `None` when the driver may drive.
+pub(crate) fn cdl_drive_refusal(ctx: &GameContext) -> Option<String> {
+    let p = ctx.profile.as_ref()?;
+    let record = &p.driving_record;
+    (record.lifetime_disqualified || record.suspended(p.game_hours))
+        .then(|| ff_core::models::enforcement::suspension_drive_refusal_line(p))
 }
 
 /// What the terminal says about the first-day / career objective on entry
 /// (the `first_day` clause of `CityMenuState.announce_entry`).
 pub(crate) fn terminal_objective_clause(p: &Profile) -> String {
+    // A pulled CDL decides the objective: the board refuses work until it
+    // clears, so pointing at the dispatch board would be a dead end.
+    if let Some(wait) = ff_core::models::enforcement::suspended_objective_text(p) {
+        if wait.is_empty() {
+            return String::new();
+        }
+        let label = if first_day_guidance_active(p) {
+            "First-day objective"
+        } else {
+            "Career objective"
+        };
+        return format!(" {label}: {wait}");
+    }
+    if p.is_unassigned_company_driver() {
+        return format!(
+            " Career objective: {}",
+            ff_core::models::career_objectives::NO_CARRIER_OBJECTIVE
+        );
+    }
     if first_day_guidance_active(p) {
         let guidance = if is_company_training_profile(p) {
             Some(training_guidance(p))
@@ -356,6 +437,15 @@ fn py_repr_sorted_items(key: &Value) -> String {
 /// current, else build a fresh one and cache it. Pushes the board and
 /// returns its jobs.
 pub fn open_freight_market(ctx: &mut GameContext) -> Vec<Job> {
+    if profile(ctx).is_unassigned_company_driver() {
+        // No carrier, no dispatcher: say so instead of an empty board.
+        ctx.audio.play("ui/error");
+        ctx.say(
+            "You have no carrier, so there is no dispatch board. Choose Apply to a carrier \
+             at the terminal to take a seat.",
+        );
+        return Vec::new();
+    }
     let world = ctx.world;
     let (key, cache, hos) = {
         let p = profile_mut(ctx);
@@ -798,7 +888,18 @@ pub fn launch_driving(ctx: &mut GameContext, launch: DrivingLaunch) {
             let next_context = driving
                 .trip
                 .next_navigation_context(ctx.settings.imperial_units);
-            loaded_departure_line(ctx, &lead, &route_for_line, engine_on, &next_context)
+            let mut line =
+                loaded_departure_line(ctx, &lead, &route_for_line, engine_on, &next_context);
+            if driving.trip.truck.reefer_on && driving.trip.truck.cargo_needs_reefer() {
+                line.push(' ');
+                line.push_str(
+                    &driving
+                        .trip
+                        .truck
+                        .reefer_running_announcement(ctx.settings.imperial_units),
+                );
+            }
+            line
         }
     };
     ctx.say(&format!("{line}{deadline_note}"));
