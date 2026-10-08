@@ -73,3 +73,65 @@ def test_ci_does_not_dispatch_the_retired_build_workflow() -> None:
 
     assert "build" not in workflow["jobs"]
     assert "--workflow Build" not in CI_WORKFLOW.read_text(encoding="utf-8")
+
+
+WORKFLOWS = ROOT / ".github" / "workflows"
+RUST_WORKFLOW = WORKFLOWS / "rust.yml"
+CHANGELOG_WORKFLOW = WORKFLOWS / "changelog.yml"
+
+
+def _load(path: Path) -> dict:
+    return yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+
+
+def test_all_fork_workflows_are_manual_only() -> None:
+    """Upstream merges must not enable automatic Actions on this fork."""
+    for path in WORKFLOWS.glob("*.yml"):
+        assert set(_load(path)["on"]) == {"workflow_dispatch"}, path.name
+
+
+def test_python_manual_run_keeps_all_checks_enabled() -> None:
+    """Manual dispatch must run the tooling checks regardless of path changes."""
+    workflow = _load(CI_WORKFLOW)
+    assert set(workflow["on"]) == {"workflow_dispatch"}
+    assert (
+        "github.event_name == 'workflow_dispatch'"
+        in workflow["jobs"]["changes"]["outputs"]["python"]
+    )
+
+    changes = workflow["jobs"]["changes"]
+    filter_step = next(
+        step for step in changes["steps"] if step.get("uses", "").startswith("dorny/paths-filter@")
+    )
+    python_inputs = yaml.safe_load(filter_step["with"]["filters"])["python"]
+    for needed in ("tools/**", "tests/**", "pyproject.toml", "uv.lock", ".github/workflows/**"):
+        assert needed in python_inputs, needed
+
+    test_job = workflow["jobs"]["test"]
+    assert test_job["needs"] == "changes"
+    gated = [step for step in test_job["steps"] if "skipping" not in step.get("name", "")]
+    assert gated
+    for step in gated:
+        assert step.get("if") == "needs.changes.outputs.python != 'false'", step
+
+
+def test_ci_cancels_superseded_runs() -> None:
+    concurrency = _load(CI_WORKFLOW)["concurrency"]
+    assert "github.ref" in concurrency["group"]
+    assert concurrency["cancel-in-progress"] == "true"
+
+
+def test_one_manual_changelog_gate_has_a_usable_base() -> None:
+    """The fork retains one changelog gate with an explicit manual base."""
+    for path in (CI_WORKFLOW, RUST_WORKFLOW):
+        assert "changelog" not in _load(path)["jobs"], path.name
+
+    workflow = _load(CHANGELOG_WORKFLOW)
+    triggers = workflow["on"]
+    assert set(triggers) == {"workflow_dispatch"}
+    assert triggers["workflow_dispatch"]["inputs"]["base"]["default"] == "HEAD^"
+    check = next(step for step in workflow["jobs"]["changelog"]["steps"] if "env" in step)
+    assert check["env"]["BASE"] == "${{ inputs.base || 'HEAD^' }}"
+
+    run = "\n".join(step.get("run", "") for step in workflow["jobs"]["changelog"]["steps"])
+    assert "tools/release_notes.py check" in run

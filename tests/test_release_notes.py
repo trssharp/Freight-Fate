@@ -257,6 +257,90 @@ def test_stable_notes_fall_back_to_unreleased_when_version_missing(tmp_path, mon
     assert release_notes.stable_notes("9.9.9") == "## Changed\n- Upcoming change."
 
 
+def test_stable_notes_are_bounded_and_point_at_the_changelog(tmp_path, monkeypatch):
+    # 1.9's Unreleased block is past GitHub's limit on its own; the v1.9.0
+    # tag build checks the size after every platform has built.
+    release_notes = load_release_notes_module()
+    added_entries = "\n".join(
+        f"- **Career improvement {index}.** " + ("Player-facing detail. " * 90)
+        for index in range(100)
+    )
+    fixed_entries = "\n".join(
+        f"- **Career fix {index}.** " + ("Clear fix detail. " * 90) for index in range(100)
+    )
+    repo = make_repo(
+        tmp_path, changelog(f"### Added\n{added_entries}\n\n### Fixed\n{fixed_entries}\n")
+    )
+    monkeypatch.setattr(release_notes, "ROOT", repo)
+
+    notes = release_notes.stable_notes("1.9.0")
+
+    assert len(notes) + 1 <= release_notes.GITHUB_RELEASE_NOTES_SAFE_CHARACTERS
+    assert notes.startswith("## Added\n- **Career improvement 0.**")
+    assert "\n## Fixed\n- **Career fix 0.**" in notes
+    assert notes.endswith(release_notes.STABLE_COMPLETE_LIST)
+
+
+def test_stable_notes_lead_with_compatibility(tmp_path, monkeypatch):
+    # Players upgrading in place need to hear first whether their career
+    # comes across; snapshot notes keep the usual order.
+    release_notes = load_release_notes_module()
+    repo = make_repo(
+        tmp_path,
+        changelog("### Added\n- New thing.\n\n### Compatibility\n- Old careers stay behind.\n"),
+    )
+    monkeypatch.setattr(release_notes, "ROOT", repo)
+
+    assert release_notes.stable_notes("1.9.0") == (
+        "## Compatibility\n- Old careers stay behind.\n\n## Added\n- New thing."
+    )
+
+
+def test_stable_notes_publish_the_curated_summary_and_link_the_full_list(tmp_path, monkeypatch):
+    # 1.9.0 opens with a hand-written summary; the per-snapshot detail sits
+    # in its own block below and must not leak into the release page.
+    release_notes = load_release_notes_module()
+    repo = make_repo(
+        tmp_path,
+        changelog(
+            "",
+            "## 1.9.0 - 2026-10-04\n\n"
+            "### Changes\n- A change.\n\n"
+            "### Highlights\n- The big one.\n\n"
+            "### Fixes\n- A fix.\n\n"
+            "### Compatibility\n- Old careers stay behind.\n\n"
+            "### New features\n- A feature.\n\n"
+            "## 1.9.0 complete change list\n\n### Added\n- Snapshot detail.\n",
+        ),
+    )
+    monkeypatch.setattr(release_notes, "ROOT", repo)
+
+    notes = release_notes.stable_notes("v1.9.0")
+
+    assert notes == (
+        "## Compatibility\n- Old careers stay behind.\n\n"
+        "## Highlights\n- The big one.\n\n"
+        "## New features\n- A feature.\n\n"
+        "## Fixes\n- A fix.\n\n"
+        "## Changes\n- A change.\n\n" + release_notes.STABLE_FULL_CHANGELOG.format(version="1.9.0")
+    )
+    assert "blob/v1.9.0/CHANGELOG.md" in notes
+
+
+def test_curated_summary_never_feeds_nightly_notes(tmp_path):
+    release_notes = load_release_notes_module()
+    text = changelog(
+        "",
+        "## 1.9.0 - 2026-10-04\n\n### Highlights\n- The big one.\n\n"
+        "## 1.9.0 complete change list\n\n### Added\n- Snapshot detail.\n",
+    )
+
+    sections = release_notes.nightly_candidate_sections(text, set())
+
+    assert sections == [release_notes.ChangelogSection("Added", ("- Snapshot detail.",))]
+    assert release_notes.nightly_candidate_sections(text, {"1.9.0"}) == []
+
+
 def test_nightly_notes_exclude_entries_from_previous_nightly(tmp_path, monkeypatch):
     release_notes = load_release_notes_module()
     repo = make_repo(tmp_path, changelog("### Added\n- Old curated note.\n"))
@@ -636,8 +720,8 @@ def test_career_19_snapshot_workflow_contract():
     # this is the only workflow that builds the Rust game, so it is the
     # nightly. build.yml's schedule was retired in the same change because it
     # builds the Python game, which dev no longer has.
-    # This fork keeps its existing branch name for manual snapshots.
-    assert "inputs.branch || 'feat/career-1.9'" in workflow
+    # This fork builds dev for manual snapshots.
+    assert "inputs.branch || 'dev'" in workflow
     # Tag pushes build the tagged ref, not tip-of-dev by accident.
     assert "github.event_name == 'push' && github.ref" in workflow
     assert "group: career-19-snapshot\n" in workflow
@@ -648,8 +732,9 @@ def test_career_19_snapshot_workflow_contract():
     assert "tag=1.9-tester-$(date -u +%Y%m%d)" in workflow
     assert "commit_sha: ${{ steps.check.outputs.commit_sha }}" in workflow
     assert 'echo "commit_sha=$(git rev-parse HEAD)"' in workflow
-    # Windows, macOS, Linux build, the Linux distro smoke, and the release.
-    assert workflow.count("ref: ${{ needs.prepare.outputs.commit_sha }}") == 5
+    # Format, Windows, macOS, Linux build, the Linux distro smoke, and the
+    # release.
+    assert workflow.count("ref: ${{ needs.prepare.outputs.commit_sha }}") == 6
     assert 'git tag --list "1.9-tester-*"' in workflow
     assert "tools/release_notes.py should-build-nightly" in workflow
     assert "tools/release_notes.py nightly" in workflow
@@ -724,7 +809,7 @@ def test_career_19_snapshot_builds_and_boots_a_linux_release():
         encoding="utf-8"
     )
     # Speech is not disabled in the container boot: Prism really opens the
-    # system's speech-dispatcher, which is where a loader would object.
+    # system's Speech Dispatcher, or boots silent where there is none.
     assert "FREIGHT_FATE_NO_SPEECH" not in smoke
     assert "Speech backend: Speech Dispatcher" in smoke
     assert 'grep -q " ERROR "' in smoke
@@ -762,7 +847,6 @@ def test_career_19_snapshot_builds_an_apple_silicon_macos_release():
     )
     assert "uv run python tools/fetch_bass.py\n" in named_steps["Fetch BASS"][1]["run"]
     assert "uv run python tools/fetch_bass.py --check" in named_steps["Fetch BASS"][1]["run"]
-    assert named_steps["Check Rust formatting"][1]["run"] == "cargo fmt --all --check"
     assert (
         named_steps["Lint Rust targets"][1]["run"]
         == "cargo clippy --all-targets --locked -- -D warnings"
@@ -792,11 +876,13 @@ def test_career_19_release_requires_and_verifies_every_platform_archive():
 
     assert release["needs"] == [
         "prepare",
+        "format",
         "build_windows",
         "build_macos",
         "build_linux",
         "smoke_linux",
     ]
+    assert "needs.format.result == 'success'" in release["if"]
     assert "needs.build_windows.result == 'success'" in release["if"]
     assert "needs.build_macos.result == 'success'" in release["if"]
     assert "needs.build_linux.result == 'success'" in release["if"]
@@ -819,10 +905,18 @@ def test_career_19_release_requires_and_verifies_every_platform_archive():
     assert "--prerelease" in create["run"]
     assert "is_prerelease == 'true'" in create["if"]
     stable = next(step for step in release["steps"] if step.get("name") == "Create stable release")
-    assert 'gh release create "$TAG" release-assets/*' in stable["run"]
+    assert "for f in release-assets/*; do" in stable["run"]
+    assert 'gh release create "$TAG" "${assets[@]}"' in stable["run"]
+    # The plain Mac copy is the arm64 app again; its label says so, since
+    # GitHub shows the label where the file name would be.
+    assert "(in-game updater copy, same app as the macos-arm64 zip)" in stable["run"]
     assert "--prerelease" not in stable["run"]
     assert "is_prerelease == 'false'" in stable["if"]
     assert "Freight Fate $VERSION" in stable["run"]
+    # 1.8.8.1 and the 1.9 updater both pick a stable Mac archive by `-macos.zip`.
+    assert 'cp "$zip" "${zip%-macos-arm64.zip}-macos.zip"' in stable["run"]
+    assert stable["run"].index('-macos.zip"') < stable["run"].index("gh release create")
+    assert "sha256sum FreightFate-* > checksums.txt" in stable["run"]
     verify = next(
         step for step in release["steps"] if step.get("name") == "Verify release archives"
     )
@@ -845,16 +939,13 @@ def test_career_19_release_requires_and_verifies_every_platform_archive():
     )
 
 
-def test_player_manual_distinguishes_stable_and_career_19_mac_archives():
+def test_player_manual_names_the_apple_silicon_mac_archive():
     manual = (Path(__file__).resolve().parents[1] / "docs" / "user-manual.md").read_text(
         encoding="utf-8"
     )
 
-    assert "| macOS stable | `FreightFate-<version>-macos.zip` |" in manual
-    assert (
-        "| Career 1.9 macOS, Apple Silicon | `FreightFate-<version>-macos-arm64.zip` |"
-    ) in manual
-    assert "On an Intel Mac, the in-game updater will not offer" in manual
+    assert "| macOS, Apple Silicon | `FreightFate-<version>-macos-arm64.zip` |" in manual
+    assert "Intel Mac, the in-game updater will not offer it" in manual
 
 
 def test_player_manual_names_both_linux_architectures():
@@ -888,6 +979,41 @@ def test_career_19_snapshot_prepares_bass_before_rust_validation():
         assert bass_index < named_steps["Lint Rust targets"][0]
         assert bass_index < named_steps["Test Rust workspace"][0]
         assert named_steps["Test Rust workspace"][0] < named_steps[build_step_name][0]
+
+
+def test_career_19_snapshot_runs_each_platform_independent_check_once():
+    """Formatting and the whole-map sweeps do not depend on the platform, so
+    each runs on one runner; every check still gates the release."""
+    workflow_path = (
+        Path(__file__).resolve().parents[1] / ".github" / "workflows" / "build-career-1.9.yml"
+    )
+    jobs = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)["jobs"]
+
+    def step(job, name):
+        return next(s for s in jobs[job]["steps"] if s.get("name") == name)
+
+    fmt_jobs = [
+        name
+        for name, job in jobs.items()
+        if any("cargo fmt" in s.get("run", "") for s in job.get("steps", []))
+    ]
+    assert fmt_jobs == ["format"]
+    assert jobs["format"]["runs-on"] == "ubuntu-latest"
+    assert step("format", "Check Rust formatting")["run"] == "cargo fmt --all --check"
+
+    # The sweeps run once, on Windows; the other runners take the quick set,
+    # with clippy on the same RUSTFLAGS so the debug native builds are shared.
+    assert "RUSTFLAGS" not in step("build_windows", "Test Rust workspace").get("env", {})
+    for job in ("build_macos", "build_linux"):
+        for name in ("Lint Rust targets", "Test Rust workspace"):
+            assert step(job, name)["env"]["RUSTFLAGS"] == "--cfg ci_quick", (job, name)
+        assert "RUSTFLAGS" not in jobs[job].get("env", {})
+
+    # Windows clippy is skipped only on the schedule, whose dev tip rust.yml
+    # already linted; tag pushes and manual runs still lint.
+    assert step("build_windows", "Lint Rust targets")["if"] == "github.event_name != 'schedule'"
+    for job in ("build_macos", "build_linux"):
+        assert "if" not in step(job, "Lint Rust targets")
 
 
 def test_career_19_retry_is_bounded_to_one_delayed_attempt():

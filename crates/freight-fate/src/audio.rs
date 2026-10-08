@@ -73,6 +73,9 @@ pub const CH_SIREN: u32 = 17; // the held enforcement siren, panned and levelled
 pub const CH_SCALE: u32 = 18; // weigh-station approach bed, swelling on real seconds
 pub const CH_SURGE: u32 = 19; // liquid running in a tank trailer: gated, silent on other freight
 pub const CH_LANE_GUIDE: u32 = 20; // optional lane-guide tone, panned by the guide (off by default)
+/// One sound per nearby NPC vehicle, set every frame from where it is.
+pub const CH_TRAFFIC_SOUNDS: [u32; 3] = [21, 22, 23];
+pub const CH_TRAFFIC_BED: u32 = 24; // the freeway's distant traffic, by its real presence
 
 // Everything above must be inside the reservation. set_reserved(n) protects
 // channels 0..n-1 from find_channel, and this sat at 14 while CH_RADIO_FX,
@@ -219,12 +222,6 @@ pub const ENGINE_START_SETTLE_CURVE: &str = "ease_out"; // key into audio_fades.
 /// option is on: half volume, the modest broadcast-style duck -- the road
 /// stays present, the words win (XAG 105; speech priority research, R13).
 pub const SPEECH_DUCK_LEVEL: f64 = 0.5;
-
-/// How long the same duck holds for an EARCON, which has no voice for the
-/// pacer to project. Real seconds, and sized to the cues themselves: the
-/// longest ladder earcon is the two-note coaching chime at 0.18 s, so this
-/// covers it and its tail without the mix audibly breathing.
-pub const EARCON_DUCK_S: f64 = 0.25;
 
 pub const BASS_NO_SOUND_DEVICE: i32 = 0;
 

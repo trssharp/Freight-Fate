@@ -248,6 +248,7 @@ fn red_clearance_empties_the_conflict_window_before_green() {
                 crossed: false,
                 committed: false,
                 sound_started: false,
+                id: 1,
             });
             drive.cross_bubble = Some(bubble);
             drive.ramp_light_timer = drive.ramp_light_red_s() - RAMP_LIGHT_RED_CLEARANCE_S;
@@ -481,7 +482,7 @@ fn a_loaded_truck_departs_on_the_shortest_green_with_manual_acceleration() {
     assert!(
         spoken(&harness)
             .iter()
-            .any(|line| line.contains("Green light")),
+            .any(|line| line.contains("Light green")),
         "green transition was not delivered: {:?}",
         spoken(&harness)
     );

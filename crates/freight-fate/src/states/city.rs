@@ -21,14 +21,11 @@
 //! function used to push, and is kept only for a screen no port has claimed
 //! yet; nothing in this module reaches for it now.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
-
-use once_cell::sync::Lazy;
 use serde_json::{Map, Value};
 
 use ff_core::data::world::World;
 use ff_core::data::world_models::{HomeTerminal, Route};
+use ff_core::input_hints::TOUCH;
 use ff_core::models::business::{is_owner_operator, COMPANY_DRIVER, INDEPENDENT_AUTHORITY};
 use ff_core::models::career_objectives::career_objective;
 use ff_core::models::career_training::{
@@ -51,10 +48,12 @@ use crate::app::{GameContext, Say};
 use crate::bindings::Action;
 use crate::states::base::{InputEvent, Key, Menu, MenuItem, SimpleMenuState};
 use crate::states::driving::DrivingState;
+use crate::states::main_menu::TouchPracticeOfferState;
 
 mod board;
 mod close_out;
 mod extras;
+mod held_load;
 mod terminal;
 mod truck_status;
 mod weather;
@@ -64,6 +63,7 @@ pub use board::{
 };
 pub use close_out::CloseOutCareerState;
 pub use extras::{BobtailDestState, PayDebtState};
+pub(crate) use terminal::local_zone as city_local_zone;
 pub use terminal::CityMenuState;
 pub use truck_status::TruckStatusState;
 
@@ -109,6 +109,16 @@ pub(crate) fn home_terminal(ctx: &GameContext) -> HomeTerminal {
 /// Python `str.capitalize()`: first character upper, the rest lower.
 pub(crate) fn py_capitalize(text: &str) -> String {
     ff_core::data::world_models::py_capitalize(text)
+}
+
+/// First character upper, the rest as written: a sentence opening on a
+/// street or city name keeps "US 83" and "Abilene" as they are spelled.
+pub(crate) fn upper_first(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 pub(crate) fn record_city_duty(
@@ -185,9 +195,9 @@ pub fn first_day_orientation_lines(ctx: &GameContext, prefix: &str) -> Vec<Strin
     // Company Yard in the chicago_il_us service area" (found by the first
     // agent-driven playtest, 2026-08-30).
     let location = format!(
-        "{} in the {} service area",
+        "{} in {} service area",
         terminal.spoken_name(),
-        ctx.world.spoken_city(&p.current_city, None)
+        ff_core::speech_text::the_city(&ctx.world.spoken_city(&p.current_city, None))
     );
     if option.is_owner_operator() {
         return vec![
@@ -222,6 +232,15 @@ pub fn first_day_orientation_lines(ctx: &GameContext, prefix: &str) -> Vec<Strin
          it cleanly."
             .to_string(),
     ]
+}
+
+/// The refusal for any drive started from the terminal while the CDL is
+/// suspended or disqualified, or `None` when the driver may drive.
+pub(crate) fn cdl_drive_refusal(ctx: &GameContext) -> Option<String> {
+    let p = ctx.profile.as_ref()?;
+    let record = &p.driving_record;
+    (record.lifetime_disqualified || record.suspended(p.game_hours))
+        .then(|| ff_core::models::enforcement::suspension_drive_refusal_line(p))
 }
 
 /// What the terminal says about the first-day / career objective on entry
@@ -298,10 +317,7 @@ pub fn dispatch_cache_key(p: &Profile) -> Value {
     );
     // A board cached before dispatch lost faith in you must not outlive
     // the trust that built it.
-    key.insert(
-        "trust".into(),
-        Value::from(enforcement::trust_band(p.standing())),
-    );
+    key.insert("trust".into(), Value::from(enforcement::standing_band(p)));
     key.insert(
         "force_dest".into(),
         Value::from(forced_dispatch_destination()),
@@ -415,11 +431,12 @@ pub fn open_freight_market(ctx: &mut GameContext) -> Vec<Job> {
                     &endorsements,
                     OfferOptions {
                         // How much freight dispatch will show you is a matter of
-                        // trust, and trust slides with reputation the whole way
-                        // down.
-                        count: enforcement::board_offers_for_reputation(
+                        // trust: the band the dispatch trust line speaks, so a
+                        // record or debt holding it down holds the board down
+                        // too (owner, 2026-09-28).
+                        count: enforcement::board_offers_for_band(
                             board_offer_count(p.career.level()) as i64,
-                            p.standing(),
+                            enforcement::standing_band(p),
                         )
                         .max(0) as usize,
                         level: p.career.level(),
@@ -445,11 +462,14 @@ pub fn open_freight_market(ctx: &mut GameContext) -> Vec<Job> {
                 }
             }
             lever_note = add_forced_board_job(ctx, &mut board, &mut fresh);
+            let mut cache = Map::new();
+            if let Some(held) = held_load::held_load(profile(ctx), world) {
+                held_load::carry_onto_board(&mut fresh, held, &mut cache);
+            }
             let payloads: Vec<Value> = fresh
                 .iter()
                 .map(|job| Value::Object(job_payload(job)))
                 .collect();
-            let mut cache = Map::new();
             cache.insert("key".into(), key.clone());
             cache.insert("jobs".into(), Value::Array(payloads));
             profile_mut(ctx).dispatch_board_cache = Some(Value::Object(cache));
@@ -474,47 +494,36 @@ pub(crate) fn sort_by_distance(jobs: &mut [Job]) {
 }
 
 /// `(city key, miles, leg count)` for every city reachable from `city` on a
-/// supported route, the way `JobBoard._candidates` computed it.
-// TODO(lead): belongs in ff_core::models::jobs::JobBoard -- `candidates` is
-// private there; make it pub and delete this copy.
+/// supported route: the board's own shared cache, so the relay and the
+/// bobtail list never compute it twice.
 pub(crate) fn board_candidates(world: &World, city: &str) -> Vec<(String, f64, usize)> {
-    type CandidateCache = HashMap<usize, HashMap<String, Vec<(String, f64, usize)>>>;
-    static CACHE: Lazy<Mutex<CandidateCache>> = Lazy::new(|| Mutex::new(HashMap::new()));
-    let city = world.resolve_city_key(city);
-    let world_id = world as *const World as usize;
-    if let Some(cached) = CACHE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&world_id)
-        .and_then(|per| per.get(&city))
-    {
-        return cached.clone();
+    ff_core::models::jobs::reachable_cities(world, city)
+}
+
+/// Build the route lists a board in `city` needs on a background thread,
+/// while the driver is still at the terminal: the first board in a new city
+/// computed a route to every city on the map, then again from each relay
+/// town, all on Enter (2026-09-28). The thread only fills shared caches, so
+/// there is nothing to join; a board opened before it finishes computes what
+/// it still needs itself.
+pub(crate) fn warm_dispatch_board(world: &'static World, city: &str) {
+    let city = city.to_string();
+    let spawned = std::thread::Builder::new()
+        .name("dispatch-warm".to_string())
+        .spawn(move || ff_core::models::jobs::relay::warm_dispatch_routes(world, &city));
+    if let Err(err) = spawned {
+        log::warn!("Could not start the dispatch warm-up thread: {err}");
     }
-    let mut computed: Vec<(String, f64, usize)> = Vec::new();
-    for dest in world.city_names() {
-        if dest == city {
-            continue;
-        }
-        if let Ok(Some(route)) = world.supported_route(&city, &dest, None) {
-            computed.push((dest, route.miles(), route.legs.len()));
-        }
-    }
-    CACHE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .entry(world_id)
-        .or_default()
-        .insert(city, computed.clone());
-    computed
 }
 
 /// The load dispatch relays onto a company driver's board when the board
 /// here is thin (`ff_core::models::jobs::relay`): a load from one of the
-/// nearest freight towns, its deadhead paid at the empty-mile rate and
-/// counted in the deadline, offered as one assignment. None when the board
-/// here is good enough, for an owner-operator (their own "Bobtail to a
-/// nearby city" is how they reposition, on their own fuel), and for a brand
-/// new hire, whose first dispatch is always freight from this yard.
+/// nearest freight towns, its deadhead paid at the empty-mile rate (the
+/// delivery clock starts at the shipper), offered as one assignment. None
+/// when the board here is good enough, for an owner-operator (their own
+/// "Bobtail to a nearby city" is how they reposition, on their own fuel),
+/// and for a brand new hire, whose first dispatch is always freight from
+/// this yard.
 ///
 /// Seeded off the board's own cache key so the same board relays the same
 /// load every time it is reopened, exactly like the rest of the cached
@@ -752,7 +761,7 @@ pub fn launch_driving(ctx: &mut GameContext, launch: DrivingLaunch) {
                 format!(
                     " Dispatch adjusted the delivery deadline to {} hours. Your current hours require a 10-hour sleep en route. {} selects a rest stop.",
                     fmt_f(job.deadline_game_h, 1),
-                    ctx.control_name(Action::HosDrive)
+                    ctx.control_name(Action::Rest)
                 )
             } else {
                 format!(
@@ -803,6 +812,13 @@ pub fn launch_driving(ctx: &mut GameContext, launch: DrivingLaunch) {
     };
     ctx.say(&format!("{line}{deadline_note}"));
     ctx.push_state(driving);
+    if ctx.controller.device() == TOUCH && !ctx.settings.touch_practice_offered {
+        ctx.settings.touch_practice_offered = true;
+        if let Err(e) = ctx.settings.save() {
+            log::warn!("could not save touch practice offer setting: {e}");
+        }
+        ctx.push_state(TouchPracticeOfferState::new());
+    }
 }
 
 // -- menu plumbing --------------------------------------------------------------------

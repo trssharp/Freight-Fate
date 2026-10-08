@@ -10,6 +10,7 @@ use ff_core::speech_pacing::{EventPriority, SpeechCategory};
 
 use crate::app::{GameContext, SayEvent};
 use crate::discord_presence::{driving_presence, PresenceState};
+use crate::online_presence::RADIO_CLAUSE;
 use crate::states::base::TimedMessageState;
 use crate::states::driving::DrivingState;
 use crate::states::driving_core::*;
@@ -17,6 +18,121 @@ use crate::states::driving_menu_states::{replace_drive_with, DriveRef, FacilityA
 use crate::states::driving_updates::live;
 
 impl DrivingState {
+    /// Once-per-threshold low-fuel cue at about 15 percent remaining.
+    ///
+    /// Speaks on the Safety channel (heard at quiet and urgent_only), plays
+    /// the same short UI warning other mid-drive safety cues use, and latches
+    /// until a refill climbs the tank back above the line. Empty-tank rescue
+    /// keeps its own path; this cue stays silent once the tank is dry.
+    pub fn check_low_fuel_warning(&mut self, ctx: &mut GameContext) {
+        let fraction = self.trip.truck.fuel_fraction();
+        if self.trip.truck.fuel_gal <= 0.0 {
+            // Empty tank is the rescue line, not a second low-fuel cue.
+            return;
+        }
+        if fraction > LOW_FUEL_WARN_FRACTION {
+            self.low_fuel_said = false;
+            return;
+        }
+        if self.low_fuel_said {
+            return;
+        }
+        self.low_fuel_said = true;
+        let pct = fraction * 100.0;
+        let message = if self.terse_speech(ctx) {
+            format!("Fuel low: {pct:.0} percent.")
+        } else {
+            format!("Low fuel warning, {pct:.0} percent. Find a fuel stop soon.")
+        };
+        ctx.audio.play("ui/warning");
+        ctx.say_event_with(message, SayEvent::new().category(SpeechCategory::Safety));
+    }
+
+    /// Miles per gallon this run is really getting: its own average once it
+    /// has driven and burned enough to measure, else [`ASSUMED_RANGE_MPG`].
+    /// The run's average already carries the load, the climbs and the
+    /// idling, which a flat figure cannot.
+    pub fn range_mpg(&self) -> f64 {
+        let used = self.trip.fuel_used_gal;
+        let driven = self.trip.position_mi;
+        if used >= RANGE_MEASURE_MIN_GAL && driven >= RANGE_MEASURE_MIN_MI {
+            (driven / used).clamp(RANGE_MPG_FLOOR, RANGE_MPG_CEILING)
+        } else {
+            ASSUMED_RANGE_MPG
+        }
+    }
+
+    /// Miles the fuel in the tank reaches at [`Self::range_mpg`].
+    pub fn fuel_range_mi(&self) -> f64 {
+        self.trip.truck.fuel_gal.max(0.0) * self.range_mpg()
+    }
+
+    /// Miles to the nearest fuel stop ahead this rig can use, if any.
+    pub fn next_fuel_stop_mi(&self) -> Option<f64> {
+        self.trip
+            .stops
+            .iter()
+            .filter(|stop| {
+                stop.actions.iter().any(|a| a == "fuel") && stop.accessible_to(self.trip.bobtail)
+            })
+            .map(|stop| stop.at_mi - self.trip.position_mi)
+            .filter(|ahead| *ahead >= 0.0)
+            .min_by(f64::total_cmp)
+    }
+
+    /// The fuel range, the miles it has to cover, and the next fuel stop
+    /// when that comes before the destination.
+    pub fn fuel_range_need(&self) -> (f64, f64, Option<f64>) {
+        let remaining = self.trip.remaining_miles();
+        let next_fuel = self.next_fuel_stop_mi().filter(|ahead| *ahead < remaining);
+        (
+            self.fuel_range_mi(),
+            next_fuel.unwrap_or(remaining),
+            next_fuel,
+        )
+    }
+
+    /// Warns once when the fuel range falls short of the next fuel stop, or
+    /// of the destination when no fuel stop comes first. Latched until the
+    /// range clears what it needs by a fifth, so a refill re-arms it and the
+    /// run's average wobbling across the line does not.
+    pub fn check_fuel_range_warning(&mut self, ctx: &mut GameContext) {
+        if self.trip.truck.fuel_gal <= 0.0 {
+            return;
+        }
+        let (range, needed, next_fuel) = self.fuel_range_need();
+        if range >= needed * 1.2 {
+            self.fuel_range_short_said = false;
+            return;
+        }
+        if range >= needed || self.fuel_range_short_said {
+            return;
+        }
+        self.fuel_range_short_said = true;
+        let range_text = ctx.settings.distance_text(range, false);
+        let terse = self.terse_speech(ctx);
+        let message = match next_fuel {
+            Some(ahead) => {
+                let ahead_text = ctx.settings.distance_text(ahead, false);
+                if terse {
+                    format!("Fuel range {range_text}, next fuel {ahead_text}.")
+                } else {
+                    format!(
+                        "Fuel range about {range_text}, short of the next fuel stop, \
+                         {ahead_text} ahead."
+                    )
+                }
+            }
+            None if terse => format!("Fuel range {range_text}, short of the destination."),
+            None => format!(
+                "Fuel range about {range_text}, short of the destination, with no fuel \
+                 stop ahead on this route."
+            ),
+        };
+        ctx.audio.play("ui/warning");
+        ctx.say_event_with(message, SayEvent::new().category(SpeechCategory::Safety));
+    }
+
     /// `_handle_out_of_fuel()`.
     pub fn handle_out_of_fuel(&mut self, ctx: &mut GameContext) {
         if self.rescue_offered {
@@ -68,6 +184,10 @@ impl DrivingState {
         self.exit_stop = None;
         self.exit_signal_on = false;
         self.exit_signal_canceled = false;
+        // A cancel belongs to the approach it was made on. Left standing, the
+        // rebuilt exit carries the same key, the scanner skips it, and lane
+        // keeping never takes the exit this loop-back says it will.
+        self.canceled_exit_key = None;
         self.cancel_cruise(ctx, false);
         let exit_at = match exit_details {
             Some(details) => details.0,
@@ -176,7 +296,14 @@ impl DrivingState {
         if self.arrival_menu_open {
             return true;
         }
-        self.cancel_cruise(ctx, false);
+        // An arrival pause, held until the departure resumes it. Ending the
+        // session here lost the driver's set speed at every assisted pickup
+        // (tester report, 2026-09-28).
+        if self.speed_control_armed {
+            self.pause_speed_control(ctx, false);
+        } else {
+            self.cancel_cruise(ctx, false);
+        }
         self.trip.truck.throttle = 0.0;
         self.trip.truck.brake = 1.0;
         if self.trip.truck.speed_mph() <= 0.5 && !self.arrival_full_stop_said {
@@ -557,7 +684,7 @@ impl DrivingState {
             .station_by_id(&self.radio_station_id)
             .cloned()
             .unwrap_or_else(|| self.radio.tuned_station());
-        let mut clause = format!("listening to {}", station.display_name());
+        let mut clause = format!("{RADIO_CLAUSE}{}", station.display_name());
         // And the song, when the stream says: broadcast metadata the station
         // itself publishes to every listener, so no more private than the
         // station name. The tick's copy, not a fresh read -- presence is

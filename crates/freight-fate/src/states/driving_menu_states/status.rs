@@ -5,7 +5,7 @@ use ff_core::models::enforcement;
 use ff_core::models::profile;
 use ff_core::models::solvency::debt_line;
 use ff_core::pyfmt::{fmt_f, fmt_grouped};
-use ff_core::radio::PLAYLISTS_DIR_NAME;
+use ff_core::radio::{PERSONAL_PLAYLIST_SOURCE_TYPE, PLAYLISTS_DIR_NAME};
 use ff_core::settings::Settings;
 use ff_core::sim::trip_models::RoadStop;
 
@@ -428,12 +428,28 @@ impl DrivingStatusScreenState {
                                 .to_string(),
                         );
                     }
-                    lines.push(
+                    // Players who saw the shuffle setting asked how to get
+                    // their own music on at all (issue #289): with nothing
+                    // loaded, say where the files go.
+                    let has_playlists = d
+                        .radio
+                        .catalog
+                        .iter()
+                        .any(|s| s.source_type == PERSONAL_PLAYLIST_SOURCE_TYPE);
+                    if !ctx.settings.radio_streamer_safe && !has_playlists {
+                        lines.push(format!(
+                            "No playlists of your own yet. Put M3U, M3U8 or PLS playlist files \
+                             in {}.",
+                            personal_playlists_dir().display()
+                        ));
+                    }
+                    lines.push(format!(
                         "Page Down and Page Up tune stations, or semicolon and apostrophe. With \
                          Control they jump categories. With Shift they change radio volume by \
-                         10 percent. O saves the station as a favorite. M toggles the radio."
-                            .to_string(),
-                    );
+                         10 percent. {} saves the station as a favorite. {} toggles the radio.",
+                        ctx.bindings.spoken(Action::RadioFavorite),
+                        ctx.bindings.spoken(Action::Radio)
+                    ));
                 }
                 if !locked && !d.radio.favorite_ids.is_empty() {
                     lines.push(format!("Favorites saved: {}.", d.radio.favorite_ids.len()));
