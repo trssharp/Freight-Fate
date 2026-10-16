@@ -324,7 +324,7 @@ fn test_cb_radio_chatter_queues_and_uses_cb_audio() {
     d.handle_trip_event(
         &mut app.ctx,
         &cb_chatter(
-            "CB chatter in 5 miles: drivers report a bear ahead. \
+            "CB chatter in 5 miles: drivers report a trooper ahead. \
              Ease back and check your speed.",
             14.0,
             4.0,
@@ -356,7 +356,7 @@ fn test_truly_ambient_chatter_is_spaced_without_blocking_safety() {
     d.handle_trip_event(
         &mut app.ctx,
         &cb_chatter(
-            "CB chatter in 5 miles: drivers report a bear ahead.",
+            "CB chatter in 5 miles: drivers report a trooper ahead.",
             14.0,
             4.0,
         ),
@@ -401,7 +401,7 @@ fn test_truly_ambient_chatter_is_spaced_without_blocking_safety() {
     d.handle_trip_event(
         &mut app.ctx,
         &cb_chatter(
-            "CB chatter in 4 miles: drivers report a bear ahead.",
+            "CB chatter in 4 miles: drivers report a trooper ahead.",
             14.0,
             3.0,
         ),
@@ -410,7 +410,7 @@ fn test_truly_ambient_chatter_is_spaced_without_blocking_safety() {
     assert_eq!(
         app.event_calls().last().cloned(),
         Some((
-            "CB chatter in 4 miles: drivers report a bear ahead.".to_string(),
+            "CB chatter in 4 miles: drivers report a trooper ahead.".to_string(),
             false
         ))
     );
@@ -434,7 +434,11 @@ fn test_the_cb_call_a_hazard_swallowed_still_comes_back_on_alt_c() {
     let post = always_observing_post(6.0, 2.0); // watched from mile 4
     d.handle_trip_event(
         &mut app.ctx,
-        &cb_chatter("CB chatter, in 4 miles: a driver reports a bear.", 6.0, 2.0),
+        &cb_chatter(
+            "CB chatter, in 4 miles: a driver reports a trooper.",
+            6.0,
+            2.0,
+        ),
     );
     advance_ambient(&mut app, &mut d, &clock, AMBIENT_QUEUE_MAX_AGE_S + 1.0);
     d.hazard_deadline = None;
@@ -451,7 +455,6 @@ fn test_the_cb_call_a_hazard_swallowed_still_comes_back_on_alt_c() {
     d.handle_key_event(&mut app.ctx, &InputEvent::key_mods(Key::C, Mods::ALT));
     let said = app.main_lines();
     assert_eq!(said, vec![d.trip.cb_patrol_message(&post, 2.0)]);
-    assert!(said[0].starts_with("CB chatter"), "{}", said[0]);
 }
 
 #[test]
@@ -464,7 +467,7 @@ fn test_stop_notice_yields_to_recent_route_speech() {
     app.clear_speech();
 
     let merge = "Merge onto I-90 East toward South Bend, then 66 miles on it.";
-    let plaza = "service plaza: Petro Stopping Centers in 1 mile. Press X to signal for the exit.";
+    let plaza = "travel center: Petro Stopping Centers in 1 mile. Press X to signal for the exit.";
     d.handle_trip_event(
         &mut app.ctx,
         &event(TripEventKind::GpsCue, merge, TripEventData::default()),
@@ -543,6 +546,10 @@ fn test_zone_entry_no_longer_destroys_pending_ambient_chatter() {
             "Crossing Ohio.",
             TripEventData::default(),
         ),
+    );
+    assert_eq!(
+        d.pending_ambient_events.back().unwrap().priority,
+        Some(EventPriority::Route)
     );
     assert_eq!(
         app.event_calls(),
@@ -686,9 +693,8 @@ fn test_the_construction_warning_does_not_shout_brake_now_from_eight_miles() {
     let message = d.trip.zone_warning_message(&zone, 8.0);
 
     assert!(!message.contains("Brake now"), "{message}");
-    assert!(message.starts_with("In "), "{message}");
-    // The information all survives: how far, what, and both limits.
-    assert!(message.contains("construction ahead"), "{message}");
+    // The information all survives: what, how far, and both limits.
+    assert!(message.starts_with("Construction, 8 miles."), "{message}");
     assert!(
         message.contains("45") && message.contains("55"),
         "{message}"

@@ -13,7 +13,10 @@ use std::rc::Rc;
 use ff_core::data::world::get_world;
 use ff_core::models::jobs::{Job, CARGO_CATALOG};
 use ff_core::models::profile::Profile;
-use ff_core::radio::{RadioPlaybackBackend, RadioStation, PERSONAL_PLAYLIST_SOURCE_TYPE};
+use ff_core::radio::{
+    dial_group, RadioPlaybackBackend, RadioStation, PERSONAL_PLAYLIST_SOURCE_TYPE,
+    SAFE_ROUTE_PLAYLIST, TERRESTRIAL_GROUP,
+};
 use ff_core::radio_content::content_duration_s;
 
 use freight_fate::app::testing::TestApp;
@@ -60,6 +63,10 @@ struct MusicAudio {
     /// Seconds into the track each `music` entry was asked to start at.
     starts: Rc<RefCell<Vec<f64>>>,
     stops: Rc<RefCell<Vec<u32>>>,
+    /// Every live stream URL the cab was asked to open, in order.
+    streams: Rc<RefCell<Vec<String>>>,
+    /// The song title the playing stream reports, as BASS would read it.
+    now_playing: Rc<RefCell<Option<String>>>,
     volume: Rc<Cell<f64>>,
     playing: Rc<Cell<bool>>,
     engine_on: Rc<Cell<bool>>,
@@ -70,9 +77,21 @@ struct MusicTape {
     music: Rc<RefCell<Vec<(String, u32)>>>,
     starts: Rc<RefCell<Vec<f64>>>,
     stops: Rc<RefCell<Vec<u32>>>,
+    streams: Rc<RefCell<Vec<String>>>,
+    now_playing: Rc<RefCell<Option<String>>>,
 }
 
 impl MusicTape {
+    /// The live stream the cab was last asked to open.
+    fn last_stream(&self) -> Option<String> {
+        self.streams.borrow().last().cloned()
+    }
+
+    /// What the stream is broadcasting as its current song.
+    fn set_now_playing(&self, title: &str) {
+        *self.now_playing.borrow_mut() = Some(title.to_string());
+    }
+
     fn tracks(&self) -> Vec<String> {
         self.music
             .borrow()
@@ -110,6 +129,8 @@ impl MusicAudio {
             music: Rc::clone(&audio.music),
             starts: Rc::clone(&audio.starts),
             stops: Rc::clone(&audio.stops),
+            streams: Rc::clone(&audio.streams),
+            now_playing: Rc::clone(&audio.now_playing),
         };
         app.ctx.audio = Box::new(audio);
         tape
@@ -204,7 +225,8 @@ impl Audio for MusicAudio {
         self.starts.borrow_mut().push(start_s);
         self.playing.set(true);
     }
-    fn play_radio_stream_with(&mut self, _url: &str, _fade_ms: u32) -> Result<(), AudioError> {
+    fn play_radio_stream_with(&mut self, url: &str, _fade_ms: u32) -> Result<(), AudioError> {
+        self.streams.borrow_mut().push(url.to_string());
         self.playing.set(true);
         Ok(())
     }
@@ -222,7 +244,7 @@ impl Audio for MusicAudio {
         self.playing.get()
     }
     fn radio_now_playing(&self) -> Option<String> {
-        None
+        self.now_playing.borrow().clone()
     }
     fn stop_music_with(&mut self, fade_ms: u32) {
         self.stops.borrow_mut().push(fade_ms);
@@ -593,18 +615,22 @@ fn test_tuning_in_lands_part_way_through_whatever_is_playing() {
 }
 
 #[test]
-fn test_two_stations_do_not_open_on_the_same_song() {
+fn test_two_stations_have_distinct_running_orders_and_playback_positions() {
     let mut app = TestApp::new();
     let mut d = a_denver_drive(&mut app, 42);
     let tape = MusicAudio::install(&mut app);
     two_fixture_stations(&mut d);
 
     tune(&mut d, &mut app, "keep-a");
-    let a = tape.last();
+    let a = (tape.last().0, tape.last_start());
+    let a_order = d.radio_playlist.clone();
     tune(&mut d, &mut app, "keep-b");
-    let b = tape.last();
+    let b = (tape.last().0, tape.last_start());
 
-    assert_ne!(a.0, b.0);
+    // Stations sharing a genre can legitimately reach the same song at
+    // different offsets as the catalog grows. They must not share a timeline.
+    assert_ne!(a_order, d.radio_playlist);
+    assert_ne!(a, b);
 }
 
 #[test]
@@ -643,6 +669,69 @@ fn test_a_personal_playlist_still_starts_its_tracks_at_the_top() {
 }
 
 #[test]
+fn test_shuffle_plays_every_track_once_before_any_repeats() {
+    // Hailey (drivers board, 2026-09-18): the Playlists folder is being used
+    // for MP3 collections, and those want a shuffle. A lap plays every entry
+    // once in a seeded random order, the next lap is a different order that
+    // never opens on the track that just ended, and turning shuffle off
+    // resumes top-to-bottom from wherever the playlist is.
+    let mut app = TestApp::new();
+    let mut d = a_denver_drive(&mut app, 42);
+    app.ctx.settings.radio_shuffle_playlists = true;
+    let tape = MusicAudio::install(&mut app);
+    let entries = [
+        "C:/music/a.mp3",
+        "C:/music/b.mp3",
+        "C:/music/c.mp3",
+        "C:/music/d.mp3",
+        "C:/music/e.mp3",
+        "C:/music/f.mp3",
+    ];
+    let station = a_playlist_station("pl-shuffle", &entries);
+
+    d.start_playlist_station(&mut app.ctx, &station, 900, false);
+    for _ in 0..5 {
+        d.start_playlist_station(&mut app.ctx, &station, 900, true);
+    }
+    let first_lap = tape.tracks();
+    assert_eq!(first_lap.len(), 6);
+    let mut sorted = first_lap.clone();
+    sorted.sort();
+    assert_eq!(
+        sorted,
+        entries.map(str::to_string).to_vec(),
+        "a lap is every track once"
+    );
+    // The seed is fixed, so this pins that the order is not the file's own.
+    assert_ne!(first_lap, entries.map(str::to_string).to_vec());
+
+    for _ in 0..6 {
+        d.start_playlist_station(&mut app.ctx, &station, 900, true);
+    }
+    let all = tape.tracks();
+    let second_lap = &all[6..12];
+    let mut sorted = second_lap.to_vec();
+    sorted.sort();
+    assert_eq!(sorted, entries.map(str::to_string).to_vec());
+    assert_ne!(
+        second_lap[0], first_lap[5],
+        "a new lap never repeats the last track"
+    );
+    assert_ne!(second_lap.to_vec(), first_lap, "each lap is its own order");
+
+    // Shuffle off: the next advance is the file's next line after the
+    // current entry, top to bottom.
+    app.ctx.settings.radio_shuffle_playlists = false;
+    let current = d.playlist_entry(&station);
+    let at = entries.iter().position(|e| *e == current).unwrap();
+    d.start_playlist_station(&mut app.ctx, &station, 900, true);
+    assert_eq!(
+        d.playlist_entry(&station),
+        entries[(at + 1) % entries.len()]
+    );
+}
+
+#[test]
 fn test_the_route_station_swaps_its_pool_at_nightfall() {
     // `_station_rotation_pool`: the route playlist is the drive's own
     // day/night sequence, and the rotation restarts when the flag flips.
@@ -652,8 +741,8 @@ fn test_the_route_station_swaps_its_pool_at_nightfall() {
         playlist: "route".to_string(),
         ..RadioStation::new("route-fixture", "Route", "", "mixed", "test fixture")
     };
-    let day = d.station_rotation_pool(&route_station, false);
-    let night = d.station_rotation_pool(&route_station, true);
+    let day = d.station_rotation_pool(&app.ctx, &route_station, false);
+    let night = d.station_rotation_pool(&app.ctx, &route_station, true);
     assert_eq!(day, d.day_music_sequence);
     assert_eq!(night, d.night_music_sequence);
     assert_ne!(day, night);
@@ -729,4 +818,255 @@ fn test_a_playlist_with_nothing_playable_says_so_once() {
     d.playlist_nothing_plays(&mut app.ctx, &station);
     assert_eq!(app.event_lines().len(), 1);
     assert!(!tape.stopped().is_empty());
+}
+
+/// A playlist station tuned in, engine running, with the entry on the air.
+fn tune_playlist(
+    app: &mut TestApp,
+    d: &mut DrivingState,
+    id: &str,
+    entries: &[&str],
+) -> RadioStation {
+    app.ctx.settings.radio_streamer_safe = false; // personal media rides that gate
+    d.trip.truck.start_engine();
+    let station = a_playlist_station(id, entries);
+    let mut catalog = d.radio.catalog.clone();
+    catalog.push(station.clone());
+    d.radio.set_catalog(catalog);
+    tune(d, app, id);
+    station
+}
+
+#[test]
+fn test_a_playlist_station_on_a_stream_entry_reads_out_the_song() {
+    // A playlist exported from an internet radio app is nothing but
+    // stations, and every one of them publishes its song titles the way the
+    // curated streams do. The readout answered for all of them that the
+    // station sends no song information at all.
+    let mut app = TestApp::new();
+    let mut d = a_denver_drive(&mut app, 5);
+    let tape = MusicAudio::install(&mut app);
+    tape.set_now_playing("Waylon Jennings - Lonesome, On'ry and Mean");
+    tune_playlist(&mut app, &mut d, "pl-streams", &["https://radio.test/kxyz"]);
+
+    assert_eq!(
+        d.radio_now_playing_text(&mut app.ctx),
+        "Now playing on My Playlist: Waylon Jennings - Lonesome, On'ry and Mean."
+    );
+}
+
+#[test]
+fn test_a_playlist_stream_song_survives_into_the_reception_tick() {
+    // The tick's copy is what the tablet and the arrival readout use when
+    // the channel is busy, so it has to be filled for a playlist stream too.
+    let mut app = TestApp::new();
+    let mut d = a_denver_drive(&mut app, 5);
+    let tape = MusicAudio::install(&mut app);
+    tape.set_now_playing("Jerry Reed - East Bound and Down");
+    tune_playlist(&mut app, &mut d, "pl-tick", &["https://radio.test/kxyz"]);
+
+    radio_frame(&mut d, &mut app);
+
+    assert_eq!(
+        d.radio_now_playing.as_deref(),
+        Some("Jerry Reed - East Bound and Down")
+    );
+}
+
+#[test]
+fn test_a_playlist_station_on_a_file_entry_still_sends_no_song_information() {
+    // A file off the player's own disk is not a broadcast: nothing is
+    // publishing a title, so the honest answer is the one it always gave.
+    let mut app = TestApp::new();
+    let mut d = a_denver_drive(&mut app, 5);
+    let tape = MusicAudio::install(&mut app);
+    tape.set_now_playing("whatever the channel happens to hold");
+    tune_playlist(&mut app, &mut d, "pl-files", &["C:/music/good.ogg"]);
+
+    assert_eq!(
+        d.radio_now_playing_text(&mut app.ctx),
+        "My Playlist does not send song information."
+    );
+}
+
+// -- driving out of range -------------------------------------------------------------
+
+/// A live stream sited on Denver's yard with a short contour, so the Denver
+/// run drives out of it well inside the first leg.
+fn a_ranged_stream(id: &str) -> RadioStation {
+    RadioStation {
+        lat: Some(39.7392),
+        lon: Some(-104.9903),
+        range_miles: 20.0,
+        real_stream: true,
+        stream_url: format!("https://radio.test/{id}"),
+        ..RadioStation::new(
+            id,
+            "Mile High 91.5",
+            "KMHF",
+            "college variety",
+            "test fixture",
+        )
+    }
+}
+
+/// A regional station on the same mast with a contour that still covers the
+/// truck once the short one has dropped away.
+fn a_regional_stream(id: &str) -> RadioStation {
+    RadioStation {
+        lat: Some(39.7392),
+        lon: Some(-104.9903),
+        range_miles: 75.0,
+        real_stream: true,
+        stream_url: format!("https://radio.test/{id}"),
+        source_type: "regional".to_string(),
+        ..RadioStation::new(id, "Front Range Country", "KTST", "country", "test fixture")
+    }
+}
+
+/// One drive frame's worth of radio work, in the order the frame runs it:
+/// the settings sync first, then the reception tick.
+fn radio_frame(d: &mut DrivingState, app: &mut TestApp) {
+    d.sync_radio_settings(&mut app.ctx);
+    d.update_radio_reception(&mut app.ctx, 1.5);
+}
+
+#[test]
+fn test_driving_out_of_a_stations_range_says_so_and_retunes_the_cab() {
+    // Owner, Willmar to Owatonna, 2026-09-16: KVSC thinned out on I-35, then
+    // came back at full volume with nothing said, and the drivers board had
+    // him "listening to AFN Humphreys The Eagle" while the cab still played
+    // KVSC. The per-frame settings sync had already re-pointed the dial at
+    // the new position, so the reception tick compared the Eagle with itself:
+    // no line, no static, and the dead station's stream left running at the
+    // fallback's full volume.
+    let mut app = TestApp::new();
+    app.ctx.settings.radio_streamer_safe = false; // the Eagle is the audible fallback
+    let mut d = a_denver_drive(&mut app, 916);
+    let tape = MusicAudio::install(&mut app);
+    d.trip.truck.start_engine();
+    d.update_audio(&mut app.ctx, 0.0);
+    let mut catalog = d.radio.catalog.clone();
+    // Nothing else on the air out here: with another local station in range
+    // the dial goes there instead (the next test).
+    catalog.retain(|station| dial_group(station) != TERRESTRIAL_GROUP);
+    catalog.push(a_ranged_stream("kmhf-denver"));
+    d.radio.set_catalog(catalog);
+    tune(&mut d, &mut app, "kmhf-denver");
+    radio_frame(&mut d, &mut app);
+    assert_eq!(d.radio.tuned_station().id, "kmhf-denver");
+    assert_eq!(
+        tape.last_stream().as_deref(),
+        Some("https://radio.test/kmhf-denver")
+    );
+    app.clear_speech();
+
+    // Past the contour.
+    let tracks_before = tape.tracks().len();
+    d.trip.position_mi = 120.0;
+    radio_frame(&mut d, &mut app);
+
+    // The announced landing is the Roadhouse, receivable everywhere. The
+    // Eagle is only ever where the dial's silent resolution lands, which is
+    // exactly what the drivers board used to read out.
+    let on_air = d.radio.tuned_station();
+    assert_eq!(on_air.id, SAFE_ROUTE_PLAYLIST);
+    let said = app.event_lines();
+    assert!(
+        said.iter()
+            .any(|line| line.contains("Mile High 91.5 faded out of range. Falling back to FFR")),
+        "{said:?}"
+    );
+    assert!(
+        tape.tracks().len() > tracks_before,
+        "the cab retunes to what the dial says"
+    );
+    let presence = d
+        .online_presence_state(&app.ctx)
+        .expect("a drivers-board line");
+    assert!(
+        presence
+            .detail
+            .contains("listening to FFR, Freight Fate Roadhouse"),
+        "{}",
+        presence.detail
+    );
+}
+
+#[test]
+fn test_a_station_fading_out_hands_the_dial_to_the_strongest_local_signal() {
+    // Brandon, 2026-09-17: listening to local radio and driving out of range
+    // sent the dial back to the Freight Fate stations. A driver on local
+    // radio wants the next station the truck can hear.
+    let mut app = TestApp::new();
+    app.ctx.settings.radio_streamer_safe = false;
+    let mut d = a_denver_drive(&mut app, 916);
+    let tape = MusicAudio::install(&mut app);
+    d.trip.truck.start_engine();
+    d.update_audio(&mut app.ctx, 0.0);
+    let mut catalog = d.radio.catalog.clone();
+    catalog.retain(|station| dial_group(station) != TERRESTRIAL_GROUP);
+    catalog.push(a_ranged_stream("kmhf-denver"));
+    catalog.push(a_regional_stream("ktst-denver"));
+    d.radio.set_catalog(catalog);
+    tune(&mut d, &mut app, "kmhf-denver");
+    radio_frame(&mut d, &mut app);
+    assert_eq!(d.radio.tuned_station().id, "kmhf-denver");
+    app.clear_speech();
+
+    // Past the short contour, still inside the regional one.
+    d.trip.position_mi = 120.0;
+    radio_frame(&mut d, &mut app);
+
+    assert_eq!(d.radio.tuned_station().id, "ktst-denver");
+    assert_eq!(
+        tape.last_stream().as_deref(),
+        Some("https://radio.test/ktst-denver"),
+        "the cab plays what the dial says"
+    );
+    let said = app.event_lines();
+    assert!(
+        said.iter().any(|line| line.contains(
+            "Mile High 91.5 faded out of range. Tuned to KTST, Front Range Country, the \
+             strongest signal here."
+        )),
+        "{said:?}"
+    );
+    // One fade, one line: the landing station is in range, so the next tick
+    // has nothing to say.
+    app.clear_speech();
+    radio_frame(&mut d, &mut app);
+    assert!(app.event_lines().is_empty(), "{:?}", app.event_lines());
+}
+
+#[test]
+fn test_a_favorite_plays_on_past_its_range() {
+    // Orinks, 2026-10-12: a station the driver saved stays with them from
+    // anywhere, with no fade, no static and no handover.
+    let mut app = TestApp::new();
+    app.ctx.settings.radio_streamer_safe = false;
+    let mut d = a_denver_drive(&mut app, 916);
+    let tape = MusicAudio::install(&mut app);
+    d.trip.truck.start_engine();
+    d.update_audio(&mut app.ctx, 0.0);
+    let mut catalog = d.radio.catalog.clone();
+    catalog.retain(|station| dial_group(station) != TERRESTRIAL_GROUP);
+    catalog.push(a_ranged_stream("kmhf-denver"));
+    catalog.push(a_regional_stream("ktst-denver"));
+    d.radio.set_catalog(catalog);
+    tune(&mut d, &mut app, "kmhf-denver");
+    radio_frame(&mut d, &mut app);
+    d.radio.toggle_favorite();
+    app.clear_speech();
+
+    d.trip.position_mi = 120.0;
+    radio_frame(&mut d, &mut app);
+
+    assert_eq!(d.radio.tuned_station().id, "kmhf-denver");
+    assert_eq!(
+        tape.last_stream().as_deref(),
+        Some("https://radio.test/kmhf-denver")
+    );
+    assert_eq!(d.radio_signal_factor, 1.0);
+    assert!(app.event_lines().is_empty(), "{:?}", app.event_lines());
 }

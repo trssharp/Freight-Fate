@@ -187,7 +187,7 @@ impl Menu for DrivingRecordNoticeState {
         let (standing, trust) = match ctx.profile.as_ref() {
             Some(p) => (
                 enforcement::standing_text(p),
-                enforcement::trust_text(p.standing()),
+                enforcement::trust_text_with_display(p.standing(), ctx.settings.score_display),
             ),
             None => (String::new(), String::new()),
         };

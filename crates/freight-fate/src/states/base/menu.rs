@@ -10,7 +10,7 @@ use ff_core::radio::RadioState;
 use crate::app::{GameContext, Say};
 use crate::controller::ControllerAction;
 use crate::discord_presence::PresenceState;
-use crate::states::base::{end_sentence, InputEvent, Key};
+use crate::states::base::{end_sentence, CopyFocus, InputEvent, Key};
 
 // -- menus -------------------------------------------------------------------------------
 
@@ -264,10 +264,22 @@ pub trait Menu: Sized + 'static {
         None
     }
 
+    /// A hook for keys a menu handles itself (PageUp and PageDown on a paged
+    /// list). Return true when the key was used.
+    fn handle_extra_key(&mut self, _ctx: &mut GameContext, _key: Key) -> bool {
+        false
+    }
+
     fn handle_event(&mut self, ctx: &mut GameContext, event: &InputEvent) {
         let Some((key, _mods, text)) = event.key_down() else {
             return;
         };
+        if event.key_repeat() && self.held_key_moves_nothing(key) {
+            return;
+        }
+        if self.handle_extra_key(ctx, key) {
+            return;
+        }
         match key {
             Key::Down => self.move_by(ctx, 1),
             Key::Up => self.move_by(ctx, -1),
@@ -320,6 +332,16 @@ pub trait Menu: Sized + 'static {
 
     // -- menu behaviour -------------------------------------------------------------
 
+    /// The focused row's label and index.
+    fn copy_focus(&self, ctx: &GameContext) -> Option<CopyFocus> {
+        let core = self.menu();
+        let item = core.items.get(core.index)?;
+        Some(CopyFocus {
+            index: core.index,
+            row: end_sentence(&item.text(self, ctx)),
+        })
+    }
+
     fn announce_entry(&mut self, ctx: &mut GameContext) {
         let title = end_sentence(&self.menu().title);
         ctx.say(&title);
@@ -345,7 +367,14 @@ pub trait Menu: Sized + 'static {
         if !ctx.settings.announce_menu_position {
             return label;
         }
-        format!("{label} {} of {}.", core.index + 1, core.items.len())
+        // The cue is its own catalog line (`ff_core::l10n::POSITION_CUE`),
+        // translated apart from the row so it never depends on the row.
+        let cue = format!(
+            "{position} of {count}.",
+            position = core.index + 1,
+            count = core.items.len()
+        );
+        format!("{label} {cue}")
     }
 
     fn speak_current(&mut self, ctx: &mut GameContext) {
@@ -364,6 +393,27 @@ pub trait Menu: Sized + 'static {
             format!("{}.", item.text(self, ctx))
         } else {
             help
+        }
+    }
+
+    /// Whether an auto-repeat of this navigation key would leave the cursor
+    /// where it is.
+    ///
+    /// A key held down when a menu opens keeps auto-repeating into it. A
+    /// tester braking onto the shoulder for a scale-bypass stop was still
+    /// holding the brake when the one-row stop screen opened, and the
+    /// keyboard's repeat read "Pull back onto the highway." twenty times in
+    /// six tenths of a second, each one cutting off the last (log,
+    /// 2026-10-07). A repeat that cannot move the cursor says nothing; a
+    /// fresh press still reads the row.
+    fn held_key_moves_nothing(&self, key: Key) -> bool {
+        let core = self.menu();
+        let count = core.items.len();
+        match key {
+            Key::Up | Key::Down => count <= 1,
+            Key::Home => core.index == 0,
+            Key::End => core.index + 1 >= count,
+            _ => false,
         }
     }
 
@@ -462,6 +512,12 @@ macro_rules! impl_state_for_menu {
             }
             fn update(&mut self, ctx: &mut $crate::app::GameContext, dt: f64) {
                 <Self as $crate::states::base::Menu>::update(self, ctx, dt)
+            }
+            fn copy_focus(
+                &self,
+                ctx: &$crate::app::GameContext,
+            ) -> Option<$crate::states::base::CopyFocus> {
+                <Self as $crate::states::base::Menu>::copy_focus(self, ctx)
             }
             fn lines(&self, ctx: &$crate::app::GameContext) -> Vec<String> {
                 <Self as $crate::states::base::Menu>::lines(self, ctx)

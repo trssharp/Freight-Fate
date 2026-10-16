@@ -21,6 +21,8 @@
 //!   question the rest key and the pause menu both ask.
 //! * [`status`] -- the Tab status screen's lines, the gear name and the
 //!   air-brake sentence.
+//! * [`touch`] -- the iPhone and iPad driving gestures, each running the
+//!   command its touch binding names.
 //! * [`help`] -- F1: the keyboard layout, or the pad's, following the device.
 //! * [`latches`] -- `_update_pedal_latches`, the brake latch only, called
 //!   once per frame by `driving_updates` with the raw pedal inputs.
@@ -37,14 +39,12 @@ pub mod latches;
 pub mod pad;
 pub mod pending;
 pub mod status;
+pub mod touch;
 pub mod vehicle;
 
 /// Wear meters join the status readout once they're worth planning around.
 pub const WEAR_STATUS_PCT: f64 = 50.0;
 
-/// An armed exit owns the D safe-speed answer once it is this close: past
-/// here the ramp speed is the number that matters, not the mainline's.
-pub const SAFE_SPEED_EXIT_MI: f64 = 2.0;
 /// D looks this far ahead for a bend: about the pacenote call distance, so
 /// the one number never contradicts the call you just heard.
 pub const SAFE_SPEED_CURVE_MI: f64 = 0.5;

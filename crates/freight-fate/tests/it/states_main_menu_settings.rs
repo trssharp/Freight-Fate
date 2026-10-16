@@ -77,17 +77,61 @@ fn test_settings_menu_cycles_hours_of_service() {
 }
 
 #[test]
+fn hos_planning_hints_row_explains_and_persists_the_opt_in() {
+    let mut app = TestApp::new();
+    assert!(!app.ctx.settings.hos_planning_hints);
+    open_settings_category(&mut app, "Difficulty and hours of service");
+    move_to::<Cat>(&mut app, "Hours of service planning hints");
+    assert_eq!(
+        current_label::<Cat>(&app),
+        "Hours of service planning hints: Off"
+    );
+    let help = cat_rows(&mut app, "difficulty")
+        .into_iter()
+        .find(|(label, _)| label.starts_with("Hours of service planning hints"))
+        .map(|(_, help)| help)
+        .unwrap();
+    assert!(help.contains("Quiet and Urgent only"), "{help}");
+    // The ontology's noun is "hours of service"; a screen reader spells
+    // "HOS" out letter by letter.
+    assert!(!help.contains("HOS"), "{help}");
+    key(&mut app, Key::Return);
+    assert_eq!(
+        current_label::<Cat>(&app),
+        "Hours of service planning hints: On"
+    );
+    assert!(Settings::load().hos_planning_hints);
+    key(&mut app, Key::Left);
+    assert!(!Settings::load().hos_planning_hints);
+}
+
+#[test]
+fn facility_streets_row_toggles_and_persists() {
+    let mut app = TestApp::new();
+    assert!(app.ctx.settings.facility_streets);
+    open_settings_category(&mut app, "World and traffic");
+    move_to::<Cat>(&mut app, "Facility streets");
+    assert_eq!(current_label::<Cat>(&app), "Facility streets: on");
+    key(&mut app, Key::Return);
+    assert_eq!(current_label::<Cat>(&app), "Facility streets: off");
+    assert!(!Settings::load().facility_streets);
+    key(&mut app, Key::Left);
+    assert!(Settings::load().facility_streets);
+}
+
+#[test]
 fn test_settings_menu_cycles_lane_keeping() {
     let mut app = TestApp::new();
-    assert_eq!(app.ctx.settings.lane_keeping, "off"); // the realistic default
+    assert_eq!(app.ctx.settings.lane_keeping, "full"); // the all-assists default
     open_settings_category(&mut app, "Driving assistance");
     move_to::<Cat>(&mut app, "Lane keeping");
-    key(&mut app, Key::Return);
-    assert_eq!(app.ctx.settings.lane_keeping, "full");
+    // Starts on the shipped default, full, and steps round the ladder.
     key(&mut app, Key::Return);
     assert_eq!(app.ctx.settings.lane_keeping, "partial");
+    key(&mut app, Key::Return);
+    assert_eq!(app.ctx.settings.lane_keeping, "off");
     key(&mut app, Key::Left);
-    assert_eq!(app.ctx.settings.lane_keeping, "full");
+    assert_eq!(app.ctx.settings.lane_keeping, "partial");
 }
 
 #[test]
@@ -99,15 +143,18 @@ fn test_lane_keeping_row_speaks_its_consequence_not_a_bare_value() {
     move_to::<Cat>(&mut app, "Lane keeping");
     assert_eq!(
         current_label::<Cat>(&app),
-        "Lane keeping: off, you hold the lane and take your own exits"
+        "Lane keeping: full, the truck holds the lane and takes your exits"
     );
     key(&mut app, Key::Return);
     assert_eq!(
         current_label::<Cat>(&app),
-        "Lane keeping: full, the truck holds the lane and takes your exits"
+        "Lane keeping: partial, gentle drift and you steer with help"
     );
     key(&mut app, Key::Return);
-    assert!(current_label::<Cat>(&app).contains("you steer with help"));
+    assert_eq!(
+        current_label::<Cat>(&app),
+        "Lane keeping: off, you hold the lane and take your own exits"
+    );
 }
 
 #[test]
@@ -181,11 +228,10 @@ fn gameplay_subcategory_rows(category: &str) -> &'static [&'static str] {
             "Automatic emergency braking",
             "Lane-departure warning",
             "Stop-and-go assistance",
-            "Lane centering assistance",
             "Descent speed control",
             "Exit speed assistance",
             "Facility stopping assistance",
-            "Curve speed assistance",
+            "Curve assistance",
             "Route-transition assistance",
             "Latching brake",
             "Predictive cruise",
@@ -195,13 +241,19 @@ fn gameplay_subcategory_rows(category: &str) -> &'static [&'static str] {
             "Following gap",
             "Back",
         ],
-        "difficulty" => &["Driving mode", "Hours of service", "Back"],
+        "difficulty" => &[
+            "Driving mode",
+            "Hours of service",
+            "Hours of service planning hints",
+            "Back",
+        ],
         "world" => &[
             "Weather source",
             "Traffic source",
             "Fuel prices",
             "Parking source",
             "Live weather controls calendar",
+            "Facility streets",
             "Back",
         ],
         "controls" => &[
@@ -314,6 +366,75 @@ fn test_no_dead_pointer_stub_rows_remain() {
 }
 
 #[test]
+fn test_no_settings_row_carries_a_run_of_spaces() {
+    // Two help strings lost their backslash line continuations and shipped
+    // eighteen-space runs to speech and braille (review I9, 2026-09-19). A
+    // literal split across lines has to be joined with `\`, and this is
+    // what catches the next one that is not.
+    let mut app = TestApp::new();
+    let runs: Vec<_> = all_settings_rows(&mut app)
+        .into_iter()
+        .filter(|(_, label, help)| label.contains("  ") || help.contains("  "))
+        .collect();
+    assert!(runs.is_empty(), "{runs:?}");
+}
+
+#[test]
+fn test_no_settings_help_teaches_steering_by_the_road_sound() {
+    // The engine became the lean on 2026-09-18 and the road sound became
+    // where the truck sits, but the Lane keeping help went on saying the
+    // road sound leans toward the steer -- so a driver who followed it
+    // steered the wrong way out of every corner (forum report, 2026-09-30).
+    let mut app = TestApp::new();
+    let rows = all_settings_rows(&mut app);
+    let wrong: Vec<_> = rows
+        .iter()
+        .filter(|(_, _, help)| help.contains("road sound leans"))
+        .collect();
+    assert!(wrong.is_empty(), "{wrong:?}");
+    // And the lean it does teach is the one the Steering guide and Lane
+    // guide sound rows have set, not the defaults.
+    let lane_help = |app: &mut TestApp| {
+        cat_rows(app, "assistance")
+            .into_iter()
+            .find(|(label, _)| label.starts_with("Lane keeping"))
+            .expect("the Lane keeping row")
+            .1
+    };
+    for (tone, inverted, expected) in [
+        (
+            false,
+            false,
+            "the engine leans toward where the wheel should go, so steer toward it",
+        ),
+        (
+            false,
+            true,
+            "the engine leans away from where the wheel should go, so steer away from it",
+        ),
+        (
+            true,
+            false,
+            "a soft tone leans toward where the wheel should go, so steer toward it",
+        ),
+        (
+            true,
+            true,
+            "a soft tone leans away from where the wheel should go, so steer away from it",
+        ),
+    ] {
+        app.ctx.settings.lane_guide_tone = tone;
+        app.ctx.settings.steering_guide_inverted = inverted;
+        let help = lane_help(&mut app);
+        assert!(help.contains(expected), "{help}");
+        assert!(
+            help.contains("Steering guide and Lane guide sound"),
+            "{help}"
+        );
+    }
+}
+
+#[test]
 fn test_every_gameplay_setting_stays_reachable_after_the_split() {
     let mut app = TestApp::new();
     let rows = all_settings_rows(&mut app);
@@ -331,6 +452,7 @@ fn test_every_gameplay_setting_stays_reachable_after_the_split() {
     assert!(!reachable("controls", "Speed keeper"));
     assert!(reachable("difficulty", "Driving mode"));
     assert!(reachable("difficulty", "Hours of service"));
+    assert!(reachable("difficulty", "Hours of service planning hints"));
     // The overspeed warning lost its row: it no longer fires at speeds
     // cruise itself picks, so there is nothing to turn off.
     assert!(!rows
@@ -385,16 +507,16 @@ fn test_settings_menu_toggles_jake_voice_and_persists() {
     let mut app = TestApp::new();
     assert_eq!(app.ctx.settings.jake_voice, "real");
     open_settings_category(&mut app, "Audio");
-    move_to::<Cat>(&mut app, "Engine brake voice");
-    assert_eq!(current_label::<Cat>(&app), "Engine brake voice: recorded");
+    move_to::<Cat>(&mut app, "Engine brake sound");
+    assert_eq!(current_label::<Cat>(&app), "Engine brake sound: recorded");
     assert!(current_help::<Cat>(&app).starts_with("Recorded is the real engine brake growl"));
     key(&mut app, Key::Return);
     assert_eq!(app.ctx.settings.jake_voice, "classic");
     assert_eq!(Settings::load().jake_voice, "classic");
-    assert_eq!(current_label::<Cat>(&app), "Engine brake voice: classic");
+    assert_eq!(current_label::<Cat>(&app), "Engine brake sound: classic");
     key(&mut app, Key::Left);
     assert_eq!(app.ctx.settings.jake_voice, "real");
-    assert_eq!(current_label::<Cat>(&app), "Engine brake voice: recorded");
+    assert_eq!(current_label::<Cat>(&app), "Engine brake sound: recorded");
 }
 
 #[test]
@@ -626,17 +748,20 @@ fn test_settings_menu_uses_category_submenus() {
 fn test_driving_assistance_preset_keyboard_path_and_custom_transition() {
     let mut app = TestApp::new();
     open_settings_category(&mut app, "Driving assistance");
-    // The shipped defaults now ARE the realistic preset, field for field,
-    // so the row can finally say so honestly rather than reading Custom
-    // over a combination no preset described.
+    // The row reads the real fields, so it says Balanced when they ARE
+    // Balanced -- the point of the 2026-08-09 ruling. Applied explicitly
+    // here because TestApp pins the facility approach assist off for
+    // determinism, which is deliberately not any preset's combination.
+    app.ctx.settings.apply_driving_assistance_preset("balanced");
+    with_state_mut::<Cat, _>(&mut app, |c, ctx| c.refresh(ctx, true));
     assert_eq!(
         labels::<Cat>(&app)[0],
-        "Driving assistance preset: Realistic"
+        "Driving assistance preset: Balanced"
     );
-    assert_eq!(app.ctx.settings.lane_keeping, "off");
+    assert_eq!(app.ctx.settings.lane_keeping, "partial");
+    // Right steps to the next preset along, which from Balanced is All.
     key(&mut app, Key::Right);
-    assert_eq!(app.ctx.settings.driving_assistance_preset, "balanced");
-    assert!(app.ctx.settings.lane_centering_assist);
+    assert_eq!(app.ctx.settings.driving_assistance_preset, "all");
     assert_eq!(app.ctx.settings.time_scale, 10.0);
     assert_eq!(app.ctx.settings.hos_mode, "realistic");
     key(&mut app, Key::Down);
@@ -741,6 +866,35 @@ fn test_lane_keeping_row_updates_the_preset_row() {
     key(&mut app, Key::Return);
     assert_ne!(app.ctx.settings.lane_keeping, "full");
     assert_eq!(app.ctx.settings.driving_assistance_preset, "custom");
+}
+
+/// The assistance screen names the player's own keys, not the defaults.
+#[test]
+fn driving_assistance_names_moved_keys() {
+    let mut app = TestApp::new();
+    app.ctx.settings.key_bindings =
+        "brake=f7;upcoming=f8;cruise=f9;steer_left=f10;steer_right=f11".into();
+    app.ctx.apply_bindings();
+    let rows = cat_rows(&mut app, "assistance");
+    let help = |label: &str| {
+        rows.iter()
+            .find(|(row, _)| row.starts_with(label))
+            .map(|(_, help)| help.clone())
+            .unwrap_or_else(|| panic!("no {label} row in {rows:?}"))
+    };
+    assert!(help("Latching brake").contains("One press of F7 releases it"));
+    assert!(help("Curve callouts").contains("Press F8 to list the next few"));
+    assert!(help("Speed keeper").contains("F9 holds your current speed"));
+    assert!(help("Lane keeping").contains("turns F10 and F11 into tap lane changes"));
+
+    open_settings_category(&mut app, "Driving assistance");
+    app.ctx.settings.apply_driving_assistance_preset("balanced");
+    with_state_mut::<Cat, _>(&mut app, |c, ctx| c.refresh(ctx, true));
+    app.clear_speech();
+    key(&mut app, Key::Right);
+    assert_eq!(app.ctx.settings.lane_keeping, "full");
+    let heard = app.main_lines().join(" ");
+    assert!(heard.contains("tap F10 or F11 to change lanes"), "{heard}");
 }
 
 #[test]
@@ -918,15 +1072,16 @@ fn test_a_player_two_layouts_behind_hears_the_driving_speech_notice() {
 }
 
 #[test]
-fn test_lane_centering_help_does_not_promise_steering_help() {
+fn test_lane_centering_row_is_retired() {
+    // Owner 1.9: the phantom settings promise is gone. Lane keeping full
+    // already holds center; this row must not reappear.
     let mut app = TestApp::new();
     let rows = cat_rows(&mut app, "assistance");
-    let (_, help) = rows
-        .iter()
-        .find(|(label, _)| label.starts_with("Lane centering assistance"))
-        .unwrap();
-    assert!(help.contains("does not do yet"));
-    assert!(help.contains("makes no difference"));
+    assert!(
+        rows.iter()
+            .all(|(label, _)| !label.starts_with("Lane centering assistance")),
+        "retired row still present: {rows:?}"
+    );
 }
 
 #[test]
@@ -1091,4 +1246,34 @@ fn test_a_row_notice_is_heard_when_that_row_is_the_one_you_land_on() {
         .main_lines()
         .iter()
         .any(|line| line.contains("used to offer Realistic")));
+}
+
+/// The Controller row says which controller the game is listening to, so a
+/// player can tell whether a new pad was found.
+#[test]
+fn the_controller_row_names_the_connected_controller() {
+    use freight_fate::controller::fakes::FakePad;
+    let controller_row = |app: &mut TestApp| {
+        cat_rows(app, "controls")
+            .into_iter()
+            .map(|(label, _)| label)
+            .find(|label| label.starts_with("Controller:"))
+            .expect("a Controller row")
+    };
+    let mut app = TestApp::new();
+    app.ctx.settings.controller_enabled = true;
+    app.ctx.controller.set_enabled(true);
+    assert_eq!(
+        controller_row(&mut app),
+        "Controller: enabled, none connected"
+    );
+    app.ctx
+        .controller
+        .bind_device(Box::new(FakePad::new(0)), "Xbox Series X Controller");
+    assert_eq!(
+        controller_row(&mut app),
+        "Controller: enabled, Xbox Series X Controller connected"
+    );
+    app.ctx.settings.controller_enabled = false;
+    assert_eq!(controller_row(&mut app), "Controller: disabled");
 }

@@ -261,7 +261,7 @@ fn test_playtest_transcript_preserves_hazard_warning_and_outcome() {
         .expect("the hazard warning was spoken");
     let outcome_index = transcript
         .iter()
-        .position(|line| line == "[event] Hazard avoided. Well done.")
+        .position(|line| line == "[event] Clear.")
         .expect("the hazard resolution was spoken");
     assert!(warning_index < outcome_index);
 }
@@ -608,7 +608,7 @@ fn test_realistic_speed_control_transitions_do_not_issue_speeding_fines() {
     assert!(!text.to_lowercase().contains("speeding fines"), "{text}");
     assert_eq!(result.deliveries, 1);
     assert!(text.contains("Speed keeper holding"), "{text}");
-    assert!(text.contains("Adaptive cruise resuming"), "{text}");
+    assert!(text.contains("Cruise resuming"), "{text}");
     // At the posted limit, not highway speed. The tolerance covers the cruise
     // loop's two-mph brake deadband, which lands the handover a fraction over
     // 45 -- far inside the speeding leeway, and the no-fine assertions above
@@ -618,17 +618,17 @@ fn test_realistic_speed_control_transitions_do_not_issue_speeding_fines() {
         .expect("the work zone was entered");
     assert!(entry <= 46.0, "{entry}");
     assert_eq!(
-        text.matches("Construction zone ahead; adaptive cruise easing to 45 miles per hour")
+        text.matches("Construction zone ahead, cruise easing to 45.")
             .count(),
         1
     );
     // Two stages, in the order the warning promised them: the taper's 55
     // first, the work zone's 45 at the barrels.
     let to_55 = text
-        .find("Construction zone ahead; adaptive cruise easing to 55 miles per hour")
+        .find("Construction zone ahead, cruise easing to 55.")
         .unwrap_or_else(|| panic!("no easing to 55: {text}"));
     let to_45 = text
-        .find("Construction zone ahead; adaptive cruise easing to 45 miles per hour")
+        .find("Construction zone ahead, cruise easing to 45.")
         .expect("checked above");
     assert!(to_55 < to_45, "{text}");
 }
@@ -637,6 +637,14 @@ fn test_realistic_speed_control_transitions_do_not_issue_speeding_fines() {
 fn test_realistic_cruise_eases_for_destination_exit_without_speeding_fine() {
     let mut harness = PlaytestHarness::new();
     harness.app.ctx.settings.hos_mode = "realistic".to_string();
+    // The case is about the REALISTIC ruleset, so it names it rather than
+    // inheriting whatever a fresh install ships -- which moved to Balanced on
+    // 2026-09-18 and took descent control's brake capture with it.
+    harness
+        .app
+        .ctx
+        .settings
+        .apply_driving_assistance_preset("realistic");
     harness.app.ctx.settings.speed_keeper = true;
     harness.app.ctx.settings.automatic_transmission = true;
     harness.app.ctx.settings.time_scale = 10.0;
@@ -662,17 +670,15 @@ fn test_realistic_cruise_eases_for_destination_exit_without_speeding_fine() {
     let text = result.transcript_text();
     assert!(!text.contains("Lights and siren"), "{text}");
     assert!(text.contains("destination exit"), "{text}");
-    // The line names the ramp's own number now, and says when the ease
-    // happens rather than implying it starts at the callout.
-    assert!(
-        text.contains("Adaptive cruise holds road speed, then eases to"),
-        "{text}"
-    );
-    assert!(text.contains("at the ramp"), "{text}");
-    // The exit key is a turn signal now: "Signal on for ..." replaced the
-    // older "Signaling for ..." callout when the cancel/confirm model landed.
-    assert!(text.contains("Signal on for"), "{text}");
-    assert!(text.contains("You take"), "{text}");
+    // How cruise takes the ramp is not narrated (owner, 2026-10-14).
+    assert!(!text.contains("pauses on the ramp"), "{text}");
+    // The exit speed is named once the truck is in the deceleration lane.
+    assert!(text.contains("Exit speed "), "{text}");
+    // The exit key is a turn signal now: "Signal set for ..." (the blinker
+    // waits for half a mile) replaced the older "Signaling for ..." callout
+    // when the cancel/confirm model landed.
+    assert!(text.contains("Signal set for"), "{text}");
+    assert!(text.contains(" of ramp"), "{text}");
     assert!(
         !text.to_lowercase().contains("missed the destination exit"),
         "{text}"
@@ -723,8 +729,8 @@ fn test_delayed_x_takes_announced_destination_exit_after_window_shrinks() {
     });
     let text = harness.transcript_text();
     assert!(text.contains("destination exit"), "{text}");
-    // "Signal on for ..." is the 1.9 wording of the old "Signaling for ...".
-    assert!(text.contains("Signal on for"), "{text}");
+    // "Signal set for ..." is the 1.9 wording of the old "Signaling for ...".
+    assert!(text.contains("Signal set for"), "{text}");
     assert!(!text.contains("No exit coming up"), "{text}");
     assert!(
         !text.to_lowercase().contains("missed the destination exit"),
@@ -823,9 +829,10 @@ fn test_company_driver_first_delivery_transcript_builds_dispatch_trust() {
     let mut harness = PlaytestHarness::new();
     let result = harness.start_delivery(StartDelivery::named("Harness Training Arc"));
 
+    // The training arc's wording is on the briefing and Career plan; the
+    // drive itself must still never call a new hire a probationer.
     let text = result.transcript_text().to_lowercase();
     assert!(text.contains("dispatch"));
-    assert!(text.contains("trainer") || text.contains("first-week"));
     assert!(!text.contains("probation"));
 }
 
@@ -835,7 +842,7 @@ fn test_new_hire_transcript_runs_assigned_load_and_route() {
     let result = harness.start_delivery(StartDelivery::named("Harness New Hire"));
 
     let transcript = result.transcript_text();
-    assert!(transcript.contains("Dispatch assigns your load and route"));
+    assert!(transcript.contains("Dispatch board. "));
     assert!(transcript.contains("Accept assigned dispatch:"));
     assert!(transcript.contains("Dispatch routed you to"));
     // The route menu never appears for a new company hire.
@@ -849,7 +856,7 @@ fn test_owner_operator_transcript_keeps_load_and_route_choice() {
     let result = harness.start_delivery(StartDelivery::named("Harness Owner Choice").configure(
         |profile| {
             profile.business_status = LEASED_OWNER_OPERATOR.to_string();
-            profile.achievements.push("first_dispatch".to_string());
+            profile.achievements.push("first_day".to_string());
             // All trailer programs, so a specialty-heavy random board can
             // never leave the harness with zero unlocked jobs.
             profile.trailer_programs = ["dry_van", "reefer", "flatbed", "bulk"]
@@ -871,15 +878,16 @@ fn test_mid_career_transcript_speaks_level_band_guidance() {
     let mut harness = PlaytestHarness::new();
     let result = harness.start_delivery(StartDelivery::named("Harness Senior Career").configure(
         |profile| {
-            profile.achievements.push("first_dispatch".to_string());
+            profile.achievements.push("first_day".to_string());
             profile.career.xp = LEVEL_XP[9];
             profile.career.deliveries = 20;
             profile.career.reputation = 86.0;
         },
     ));
 
+    // The band's title and plan are on Career plan; the board marks the
+    // load the band recommends.
     let text = result.transcript_text();
-    assert!(text.contains("Run like a senior company driver"));
     assert!(text.contains("senior company lane"));
     assert!(!text.to_lowercase().contains("probation"));
 }
@@ -941,7 +949,21 @@ fn test_speed_control_follows_job_from_deadhead_to_loaded_trip() {
         ),
         1
     );
-    assert!(transcript.contains("resuming"));
+    // And it comes back on its own after the pickup.
+    let after = transcript
+        .split("Automatic speed control paused for pickup")
+        .last()
+        .unwrap_or_default();
+    assert!(
+        [
+            "Speed keeper holding",
+            "Cruise resuming",
+            "Speed control resuming"
+        ]
+        .iter()
+        .any(|line| after.contains(line)),
+        "{after}"
+    );
 }
 
 #[test]
@@ -967,7 +989,7 @@ fn test_structured_transcript_preserves_channel_interrupt_and_order() {
     result.assert_ordered(&[
         "Freight Fate",
         "New career",
-        "Dispatch assigns",
+        "Dispatch board.",
         "Dispatch routed",
     ]);
     result.assert_screen_reader_friendly();

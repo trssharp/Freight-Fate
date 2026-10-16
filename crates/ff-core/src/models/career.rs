@@ -118,11 +118,13 @@ pub fn xp_rate_clause(band: &str) -> String {
     if standing_xp_rate(band) >= 1.0 {
         return String::new();
     }
-    format!(
-        "While your dispatch trust is {band}, the carrier keeps you on \
-         routine freight, so career experience comes in more slowly until it \
-         is back up."
-    )
+    // Whole literals per band so a translation can agree with "confianza"
+    // without changing the bare word "full" that lane assist also uses.
+    match band {
+        "guarded" => "While dispatch trust is guarded, experience comes slower.".to_string(),
+        "poor" => "While dispatch trust is poor, experience comes slower.".to_string(),
+        _ => "While dispatch trust is last chance, experience comes slower.".to_string(),
+    }
 }
 
 /// The same fact as a clause, to ride an existing settlement line.
@@ -130,7 +132,11 @@ pub fn xp_rate_settlement_clause(band: &str) -> String {
     if standing_xp_rate(band) >= 1.0 {
         return String::new();
     }
-    format!("at the slower rate that comes with {band} dispatch trust")
+    match band {
+        "guarded" => "at the slower rate that comes with guarded dispatch trust".to_string(),
+        "poor" => "at the slower rate that comes with poor dispatch trust".to_string(),
+        _ => "at the slower rate that comes with last chance dispatch trust".to_string(),
+    }
 }
 
 /// What `xp_class_multiplier` reads off a `Cargo` (`models::jobs`, wave 2):
@@ -183,7 +189,7 @@ pub fn endorsement_announcement(key: &str) -> Option<&'static str> {
 /// license: on a real CDL the pair prints as the single letter X
 /// (49 CFR 383.153(a)(9)(v)), and it is what the fuel-tanker fleet hires on.
 pub const X_COMBINATION_ANNOUNCEMENT: &str =
-    "You now hold both the tank vehicle and hazmat endorsements -- the X \
+    "You now hold both the tank vehicle and hazmat endorsements, the X \
      combination on a real license. Bulk fuel freight is open.";
 
 /// Experience still owed before the next level, or None at the ceiling.

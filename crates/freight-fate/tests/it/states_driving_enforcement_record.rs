@@ -1,4 +1,4 @@
-//! What the roadside writes on the licence: the serious-violation ladder, the
+//! What the roadside writes on the license: the serious-violation ladder, the
 //! major offense, the fatigue events, and the exploits the adversarial
 //! harness found.
 //!
@@ -204,7 +204,7 @@ fn test_a_second_pursuit_ends_this_career_driving_for_good() {
 #[test]
 fn test_a_stop_that_suspends_the_cdl_does_not_send_you_back_out_driving() {
     // The stop menu used to offer "Pull back onto the highway" no matter what
-    // had just happened -- so a driver whose licence had been pulled seconds
+    // had just happened -- so a driver whose license had been pulled seconds
     // earlier was invited to drive on, with no way to end the run from the
     // shoulder. A suspended driver is done for now; the run ends here.
     let mut app = TestApp::new();
@@ -301,6 +301,7 @@ fn test_an_enforcement_stop_that_suspends_also_ends_the_run() {
             warned: true, // a serious violation: this is the second
             construction_zone: false,
             inspection_on_stop: false,
+            inspection_level: None,
         },
     );
 
@@ -350,7 +351,7 @@ fn test_speeding_nobody_saw_never_touches_the_licence() {
     // The strike is gone, and the guarantee it needed is now structural
     // rather than deliberate: with nobody watching, speeding produces no
     // citation to put on the record in the first place. Nothing may reach the
-    // licence file without a trooper having been there.
+    // license file without a trooper having been there.
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, "Jerry");
     drive.trip.posts = Vec::new(); // empty road
@@ -740,7 +741,7 @@ fn test_a_paid_stop_is_not_charged_again_on_the_next_resume() {
         .expect("a career")
         .active_trip
         .is_some());
-    let money_before = app.ctx.profile.as_ref().expect("a career").money;
+    let money_before = app.ctx.profile.as_ref().expect("a career").money();
 
     // Brake to a stop: the roadside stop opens and the fine is paid.
     drive.trip.truck.velocity_mps = 0.0;
@@ -751,7 +752,7 @@ fn test_a_paid_stop_is_not_charged_again_on_the_next_resume() {
         .ctx
         .state()
         .is_some_and(|state| state.borrow().as_any().is::<EnforcementStopState>()));
-    let paid = money_before - app.ctx.profile.as_ref().expect("a career").money;
+    let paid = money_before - app.ctx.profile.as_ref().expect("a career").money();
     assert!(paid > 0.0);
     app.ctx.pop_state();
     app.ctx.run_deferred();
@@ -776,7 +777,7 @@ fn test_a_paid_stop_is_not_charged_again_on_the_next_resume() {
         .state()
         .is_some_and(|state| state.borrow().as_any().is::<EnforcementStopState>()));
     assert!(approx(
-        app.ctx.profile.as_ref().expect("a career").money,
+        app.ctx.profile.as_ref().expect("a career").money(),
         money_before - paid
     ));
 }
@@ -792,12 +793,12 @@ fn test_toggling_the_jake_cannot_farm_warnings_forever() {
         .insert("buffalo_ny_us".to_string());
     drive.jake_violation_deadline_s = None;
     drive.jake_citation_latched = false;
-    let money_before = app.ctx.profile.as_ref().expect("a career").money;
+    let money_before = app.ctx.profile.as_ref().expect("a career").money();
 
     drive.fine_engine_braking(&mut app.ctx, "buffalo_ny_us");
 
     let p = app.ctx.profile.as_ref().expect("a career");
-    assert!(approx(p.money, money_before - JAKE_ZONE_FINES[0]));
+    assert!(approx(p.money(), money_before - JAKE_ZONE_FINES[0]));
     // The citation is on the record even though it is not a serious one.
     assert_eq!(p.driving_record.citations, 1);
     assert_eq!(p.driving_record.serious_in_window(p.game_hours), 0);
@@ -823,6 +824,15 @@ fn test_the_fatigue_out_of_service_actually_holds_the_truck() {
         "{:#?}",
         spoken(&app)
     );
+    // The 70-hour limit does not reset on ten hours off: only the driving
+    // and duty clocks do, and the line says so.
+    assert!(
+        spoken(&app)
+            .iter()
+            .any(|line| line.contains("Driving and duty clocks reset, and the delivery deadline")),
+        "{:#?}",
+        spoken(&app)
+    );
 }
 
 #[test]
@@ -836,7 +846,7 @@ fn test_a_settled_stop_is_read_back_as_history_not_as_a_fresh_charge() {
     // silenced: re-reading the stop is the only way back to the detail.
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, "Jerry");
-    let money_before = app.ctx.profile.as_ref().expect("a career").money;
+    let money_before = app.ctx.profile.as_ref().expect("a career").money();
     app.clear_speech();
 
     let mut stop = EnforcementStopState::new(
@@ -853,9 +863,10 @@ fn test_a_settled_stop_is_read_back_as_history_not_as_a_fresh_charge() {
             warned: false,
             construction_zone: false,
             inspection_on_stop: false,
+            inspection_level: None,
         },
     );
-    let charged = money_before - app.ctx.profile.as_ref().expect("a career").money;
+    let charged = money_before - app.ctx.profile.as_ref().expect("a career").money();
     assert!(charged > 0.0);
 
     stop.announce_entry(&mut app.ctx);
@@ -881,7 +892,7 @@ fn test_a_settled_stop_is_read_back_as_history_not_as_a_fresh_charge() {
 
     // Saying it twice never charges twice.
     assert!(approx(
-        money_before - app.ctx.profile.as_ref().expect("a career").money,
+        money_before - app.ctx.profile.as_ref().expect("a career").money(),
         charged
     ));
 }

@@ -6,8 +6,8 @@ use crate::data_support::{data_dir, shortest, supported, world};
 use ff_core::data::regions::REGIONS;
 use ff_core::data::world::{max_alternate_miles, World};
 use ff_core::data::world_constants::{
-    lookup, set_contains, DEFAULT_POI_ACTIONS, FREIGHT_LOCATION_TYPES, PARKING_CERTAINTY_LABELS,
-    POI_ACTIONS, STOP_DIRECTIONS, STOP_TYPE_LABELS,
+    is_stand_in_market, lookup, set_contains, DEFAULT_POI_ACTIONS, FREIGHT_LOCATION_TYPES,
+    PARKING_CERTAINTY_LABELS, POI_ACTIONS, STOP_DIRECTIONS, STOP_TYPE_LABELS,
 };
 use ff_core::data::world_models::Route;
 use serde_json::json;
@@ -260,7 +260,28 @@ fn test_each_metro_expands_to_representative_facilities() {
         // port terminal and the intermodal ramp from a remote town (rural
         // Nevada keeps five). Inventing a different filler facility to hold
         // the count at six would repeat the realism bug the gate fixes.
-        assert!(city.locations.len() >= 5);
+        // A STAND-IN market is the exception, and it is the point: not one of
+        // its facilities has an endpoint the freight-site screen accepts, so it
+        // is stamped with one company yard instead of four invented warehouses
+        // (owner ruling, 2026-09-20).
+        let templates: Vec<&str> = city
+            .locations
+            .iter()
+            .filter(|loc| loc.template)
+            .map(|loc| loc.facility_type.as_str())
+            .collect();
+        let curated = city.locations.iter().any(|loc| !loc.template);
+        if is_stand_in_market(&city.key) && !curated {
+            assert!(
+                templates.len() <= 1,
+                "{}: a stand-in market gets one yard, not {:?}",
+                city.name,
+                templates
+            );
+            assert!(templates.iter().all(|kind| *kind == "company_yard"));
+        } else {
+            assert!(city.locations.len() >= 5);
+        }
         assert!(!city.market_tags.is_empty());
         assert!(city.locations.iter().any(|loc| loc.template));
         assert!(city
@@ -561,10 +582,8 @@ fn test_corridor_metadata_supports_offline_itineraries() {
         .map(|c| c.state.as_str())
         .collect();
     assert_eq!(crossings, vec!["Indiana"]);
-    // 33.16, not the 32.8 this used to pin: correcting Chicago-Indianapolis
-    // from 183 to the 185 miles its baked route actually runs carried every
-    // along-route position with it (tools/repair_leg_mileage.py).
-    assert_eq!(leg.state_crossings()[0].at_mi, 33.16);
+    // The OSM state-boundary relation intersects the archived I-65 route here.
+    assert_eq!(leg.state_crossings()[0].at_mi, 26.7);
     assert!(leg.checkpoints().iter().any(|c| c.name == "Lafayette"));
     let total: f64 = leg.state_miles().iter().map(|m| m.miles).sum();
     assert_eq!(total, leg.miles);
@@ -679,7 +698,13 @@ fn test_southern_hos_pressure_corridors_have_added_safe_stops() {
         (("Nashville", "Atlanta"), &["Flying J Travel Center Resaca"]),
     ];
     for ((start, end), names) in expected {
-        let route = supported(world, start, end);
+        let route = if *start == "Dallas" && *end == "St. Louis" {
+            world
+                .route_from_cities(&["Dallas", "St. Louis"])
+                .expect("Dallas-St. Louis direct corridor")
+        } else {
+            supported(world, start, end)
+        };
         let stops = route.stop_details();
         for name in *names {
             let stop = stops
@@ -700,6 +725,33 @@ fn test_southern_hos_pressure_corridors_have_added_safe_stops() {
 }
 
 #[test]
+fn route_stop_details_map_reversed_leg_miles() {
+    let route = supported(world(), "Dallas", "St. Louis");
+    let (index, leg, source_stop) = route
+        .legs
+        .iter()
+        .enumerate()
+        .find_map(|(index, leg)| {
+            if index == 0 || route.cities[index] != leg.b {
+                return None;
+            }
+            leg.stops
+                .iter()
+                .find(|stop| stop.curated())
+                .map(|stop| (index, leg, stop))
+        })
+        .expect("a reversed supported-route leg with a curated stop");
+    let route_offset: f64 = route.legs[..index].iter().map(|leg| leg.miles).sum();
+    let expected_mi = route_offset + leg.miles - source_stop.at_mi;
+    let route_stop = route
+        .stop_details()
+        .into_iter()
+        .find(|stop| stop.name == source_stop.name && (stop.at_mi - expected_mi).abs() < 1e-9)
+        .expect("the reversed stop is positioned from the route start");
+    assert!((route_stop.at_mi - expected_mi).abs() < 1e-9);
+}
+
+#[test]
 fn test_southern_sleep_stop_gaps_are_no_longer_extreme() {
     let world = world();
     let max_sleep_gap = |start: &str, end: &str| -> f64 {
@@ -708,8 +760,8 @@ fn test_southern_sleep_stop_gaps_are_no_longer_extreme() {
         points.extend(
             route
                 .stop_details()
-                .iter()
-                .filter(|stop| stop.actions.iter().any(|a| a == "sleep"))
+                .into_iter()
+                .filter(|stop| stop.actions.iter().any(|action| action == "sleep"))
                 .map(|stop| stop.at_mi),
         );
         points.push(route.miles());
@@ -721,6 +773,36 @@ fn test_southern_sleep_stop_gaps_are_no_longer_extreme() {
     assert!(max_sleep_gap("Dallas", "St. Louis") < 200.0);
     assert!(max_sleep_gap("Atlanta", "Dallas") < 215.0);
     assert!(max_sleep_gap("Nashville", "Atlanta") < 120.0);
+}
+
+#[test]
+fn test_a_leg_with_only_bobtail_stops_carries_the_rest_areas_on_its_road() {
+    // Two bobtail-only Kwik Trips met the stop minimum for I-35 Owatonna to
+    // Minneapolis, so the federal inventory's own rest areas on that road
+    // were never curated in and the cab answered "no sleep-capable route
+    // stop ahead" (owner, 2026-09-18). A loaded truck must find a night's
+    // parking on the leg.
+    let world = world();
+    let route = supported(world, "Owatonna", "Minneapolis");
+    let stops = route.stop_details();
+    let sleepable: Vec<&str> = stops
+        .iter()
+        .filter(|stop| {
+            stop.actions.iter().any(|a| a == "sleep") && stop.vehicle_access != "bobtail_only"
+        })
+        .map(|stop| stop.name.as_str())
+        .collect();
+    assert!(
+        sleepable.contains(&"Heath Creek"),
+        "Heath Creek rest area missing from I-35 north of Owatonna: {sleepable:?}"
+    );
+    let heath = stops
+        .iter()
+        .find(|stop| stop.name == "Heath Creek")
+        .unwrap();
+    assert_eq!(heath.stop_type, "public_rest_area");
+    assert_eq!(heath.parking, "confirmed");
+    assert!(heath.source.contains("Jason's Law"), "{}", heath.source);
 }
 
 #[test]
@@ -830,8 +912,13 @@ fn test_every_city_has_coordinates_and_a_known_region() {
             city.name,
             city.lon
         );
+        let floor = if is_stand_in_market(&city.key) && city.locations.iter().all(|l| l.template) {
+            1
+        } else {
+            2
+        };
         assert!(
-            city.locations.len() >= 2,
+            city.locations.len() >= floor,
             "{}: too few freight locations",
             city.name
         );

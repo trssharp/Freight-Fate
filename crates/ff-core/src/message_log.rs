@@ -77,6 +77,10 @@ pub struct MessageLog {
     /// stepping past it, so the key reads as "repeat what was just said"
     /// before it reads as "go back one".
     fresh: bool,
+
+    /// How many lines have ever been added (not reduced by trimming), so a
+    /// caller can tell whether anything new was logged since a mark.
+    added: u64,
 }
 
 impl Default for MessageLog {
@@ -104,6 +108,7 @@ impl MessageLog {
             filter: None,
             index: -1,
             fresh: false,
+            added: 0,
         }
     }
 
@@ -133,6 +138,7 @@ impl MessageLog {
             text: text.to_string(),
             category,
         });
+        self.added += 1;
         let dropped = self.trim();
 
         let new_filtered = self.filtered_positions();
@@ -161,6 +167,11 @@ impl MessageLog {
                 .map(|(position, _)| position)
                 .collect(),
         }
+    }
+
+    /// Lines ever added, trimming aside. Only grows.
+    pub fn total_added(&self) -> u64 {
+        self.added
     }
 
     pub fn filtered_messages(&self) -> Vec<&Message> {

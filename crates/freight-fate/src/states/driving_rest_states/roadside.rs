@@ -1,13 +1,14 @@
-//! The three roadside outcomes: a speeding stop, a non-speeding enforcement
-//! stop, and the felony stop that ends a run.
+//! The roadside outcomes: a speeding stop, a non-speeding enforcement stop,
+//! a CDL pulled at speed with no stop, and the felony stop that ends a run.
 //!
 //! [`RoadsideExit`] is Python's `_RoadsideExitMixin`: a trait with provided
-//! methods, no state of its own, shared by the first two screens.
+//! methods, no state of its own, shared by the first three screens.
 
 use ff_core::models::enforcement;
 use ff_core::pyfmt::{fmt_f, fmt_grouped};
 use ff_core::pyrandom::PyRandom;
 use ff_core::sim::hos;
+use ff_core::sim::roadside_inspection::InspectionLevel;
 
 use crate::app::{GameContext, Say};
 use crate::discord_presence::PresenceState;
@@ -28,7 +29,7 @@ use crate::states::driving_updates::pending::EnforcementStopParams;
 /// may still legally drive.
 ///
 /// An ordinary ticket ends with merging back up to speed. A stop that just
-/// pulled the licence cannot: the driver is not allowed to move the truck, so
+/// pulled the license cannot: the driver is not allowed to move the truck, so
 /// offering the highway would be the game inviting them to break the rule it
 /// just enforced, and there would be no way off the shoulder at all. In that
 /// case the run ends here the way the felony stop already ends -- the load
@@ -50,7 +51,7 @@ pub trait RoadsideExit: Menu {
             return MenuItem::new("Return to terminal", |s: &mut Self, ctx| {
                 s.end_run_suspended(ctx)
             })
-            .help("Licence pulled, so the truck stays put. Dispatch takes the load back.");
+            .help("License pulled, so the truck stays put. Dispatch takes the load back.");
         }
         MenuItem::new("Pull back onto the highway", |s: &mut Self, ctx| {
             s.go_back(ctx)
@@ -83,15 +84,27 @@ pub trait RoadsideExit: Menu {
             .unwrap_or_else(|_| "the terminal".to_string());
         if profile.driving_record.lifetime_disqualified {
             return format!(
-                " The licence is gone for good, so the truck stays here. {load}, and a relief \
+                " The license is gone for good, so the truck stays here. {load}, and a relief \
                  driver takes the truck in. You are released to {terminal}."
             );
         }
         format!(
-            " The licence is pulled as of now, so the truck stays here. {load}, and a relief \
+            " The license is pulled as of now, so the truck stays here. {load}, and a relief \
              driver takes the truck in. You are released to {terminal} to wait the suspension \
              out."
         )
+    }
+
+    /// Escape never drives off on a pulled license: it closes out the run
+    /// the way the exit row does. Escape used to pop back onto the highway
+    /// and the drive carried on with the CDL suspended. Returns whether it
+    /// closed the run out.
+    fn end_run_if_licence_pulled(&mut self, ctx: &mut GameContext) -> bool {
+        if !self.licence_pulled(ctx) {
+            return false;
+        }
+        self.end_run_suspended(ctx);
+        true
     }
 
     /// Close out the run from the shoulder and release to the terminal.
@@ -222,8 +235,11 @@ impl TrafficStopState {
         let hit = hos::HOS_REPUTATION_HIT * if self.signaled { 0.7 } else { 1.0 };
         {
             let p = profile_mut_of(ctx);
-            p.money -= fine;
-            p.career.reputation = (rep - hit).max(0.0);
+            p.spend(fine);
+            // The hit comes off the delivery ledger. `rep` is the shown
+            // standing, ledger minus the record; writing it back subtracted
+            // the record from the ledger for good (2026-09-28).
+            p.career.reputation = (p.career.reputation - hit).max(0.0);
         }
         ctx.audio.play("ui/error");
         let serious = enforcement::is_serious_speed(self.over) || self.warned;
@@ -290,6 +306,9 @@ impl Menu for TrafficStopState {
     }
 
     fn go_back(&mut self, ctx: &mut GameContext) {
+        if self.end_run_if_licence_pulled(ctx) {
+            return;
+        }
         ctx.pop_state();
         ctx.say_with("Back on the highway. Watch your speed.", Say::new());
     }
@@ -318,6 +337,9 @@ pub struct EnforcementStopState {
     /// they do the inspection right there, on the shoulder, the same
     /// `INSPECTION_MIN` the check-in lane would have cost you.
     pub inspection_on_stop: bool,
+    /// A routine roadside inspection at this level: the report, not the
+    /// caller, decides what it costs, and a clean one costs nothing.
+    pub inspection_level: Option<InspectionLevel>,
     outcome_text: String,
     /// Whether the stop has been told once already. See `announce_entry`: the
     /// fine is charged here, in `resolve`, exactly once, and a later telling
@@ -357,6 +379,7 @@ impl EnforcementStopState {
             out_of_service: params.out_of_service,
             warned: params.warned,
             inspection_on_stop: params.inspection_on_stop,
+            inspection_level: params.inspection_level,
             outcome_text: String::new(),
             stop_announced: false,
             presence_detail,
@@ -370,11 +393,23 @@ impl EnforcementStopState {
     }
 
     fn resolve(&mut self, ctx: &mut GameContext, d: &mut DrivingState) {
+        if let Some(level) = self.inspection_level {
+            // The stop is the inspection: what it costs comes off the
+            // report, and a clean one costs the minutes and nothing else.
+            let report = d.inspection_report(ctx, level);
+            self.fine = report.total_fine();
+            self.outcome_text = d.settle_inspection(ctx, &report);
+            if self.licence_pulled(ctx) {
+                let tail = self.suspended_exit_text(ctx, d);
+                self.outcome_text.push_str(&tail);
+            }
+            return;
+        }
         d.ticket_fines_paid += self.fine;
         let hit = self.reputation_hit * if self.signaled { 0.8 } else { 1.0 };
         {
             let p = profile_mut_of(ctx);
-            p.money -= self.fine;
+            p.spend(self.fine);
             p.career.reputation = (p.career.reputation - hit).max(0.0);
         }
         ctx.audio.play("ui/error");
@@ -425,15 +460,15 @@ impl EnforcementStopState {
                      {}, the 30-minute break is satisfied, and the delivery deadline kept \
                      counting.{}",
                     clock_text(d.trip.local_hour()),
-                    wake_air_instruction(d, ctx, false)
+                    wake_air_instruction(d)
                 )
             } else {
                 format!(
                     "{lead}{why} Out of service: ten hours parked on the shoulder. It is {}, \
-                     hours of service reset, you wake rested, and the delivery deadline kept \
+                     driving and duty clocks reset, you wake rested, and the delivery deadline kept \
                      counting.{}",
                     clock_text(d.trip.local_hour()),
-                    wake_air_instruction(d, ctx, false)
+                    wake_air_instruction(d)
                 )
             };
             self.outcome_text.push_str(&oos_line);
@@ -523,6 +558,9 @@ impl Menu for EnforcementStopState {
     }
 
     fn go_back(&mut self, ctx: &mut GameContext) {
+        if self.end_run_if_licence_pulled(ctx) {
+            return;
+        }
         ctx.pop_state();
         let message = self.return_message.clone();
         ctx.say_with(message, Say::new());
@@ -530,6 +568,86 @@ impl Menu for EnforcementStopState {
 }
 
 impl_state_for_menu!(EnforcementStopState);
+
+// -- LicencePulledState -------------------------------------------------------------------
+
+const LICENCE_PULLED_INTRO_HELP: &str = "Enter or Escape returns to the terminal.";
+
+/// A CDL pulled mid-drive with no officer on the shoulder: a second run off
+/// the road asleep, or the barrels, on top of a serious violation already on
+/// the record.
+///
+/// The roadside screens already end the run when the stop pulls the
+/// license. These two happen at speed, and the drive used to carry straight
+/// on with a suspended CDL. This screen is the roadside ending without the
+/// stop: the truck stops on the shoulder and the same exit closes out the
+/// run.
+pub struct LicencePulledState {
+    menu: MenuCore<Self>,
+    driving: DriveRef,
+    outcome_text: String,
+}
+
+impl LicencePulledState {
+    pub fn new(ctx: &mut GameContext, driving: &mut DrivingState) -> Self {
+        let title = {
+            let record = &profile_of(ctx).driving_record;
+            if record.lifetime_disqualified {
+                "CDL disqualified for life".to_string()
+            } else {
+                format!("CDL {}", enforcement::status_verb(record))
+            }
+        };
+        let mut state = LicencePulledState {
+            menu: MenuCore::new(&title).with_intro_help(LICENCE_PULLED_INTRO_HELP),
+            driving: DriveRef::active(ctx),
+            outcome_text: String::new(),
+        };
+        let tail = state.suspended_exit_text(ctx, driving);
+        state.outcome_text = format!("You pull onto the shoulder and stop.{tail}");
+        state
+    }
+
+    pub fn outcome_text(&self) -> &str {
+        &self.outcome_text
+    }
+}
+
+impl RoadsideExit for LicencePulledState {
+    fn drive(&self) -> &DriveRef {
+        &self.driving
+    }
+}
+
+impl Menu for LicencePulledState {
+    fn menu(&self) -> &MenuCore<Self> {
+        &self.menu
+    }
+
+    fn menu_mut(&mut self) -> &mut MenuCore<Self> {
+        &mut self.menu
+    }
+
+    fn build_items(&mut self, ctx: &mut GameContext) -> Vec<MenuItem<Self>> {
+        vec![self.roadside_exit_item(ctx, "Merge back up to speed.")]
+    }
+
+    fn announce_entry(&mut self, ctx: &mut GameContext) {
+        let title = self.menu.title.clone();
+        let outcome = self.outcome_text.clone();
+        let current = self.current_text(ctx);
+        // Queued: the event line that pulled the license is still being said.
+        ctx.say_with(format!("{title}. {outcome} {current}"), Say::queued());
+    }
+
+    fn go_back(&mut self, ctx: &mut GameContext) {
+        if !self.end_run_if_licence_pulled(ctx) {
+            ctx.pop_state();
+        }
+    }
+}
+
+impl_state_for_menu!(LicencePulledState);
 
 // -- FelonyStopState ----------------------------------------------------------------------
 
@@ -575,11 +693,11 @@ impl FelonyStopState {
         d.ticket_fines_paid += fine;
         {
             let p = profile_mut_of(ctx);
-            p.money -= fine;
+            p.spend(fine);
             p.career.reputation = (p.career.reputation - hos::HOS_REPUTATION_HIT * 3.0).max(0.0);
         }
         // The part that used to go nowhere: fleeing a stop in a commercial
-        // vehicle is a major offense, and the licence answers for it.
+        // vehicle is a major offense, and the license answers for it.
         self.standing_text = d.log_enforcement(ctx, fine, false, true, "Ran from a traffic stop");
         // add_damage, not a raw assignment: spike damage has to cross the
         // bands so a spiked truck can go out of service like any other wreck.

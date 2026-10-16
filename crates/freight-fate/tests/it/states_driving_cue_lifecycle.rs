@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn steering_blinker_releases_when_wheel_centers_or_exit_position_is_set() {
+fn steering_blinker_releases_when_wheel_centers_but_exit_blinker_persists() {
     for exit_ready in [false, true] {
         let mut app = TestApp::new();
         let mut d = a_steering_drive(&mut app);
@@ -13,12 +13,12 @@ fn steering_blinker_releases_when_wheel_centers_or_exit_position_is_set() {
         arm(&mut d, &mut app, 1.0);
         assert!(app.ctx.audio.cue_held("vehicle/turn_signal"));
         if exit_ready {
-            d.exit_lane_alignment = EXIT_LANE_READY;
+            d.exit_lane_entered = true;
         } else {
             d.lane.steering = 0.0;
         }
         d.update_steering_lane_cue(&mut app.ctx, 1.0 / 60.0);
-        assert!(!app.ctx.audio.cue_held("vehicle/turn_signal"));
+        assert_eq!(app.ctx.audio.cue_held("vehicle/turn_signal"), exit_ready);
     }
 }
 
@@ -39,9 +39,10 @@ fn arm(d: &mut DrivingState, app: &mut TestApp, direction: f64) {
 }
 
 /// `_signal_for_the_exit(driving)`: an armed route exit, without needing a
-/// real stop on this leg.
+/// real stop on this leg. Inside the half mile where the blinker runs.
 fn signal_for_the_exit(d: &mut DrivingState) {
-    d.exit_stop = Some(RoadStop::new("Test Exit", 30.0, "travel_center"));
+    let at = d.trip.position_mi + 0.4;
+    d.exit_stop = Some(RoadStop::new("Test Exit", at, "travel_center"));
     d.exit_signal_on = true;
     d.lane.lane = 0; // ramps peel off the right lane
 }
@@ -85,7 +86,7 @@ fn test_the_tock_scales_with_the_lane_cue_loudness_setting() {
     tape.clear();
     d.update_steering_lane_cue(&mut app.ctx, 1.0 / 60.0);
     let (key, volume, _) = tape.last();
-    assert_eq!(key, SIGNAL);
+    assert_eq!(key, BLINKER_OFF);
     assert!((volume - 0.45 * 0.6).abs() < 1e-9);
 }
 
@@ -104,7 +105,7 @@ fn test_letting_go_of_the_wheel_cancels_the_signal() {
     d.lane.steering = 0.0; // straightened out: the move is over
     d.update_steering_lane_cue(&mut app.ctx, 1.0 / 60.0);
     // centred, quieter
-    assert_eq!(tape.calls(), vec![(SIGNAL.to_string(), 0.45, 0.0)]);
+    assert_eq!(tape.calls(), vec![(BLINKER_OFF.to_string(), 0.45, 0.0)]);
     assert!(!d.steer_cue_active);
 
     // And it stays over: no second click, no stray tocks.
@@ -152,109 +153,155 @@ fn test_the_lane_change_ends_with_the_click_after_the_line_is_crossed() {
     tape.clear();
     d.lane.steering = 0.0; // straightened up in the new lane
     d.update_steering_lane_cue(&mut app.ctx, 1.0 / 60.0);
-    assert_eq!(tape.keys(), vec![SIGNAL.to_string()]);
+    assert_eq!(tape.keys(), vec![BLINKER_OFF.to_string()]);
 }
 
 #[test]
-fn test_the_beat_quickens_as_the_exit_lane_position_fills() {
+fn x_starts_blinker_instead_of_beep_and_guarded_cancel_stops_it() {
     let mut app = TestApp::new();
     let mut d = a_steering_drive(&mut app);
-    let _tape = CueAudio::install(&mut app);
-    signal_for_the_exit(&mut d);
-    d.exit_lane_alignment = 0.0;
-    d.lane.offset = 0.0;
-    arm(&mut d, &mut app, 1.0);
-    let wide = d.steer_cue_timer;
-    assert!((wide - STEER_CUE_TOCK_S).abs() < 1e-9);
-
-    d.exit_lane_alignment = EXIT_LANE_READY - 0.05; // nearly there
-    d.update_steering_lane_cue(&mut app.ctx, wide);
-    assert!(d.steer_cue_timer < wide / 2.0);
+    let tape = CueAudio::install(&mut app);
+    let stop = RoadStop::new("Test Exit", d.trip.position_mi + 0.5, "travel_center");
+    d.trip.stops.push(stop.clone());
+    d.exit_stop = Some(stop);
+    d.take_exit(&mut app.ctx);
+    assert!(d.exit_signal_on);
+    assert!(tape.keys().contains(&"vehicle/turn_signal".to_string()));
+    assert!(!tape.keys().contains(&SIGNAL.to_string()));
+    d.take_exit(&mut app.ctx);
+    assert!(d.exit_signal_on);
+    assert!(app.ctx.audio.cue_held("vehicle/turn_signal"));
+    assert!(!tape.keys().contains(&BLINKER_OFF.to_string()));
+    d.take_exit(&mut app.ctx);
+    assert!(!d.exit_signal_on);
+    assert!(!app.ctx.audio.cue_held("vehicle/turn_signal"));
+    // The blinker clicks off, centred, like the stalk coming back.
+    let (key, _, pan) = tape.last();
+    assert_eq!(key, BLINKER_OFF);
+    assert_eq!(pan, 0.0);
 }
 
 #[test]
-fn test_reaching_the_exit_position_clicks_off_with_the_wheel_still_held() {
-    // "Far enough right now" arrives as the signal cancelling, not a sentence.
+fn canceling_an_exit_before_the_blinker_runs_makes_no_click() {
+    // Signalled miles out, the blinker has not started yet (it waits for
+    // the last half mile), so there is nothing to click off.
+    let mut app = TestApp::new();
+    let mut d = a_steering_drive(&mut app);
+    let tape = CueAudio::install(&mut app);
+    let stop = RoadStop::new("Test Exit", d.trip.position_mi + 3.0, "travel_center");
+    d.trip.stops.push(stop.clone());
+    d.exit_stop = Some(stop);
+    d.take_exit(&mut app.ctx);
+    assert!(d.exit_signal_on && !d.exit_blinker_on());
+    d.take_exit(&mut app.ctx);
+    assert!(!d.exit_signal_on);
+    assert!(!tape.keys().contains(&BLINKER_OFF.to_string()));
+}
+
+#[test]
+fn tap_lane_change_completion_does_not_cut_off_the_exit_blinker() {
     let mut app = TestApp::new();
     let mut d = a_steering_drive(&mut app);
     let tape = CueAudio::install(&mut app);
     signal_for_the_exit(&mut d);
-    d.exit_lane_alignment = 0.5;
-    arm(&mut d, &mut app, 1.0);
-    assert_eq!(tape.last().0, "vehicle/turn_signal");
-
+    d.update_steering_lane_cue(&mut app.ctx, 0.0);
     tape.clear();
-    d.exit_lane_alignment = EXIT_LANE_READY; // the exit has the lane it needs
-    d.update_steering_lane_cue(&mut app.ctx, 1.0 / 60.0);
-    assert_eq!(tape.calls(), vec![(SIGNAL.to_string(), 0.45, 0.0)]);
-    // the wheel is still over; the position is what ended it
-    assert_eq!(d.lane.steering, 1.0);
-    assert!(!d.steer_cue_active);
-
-    // Holding Right past the mark does not start it up again.
-    tape.clear();
-    for _ in 0..120 {
-        d.update_steering_lane_cue(&mut app.ctx, 1.0 / 60.0);
-    }
-    assert!(tape.calls().is_empty());
+    d.lane.lane_count = 2;
+    d.lane_change_target = Some(0);
+    d.lane_change_timer = 0.01;
+    d.update_tap_lane_change(&mut app.ctx, 0.02);
+    assert!(d.lane_change_target.is_none());
+    assert!(app.ctx.audio.cue_held("vehicle/turn_signal"));
+    assert!(!tape.keys().contains(&"vehicle/turn_signal".to_string()));
 }
 
 #[test]
-fn test_abandoning_the_exit_line_up_clicks_off_too() {
+fn exit_blinker_keeps_ticking_after_alignment_and_wheel_release() {
     let mut app = TestApp::new();
     let mut d = a_steering_drive(&mut app);
     let tape = CueAudio::install(&mut app);
     signal_for_the_exit(&mut d);
-    d.exit_lane_alignment = 0.4;
-    arm(&mut d, &mut app, 1.0);
-    assert_eq!(tape.last().0, "vehicle/turn_signal");
-
-    tape.clear();
-    d.lane.steering = 0.0;
-    d.exit_lane_alignment = 0.0; // steered back and let the commitment bleed away
-    d.update_steering_lane_cue(&mut app.ctx, 1.0 / 60.0);
-    assert_eq!(tape.keys(), vec![SIGNAL.to_string()]);
+    d.update_steering_lane_cue(&mut app.ctx, 0.0);
+    assert_eq!(tape.last(), ("vehicle/turn_signal".to_string(), 0.5, 0.6));
+    for entered in [false, true, false] {
+        tape.clear();
+        d.exit_lane_entered = entered;
+        d.lane.offset = -0.5;
+        d.lane.steering = 0.0;
+        d.update_steering_lane_cue(&mut app.ctx, STEER_CUE_TOCK_S);
+        assert_eq!(tape.keys(), vec!["vehicle/turn_signal".to_string()]);
+        assert_eq!(tape.last().2, 0.6);
+        assert_eq!(d.steer_cue_timer, STEER_CUE_TOCK_S);
+    }
 }
 
 #[test]
-fn test_the_cue_stays_silent_under_lane_keeping_and_below_the_speed_floor() {
-    let mut app = TestApp::new();
-    let mut d = a_steering_drive(&mut app);
-    let tape = CueAudio::install(&mut app);
-    // the truck holds the lane and takes the exit
-    app.ctx.settings.lane_keeping = "full".to_string();
-    signal_for_the_exit(&mut d);
-    d.exit_lane_alignment = 0.5;
-    for _ in 0..120 {
-        d.lane.steering = 1.0;
-        d.update_steering_lane_cue(&mut app.ctx, 1.0 / 60.0);
+fn exit_blinker_works_with_assistance_locator_and_at_a_stop() {
+    for mode in ["off", "partial", "full"] {
+        let mut app = TestApp::new();
+        let mut d = a_steering_drive(&mut app);
+        let tape = CueAudio::install(&mut app);
+        app.ctx.settings.lane_keeping = mode.to_string();
+        d.lane_locator_on = true;
+        d.trip.truck.velocity_mps = 0.0;
+        signal_for_the_exit(&mut d);
+        d.update_steering_lane_cue(&mut app.ctx, 0.0);
+        assert_eq!(tape.keys(), vec!["vehicle/turn_signal".to_string()]);
+        if mode == "off" {
+            d.trip.truck.velocity_mps = 25.0;
+            d.update_lane_locator_audio(&mut app.ctx, 0.9);
+            assert_eq!(tape.last().0, LOCATOR);
+        }
     }
-    assert!(tape.calls().is_empty());
-
-    app.ctx.settings.lane_keeping = "off".to_string();
-    d.trip.truck.velocity_mps = 0.5; // about a walking pace: nothing to steer yet
-    for _ in 0..120 {
-        d.lane.steering = 1.0;
-        d.update_steering_lane_cue(&mut app.ctx, 1.0 / 60.0);
-    }
-    assert!(tape.calls().is_empty());
 }
 
 #[test]
-fn test_it_does_not_double_the_locator_the_driver_already_turned_on() {
-    let mut app = TestApp::new();
-    let mut d = a_steering_drive(&mut app);
-    let tape = CueAudio::install(&mut app);
-    d.lane_locator_on = true; // I is already ticking the same tock
-    signal_for_the_exit(&mut d);
-    d.exit_lane_alignment = 0.5;
-    for _ in 0..120 {
+fn exit_blinker_stops_on_ramp_cancel_or_miss_and_resumes_after_pause() {
+    for end in ["ramp", "cancel", "miss"] {
+        let mut app = TestApp::new();
+        let mut d = a_steering_drive(&mut app);
+        let tape = CueAudio::install(&mut app);
+        signal_for_the_exit(&mut d);
+        d.update_steering_lane_cue(&mut app.ctx, 0.0);
+        app.ctx.audio.update(0.5);
+        assert!(!app.ctx.audio.cue_held("vehicle/turn_signal"));
+        tape.clear();
+        d.update_steering_lane_cue(&mut app.ctx, 0.0);
+        assert_eq!(tape.keys(), vec!["vehicle/turn_signal".to_string()]);
+        match end {
+            "ramp" => {
+                d.ramp_mi = Some(0.5);
+                d.lane.steering = 1.0;
+            }
+            "cancel" => d.exit_signal_on = false,
+            _ => d.exit_stop = None,
+        }
         d.lane.steering = 1.0;
-        d.update_steering_lane_cue(&mut app.ctx, 1.0 / 60.0);
+        d.update_steering_lane_cue(&mut app.ctx, 0.0);
+        assert!(!app.ctx.audio.cue_held("vehicle/turn_signal"));
+        tape.clear();
+        d.update_steering_lane_cue(&mut app.ctx, STEER_CUE_TOCK_S);
+        assert!(tape.calls().is_empty());
+        d.lane.steering = 0.0;
+        d.update_steering_lane_cue(&mut app.ctx, 0.0);
+        assert!(!d.exit_blinker_active);
     }
-    assert!(tape.calls().is_empty());
-    d.update_lane_locator_audio(&mut app.ctx, 0.9);
-    assert_eq!(tape.last().0, LOCATOR);
+}
+
+#[test]
+fn ordinary_steering_cue_is_suppressed_by_locator_assistance_or_low_speed() {
+    for condition in ["locator", "assist", "slow"] {
+        let mut app = TestApp::new();
+        let mut d = a_steering_drive(&mut app);
+        let tape = CueAudio::install(&mut app);
+        match condition {
+            "locator" => d.lane_locator_on = true,
+            "assist" => app.ctx.settings.lane_keeping = "full".to_string(),
+            _ => d.trip.truck.velocity_mps = 0.5,
+        }
+        arm(&mut d, &mut app, 1.0);
+        assert!(tape.calls().is_empty());
+    }
 }
 
 #[test]
@@ -285,11 +332,11 @@ fn test_the_whole_manoeuvre_adds_no_speech() {
     let mut d = a_steering_drive(&mut app);
     let _tape = CueAudio::install(&mut app);
     signal_for_the_exit(&mut d);
-    d.exit_lane_alignment = 0.3;
+    d.lane.exit_lane_open = true;
     app.clear_speech();
     for _ in 0..240 {
         d.lane.steering = 1.0;
-        d.exit_lane_alignment = 1.0f64.min(d.exit_lane_alignment + 1.0 / 60.0);
+        d.lane.offset = 1.0f64.min(d.lane.offset + 1.0 / 60.0);
         d.update_steering_lane_cue(&mut app.ctx, 1.0 / 60.0);
     }
     d.lane.steering = 0.0;

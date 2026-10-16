@@ -10,9 +10,10 @@
 # and its executable run, the AppImage run in place (extracted first,
 # because a container has no FUSE). Each boots for five frames with SDL's
 # dummy video and audio drivers, and the session log then has to say that
-# BASS and Prism loaded from beside the executable -- speech is NOT
-# disabled here, so libprism.so and its bundled glib are really opened,
-# which is where a distribution's loader would object if it were going to.
+# BASS loaded from beside the executable. Speech is NOT disabled here:
+# Prism is linked into the executable and opens the system's Speech
+# Dispatcher at run time, so a container without it has to boot silent
+# rather than fail.
 #
 # Every log is also required to hold no error-level line at all: a boot
 # that reaches the menu while something inside it failed is not a pass.
@@ -27,8 +28,10 @@
 #
 # What each container is given is what every desktop install already has:
 # libdbus-1 (the executable links it for the Secret Service keyring) and
-# libstdc++ (Prism). Nothing else is installed -- a distribution that needs
-# more is a finding, not something to paper over here.
+# libstdc++. Debian, Ubuntu and openSUSE get no speech-dispatcher client
+# library, which proves the game starts without it. Nothing else is
+# installed -- a distribution that needs more is a finding, not something
+# to paper over here.
 #
 # The container's own architecture decides which pair of downloads is
 # booted: the x64 tarball and x86_64 AppImage on a PC runner, the arm64
@@ -54,13 +57,13 @@ case "${ID:-}" in
     apt-get install -y -qq --no-install-recommends libdbus-1-3 libstdc++6 >/dev/null
     ;;
   fedora)
-    dnf install -y -q dbus-libs libstdc++ xorg-x11-server-Xvfb \
+    dnf install -y -q dbus-libs libstdc++ speech-dispatcher-libs xorg-x11-server-Xvfb \
       libX11 libXext libXrandr libXcursor libXi libXfixes libXScrnSaver libxkbcommon \
       mesa-libGL mesa-libEGL speech-dispatcher >/dev/null
     speech-dispatcher -d
     ;;
   arch)
-    pacman -Sy --noconfirm --quiet dbus gcc-libs >/dev/null
+    pacman -Sy --noconfirm --quiet dbus gcc-libs speech-dispatcher >/dev/null
     ;;
   opensuse-tumbleweed|opensuse-leap)
     zypper --quiet --non-interactive install libdbus-1-3 libstdc++6 >/dev/null
@@ -80,7 +83,7 @@ check_log() {
     echo "$1: the game wrote no session log." >&2
     exit 1
   fi
-  required=("bass: loaded from" "prism: loaded from" "Audio backend: bass")
+  required=("bass: loaded from" "Audio backend: bass")
   if [ "${ID:-}" = "fedora" ]; then
     required+=("Speech backend: Speech Dispatcher")
   fi
@@ -96,7 +99,7 @@ check_log() {
     grep " ERROR " "$2" >&2
     exit 1
   fi
-  echo "$1: booted with no errors; BASS and Prism loaded from beside the executable."
+  echo "$1: booted with no errors; BASS loaded from beside the executable."
 }
 
 # Shell globs, not find: a bare openSUSE image has no findutils.

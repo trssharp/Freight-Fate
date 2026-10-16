@@ -1,4 +1,4 @@
-//! The rest key (`T`): planning a sleep stop, the selected-stop intent, and
+//! The rest key (`T`): planning a break or sleep stop, the selected-stop intent, and
 //! opening a route point's own menu.
 
 use ff_core::sim::hos;
@@ -7,17 +7,34 @@ use ff_core::speech_pacing::SpeechCategory;
 
 use crate::app::{GameContext, Say};
 use crate::states::base::TimedMessageState;
-use crate::states::driving::DrivingState;
+use crate::states::driving::{DrivingState, StopVisit};
 use crate::states::driving_core::*;
+use crate::states::driving_rest_states::RestFocus;
 
 use super::with_drive;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HosRestPurpose {
+    Break,
+    SleepForBreak,
+    Sleep,
+}
+
+enum HosRestChoice {
+    NotNeeded,
+    NoReachable,
+    Recommended {
+        stop: Box<RoadStop>,
+        purpose: HosRestPurpose,
+        fallback: bool,
+    },
+}
 
 impl DrivingState {
     /// `_try_rest_stop()`: the rest key, wherever the truck happens to be.
     pub fn try_rest_stop(&mut self, ctx: &mut GameContext) {
         let rest_hint = ctx.control_hint("rest");
         let exit_hint = ctx.control_hint("take_exit");
-        let status_hint = ctx.control_hint("status_menu");
         if self.pull_over.is_some() {
             self.set_status("Rest-stop planning unavailable during a police stop.");
             self.say_plain(
@@ -29,7 +46,7 @@ impl DrivingState {
             return;
         }
         // An open scale ahead is not optional, so the rest key must not plan
-        // a sleep stop past it -- the scale comes first, then the plan.
+        // a rest stop past it -- the scale comes first, then the plan.
         if self.trip.truck.speed_mph() > DOCKING_MAX_MPH && self.scale_outranks_rest_planning(ctx) {
             return;
         }
@@ -91,19 +108,17 @@ impl DrivingState {
 
         if let Some(active) = self.ramp_stop.clone() {
             let active_is_selected = self.is_selected_stop(Some(&active));
+            // What the assist does is the manual's to explain (owner,
+            // 2026-10-14); the line only owes the driver's own job.
             let assist = if ctx.settings.destination_approach_assist {
-                "Facility stopping assistance armed. It stops at the entrance once the ramp \
-                 control is clear."
+                ""
             } else {
-                "Facility stopping assistance off. Stop at the entrance."
+                " Stop at the entrance."
             };
             let message = if active_is_selected {
-                format!(
-                    "On the selected ramp for {}. {assist}",
-                    active.spoken_name()
-                )
+                format!("On the selected ramp for {}.{assist}", active.spoken_name())
             } else {
-                format!("On the ramp for {}. {assist}", active.spoken_name())
+                format!("On the ramp for {}.{assist}", active.spoken_name())
             };
             self.set_status(message.clone());
             // The cab confirming a control the player just worked. At the
@@ -158,33 +173,19 @@ impl DrivingState {
             return;
         }
 
-        if let Some(selected) = self.selected_sleep_stop() {
+        if let Some(selected) = self.selected_rest_stop() {
             let ahead = selected.at_mi - self.trip.position_mi;
             if ahead <= 0.0 {
-                self.say_plain(
-                    ctx,
-                    format!(
-                        "{} is behind you. Assistance off. Press {rest_hint} to plan the next \
-                         sleep-capable stop, or, stopped at this route point, to open its menu.",
-                        selected.spoken_name()
-                    ),
-                );
+                self.say_plain(ctx, format!("{} is behind you.", selected.spoken_name()));
                 return;
             }
-            self.speak_selected_sleep_stop(ctx, &selected, true);
+            self.speak_selected_rest_stop(ctx, &selected, true, None, false);
             return;
         }
 
         if let Some(stop) = stop.as_ref() {
             if stop.at_mi <= self.trip.position_mi {
-                self.say_plain(
-                    ctx,
-                    format!(
-                        "{} is behind you. Press {rest_hint} to plan the next sleep-capable stop, \
-                         or, stopped at this route point, to open its menu.",
-                        stop.spoken_name()
-                    ),
-                );
+                self.say_plain(ctx, format!("{} is behind you.", stop.spoken_name()));
                 return;
             }
         }
@@ -194,16 +195,25 @@ impl DrivingState {
                 self.set_status(format!("Exit signal active for {}.", active.spoken_name()));
                 self.say_plain(
                     ctx,
-                    format!(
-                        "The exit for {} is already selected. Press {exit_hint} to cancel it.",
-                        active.spoken_name()
-                    ),
+                    format!("The exit for {} is already selected.", active.spoken_name()),
                 );
                 return;
             }
         }
 
-        // The NEXT sleep-capable stop ahead, however far. This used to look
+        // The departure streets are a trip of their own, swapped out at the
+        // on-ramp merge: a plan made here landed on the wrong trip and was
+        // cancelled a frame later with a false "past your planned stop".
+        // Planning waits for the highway, as the HOS hints already do.
+        if self.departure_chain {
+            return;
+        }
+
+        // HOS advice can choose a compatible break-only stop or a comfortable
+        // sleep stop before the legal fallback. Outside that opt-in case, T
+        // keeps choosing the NEXT sleep-capable stop ahead, however far.
+        let hos_choice = self.hos_rest_choice(ctx);
+        // This used to look
         // only as far as the exit window -- the five-odd miles inside which an
         // exit can be SIGNALLED -- so T seven miles short of a rest area
         // answered "no sleep-capable route stop is close enough ahead to
@@ -220,20 +230,17 @@ impl DrivingState {
                 candidate.at_mi > self.trip.position_mi
                     && candidate.actions.iter().any(|action| action == "sleep")
                     && candidate.parking != "none"
+                    && candidate.accessible_to(self.trip.bobtail)
             })
             .cloned()
             .collect();
         candidates.sort_by(|a, b| a.at_mi.total_cmp(&b.at_mi));
-        let Some(candidate) = candidates.first().cloned() else {
+        let Some(candidate) = (match &hos_choice {
+            HosRestChoice::Recommended { stop, .. } => Some((**stop).clone()),
+            HosRestChoice::NotNeeded | HosRestChoice::NoReachable => candidates.first().cloned(),
+        }) else {
             self.set_status("No sleep-capable route stop ahead on this route.");
-            self.say_plain(
-                ctx,
-                format!(
-                    "No sleep-capable route stop is ahead on this route. Press {status_hint} for \
-                     the upcoming route points. Away from a route point, emergency shoulder \
-                     sleep is available."
-                ),
-            );
+            self.say_plain(ctx, "No sleep stop ahead. Shoulder sleep available.");
             return;
         };
         if let Some(current) = self.trip.planned_stop().cloned() {
@@ -242,8 +249,7 @@ impl DrivingState {
                 self.say_plain(
                     ctx,
                     format!(
-                        "Your planned stop remains {}. {} is also ahead. Move the plan from its \
-                         stop details on the route map.",
+                        "Planned stop stays {}. {} is also ahead.",
                         current.spoken_name(),
                         candidate.spoken_name()
                     ),
@@ -253,13 +259,72 @@ impl DrivingState {
         }
         self.trip.planned_stop_key = Some(candidate.key());
         self.selected_stop_key = Some(candidate.key());
+        self.selected_stop_break = matches!(
+            &hos_choice,
+            HosRestChoice::Recommended {
+                purpose: HosRestPurpose::Break,
+                ..
+            }
+        );
         self.selected_stop_assist_armed = false;
         self.selected_stop_assist_said = false;
-        self.speak_selected_sleep_stop(ctx, &candidate, false);
+        self.speak_selected_rest_stop(
+            ctx,
+            &candidate,
+            false,
+            match &hos_choice {
+                HosRestChoice::Recommended {
+                    purpose, fallback, ..
+                } => Some((*purpose, *fallback)),
+                HosRestChoice::NotNeeded | HosRestChoice::NoReachable => None,
+            },
+            matches!(&hos_choice, HosRestChoice::NoReachable),
+        );
     }
 
-    /// `_selected_sleep_stop()`.
-    pub fn selected_sleep_stop(&self) -> Option<RoadStop> {
+    /// The HOS recommendation only owns T when an intermediate stop is needed.
+    /// The stop itself comes from the planner, which checks action, parking,
+    /// vehicle access, route position, and legal reach.
+    fn hos_rest_choice(&self, ctx: &GameContext) -> HosRestChoice {
+        if !ctx.settings.hos_planning_hints {
+            return HosRestChoice::NotNeeded;
+        }
+        let Some(advice) = self.hos_stop_advice(ctx) else {
+            return HosRestChoice::NotNeeded;
+        };
+        if advice.destination_reachable {
+            return HosRestChoice::NotNeeded;
+        }
+        let Some(fallback) = advice.stop.as_ref() else {
+            return HosRestChoice::NoReachable;
+        };
+        let Some(selected) = advice
+            .suggested
+            .as_ref()
+            .map(|option| &option.stop)
+            .filter(|stop| stop.at_mi > self.trip.position_mi)
+            .or_else(|| (fallback.at_mi > self.trip.position_mi).then_some(fallback))
+        else {
+            return HosRestChoice::NotNeeded;
+        };
+        let purpose = if advice.action == "break" {
+            if selected.actions.iter().any(|action| action == "break") {
+                HosRestPurpose::Break
+            } else {
+                HosRestPurpose::SleepForBreak
+            }
+        } else {
+            HosRestPurpose::Sleep
+        };
+        HosRestChoice::Recommended {
+            stop: Box::new(selected.clone()),
+            purpose,
+            fallback: selected.key() == fallback.key(),
+        }
+    }
+
+    /// The route stop explicitly selected by T, for break or sleep.
+    pub fn selected_rest_stop(&self) -> Option<RoadStop> {
         let key = self.selected_stop_key.as_ref()?;
         self.trip
             .stops
@@ -276,12 +341,26 @@ impl DrivingState {
         }
     }
 
-    /// `_speak_selected_sleep_stop(stop, *, repeated)`.
-    pub fn speak_selected_sleep_stop(
+    /// This visit's record at `stop`, fresh when it is a different stop.
+    pub fn stop_visit(&mut self, stop: &RoadStop) -> &mut StopVisit {
+        let key = stop.key();
+        if self.stop_visit.key != key {
+            self.stop_visit = StopVisit {
+                key,
+                ..StopVisit::default()
+            };
+        }
+        &mut self.stop_visit
+    }
+
+    /// Speak the selected stop and the HOS purpose when this press chose it.
+    fn speak_selected_rest_stop(
         &mut self,
         ctx: &mut GameContext,
         stop: &RoadStop,
         repeated: bool,
+        hos_purpose: Option<(HosRestPurpose, bool)>,
+        no_reachable_hos_stop: bool,
     ) {
         let ahead = 0.0f64.max(stop.at_mi - self.trip.position_mi);
         let distance = ctx.settings.distance_text(ahead, true);
@@ -290,33 +369,50 @@ impl DrivingState {
         } else {
             format!(" at {}", stop.exit_label)
         };
+        // What the stopping assistance does, and when the exit will be
+        // called, is the manual's to explain (owner, 2026-10-14). The line
+        // owes only the stop and, when the driver stops, that job.
         let assist = if ctx.settings.destination_approach_assist {
-            "Facility stopping assistance on. Once you signal and set the exit lane, it stops \
-             at the entrance."
+            ""
         } else {
-            "Facility stopping assistance off. Stop at the entrance."
+            " Stop at the entrance."
         };
         let prefix = if repeated {
-            "Still selected"
+            if self.selected_stop_break {
+                "Still planned for a 30-minute break"
+            } else {
+                "Still planned"
+            }
         } else {
-            "Planned sleep stop selected"
+            match hos_purpose {
+                Some((HosRestPurpose::Break, true)) => {
+                    "Break stop planned, the last one before your break limit"
+                }
+                Some((HosRestPurpose::Break, false)) => "Break stop planned",
+                Some((HosRestPurpose::SleepForBreak, true)) => {
+                    "Sleep stop planned for your break, the last one before your break limit"
+                }
+                Some((HosRestPurpose::Sleep, true)) => {
+                    "Sleep stop planned, the last one before your sleep limit"
+                }
+                Some((HosRestPurpose::SleepForBreak, false)) => "Sleep stop planned for your break",
+                Some((HosRestPurpose::Sleep, false)) => "Sleep stop planned",
+                None if no_reachable_hos_stop => {
+                    "Nearest sleep stop planned, but none is reachable before your hours limit. \
+                     Stop somewhere safe sooner"
+                }
+                None => "Sleep stop planned",
+            }
         };
         // Inside the exit window the signal is the next thing to do; beyond
-        // it the exit cannot be signalled yet, and saying "press X" to a
-        // driver twenty miles out asks for a press that does nothing.
+        // it the exit is called when it comes.
         let next_step = if ahead <= self.exit_window_mi() {
-            format!(
-                "Press {} to signal for this exit.",
-                ctx.control_hint("take_exit")
-            )
+            format!(" {}", self.exit_signal_instruction())
         } else {
-            format!(
-                "Its exit will be announced. Press {} to signal then.",
-                ctx.control_hint("take_exit")
-            )
+            String::new()
         };
         let message = format!(
-            "{prefix}, {}, {distance} ahead{exit_text}. {next_step} {assist}",
+            "{prefix}, {}, {distance} ahead{exit_text}.{next_step}{assist}",
             stop.spoken_name()
         );
         self.set_status(message.clone());
@@ -332,17 +428,18 @@ impl DrivingState {
             self.selected_stop_assist_brake = 0.0;
         }
         self.selected_stop_key = None;
+        self.selected_stop_break = false;
         self.selected_stop_assist_armed = false;
         self.selected_stop_assist_said = false;
     }
 
-    /// `_open_poi_stop(stop, *, settle=False, prefer_sleep=None)`.
+    /// `_open_poi_stop(stop, *, settle=False, preferred_rest=None)`.
     pub fn open_poi_stop(
         &mut self,
         ctx: &mut GameContext,
         stop: &RoadStop,
         settle: bool,
-        prefer_sleep: Option<bool>,
+        preferred_rest: Option<RestFocus>,
     ) {
         // Secure the truck before handing off to the stop menu: zero the
         // throttle, apply the service brake, and set the parking brake. A truck
@@ -353,9 +450,19 @@ impl DrivingState {
             self.say_plain(ctx, "Come to a complete stop first.");
             return;
         }
-        let selected_sleep_intent = self.is_selected_stop(Some(stop));
-        let prefer_sleep = prefer_sleep.unwrap_or(selected_sleep_intent);
-        if selected_sleep_intent {
+        let selected_rest_intent = self.is_selected_stop(Some(stop));
+        let preferred_rest = preferred_rest.unwrap_or_else(|| {
+            if !selected_rest_intent {
+                RestFocus::Default
+            } else if self.selected_stop_break
+                && stop.actions.iter().any(|action| action == "break")
+            {
+                RestFocus::Break
+            } else {
+                RestFocus::Sleep
+            }
+        });
+        if selected_rest_intent {
             self.clear_selected_stop_intent();
         }
         if self.trip.is_planned(stop) {
@@ -381,13 +488,13 @@ impl DrivingState {
             ctx.push_state(
                 TimedMessageState::new(
                     "Pulling into stop",
-                    &format!("Stopped at {name}. Brakes set; menu opening in a moment."),
+                    &format!("Stopped at {name}. Menu opening."),
                     &format!("Stopped at {name}. Menu opening."),
                     STOP_PULL_IN_WAIT_S,
                     move |ctx: &mut GameContext| {
                         ctx.pop_state();
                         with_drive(ctx, |drive, ctx| {
-                            drive.open_poi_stop(ctx, &stop, false, Some(prefer_sleep));
+                            drive.open_poi_stop(ctx, &stop, false, Some(preferred_rest));
                         });
                     },
                 )
@@ -408,7 +515,7 @@ impl DrivingState {
             self.push_parking_full_state(ctx, stop);
             return;
         }
-        self.push_rest_stop_state(ctx, stop, prefer_sleep);
+        self.push_rest_stop_state(ctx, stop, preferred_rest);
         if matches!(
             stop.stop_type.as_str(),
             "truck_stop"

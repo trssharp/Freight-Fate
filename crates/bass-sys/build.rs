@@ -55,6 +55,13 @@ fn main() {
     let vendored = vendor_dir.join(file_name);
     println!("cargo:vendor_dir={}", vendor_dir.display());
 
+    // iOS embeds BASS as frameworks, which `tools/build_ios.py` copies into
+    // the app; there is nothing to stage beside a Cargo binary that cannot
+    // run outside an app bundle anyway.
+    if target_os == "ios" {
+        return;
+    }
+
     if !vendored.is_file() {
         // A copy staged by an earlier build, from before this platform's
         // library was dropped, would still be found and loaded by the loader.
@@ -90,7 +97,7 @@ fn main() {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        // Import libraries, headers and licence notes are for the build and
+        // Import libraries, headers and license notes are for the build and
         // the reader, not the running program.
         if name.ends_with(".lib")
             || name.ends_with(".txt")

@@ -16,9 +16,9 @@ use ff_core::models::business::status_label;
 use ff_core::models::jobs::facility_text;
 use ff_core::models::profile::{data_dir, LegacyCareerError, LoadError, Profile};
 use ff_core::models::start_options::option_for_profile;
-use ff_core::music::{select_menu_music_sequence, MenuMusicProfile};
+use ff_core::music::{select_menu_ambience, select_menu_music_sequence, MenuMusicProfile};
 use ff_core::playtest_levers::apply_continue_levers;
-use ff_core::pyfmt::fmt_grouped;
+use ff_core::pyfmt::{fmt_f, fmt_grouped};
 
 use crate::app::{share, version, GameContext, Say, SharedState};
 use crate::browser::open_url;
@@ -40,19 +40,28 @@ use crate::{impl_state_for_menu, impl_state_for_text_entry};
 
 mod achievements;
 mod careers;
+mod input_practice;
 mod settings;
 mod settings_actions;
 mod settings_items;
 mod shortcuts;
+mod touch_gestures;
+mod touch_practice;
 
 pub use achievements::{AchievementCareerState, AchievementCategoryState, AchievementsState};
 pub use careers::{
     CareerAction, CareerActionsState, ConfirmCareerActionState, LoadDriverState, ManageCareersState,
 };
+pub use input_practice::{
+    describe_button, describe_key, opens_input_practice, opens_input_practice_pad,
+    InputPracticeState,
+};
 pub use settings::{
     GameplaySettingsState, SettingsCategoryState, SettingsState, SETTINGS_LAYOUT_NOTICES,
 };
 pub use shortcuts::{ShortcutDevice, ShortcutsState};
+pub use touch_gestures::{TouchCommandPickerState, TouchGesturesState};
+pub use touch_practice::{TouchPracticeOfferState, TouchPracticeState};
 
 pub use crate::states::main_menu_career::{
     region_menu_name, CareerStartState, HomeCityState, HomeTerminalState,
@@ -142,8 +151,12 @@ pub fn loadable_saves() -> Vec<(PathBuf, Profile)> {
         match Profile::load(&path) {
             Ok(profile) => {
                 // Loading may have converted a legacy file in place; report
-                // the path the career actually lives at now.
-                saves.push((profile.path(), profile));
+                // the path the career actually lives at now. That is the file
+                // just read unless the conversion moved it: a save whose file
+                // name differs from the career name (copied or renamed) lives
+                // where it was found, not where its name points.
+                let path = if path.exists() { path } else { profile.path() };
+                saves.push((path, profile));
             }
             Err(LoadError::LegacyCareer(err)) => legacy.push(err),
             Err(LoadError::Integrity(_)) => invalid.push(path),
@@ -215,26 +228,22 @@ pub fn first_day_orientation_message(ctx: &GameContext, prefix: &str) -> String 
     let option = option_for_profile(p);
     // Spoken city, never the map key (same fix as the states::city copy).
     let location = format!(
-        "{terminal} in the {} service area",
-        ctx.world.spoken_city(&p.current_city, None)
+        "{terminal} in {} service area",
+        ff_core::speech_text::the_city(&ctx.world.spoken_city(&p.current_city, None))
     );
     if option.is_owner_operator() {
         return format!(
-            "{prefix}First-day briefing: leased to {}, parked at {location}. You own a new \
-             truck with a full tank and {} dollars of working capital. Fuel, repairs, truck \
-             wear, trailer programs, and business reserves come out of your cash. First \
-             objective: open the dispatch board and choose an unlocked load with a deadline \
-             you can protect.",
+            "{prefix}First-day briefing: leased to {} at {location}. New truck, {} dollars \
+             working capital. Fuel, repairs, wear, trailers, and reserves come from your cash. \
+             Next: dispatch board.",
             option.carrier_name,
-            fmt_grouped(p.money, 0)
+            fmt_grouped(p.money(), 0)
         );
     }
     format!(
-        "{prefix}First-day briefing: welcome aboard {}. Your assigned truck is parked at \
-         {location}. The carrier covers fuel, repairs, insurance, and trailer support. \
-         Dispatch style: {}. As a new hire, dispatch assigns your load and route, and \
-         refusing an assignment goes on your service record. First objective: open the \
-         dispatch board, accept the assigned load, and deliver it cleanly.",
+        "{prefix}First-day briefing: {}. Truck at {location}. Carrier covers fuel, repairs, \
+         insurance, and trailers. Dispatch: {}. Assigned loads; a refusal goes on your record. \
+         Next: dispatch board.",
         option.carrier_name,
         option.dispatch.summary()
     )
@@ -246,8 +255,9 @@ pub fn first_state_after_career_creation(ctx: &GameContext) -> SharedState {
         return share(OnlineOfferState::default());
     }
     // The welcome is spoken just before this state is pushed, so its entry
-    // announcement queues behind it rather than cutting it off.
-    share(CityMenuState::new(ctx, true))
+    // announcement queues behind it rather than cutting it off, and leaves
+    // out the location the welcome just gave.
+    share(CityMenuState::after_briefing(ctx))
 }
 
 /// Resume a saved mid-trip delivery if there is one, else the terminal hub.
@@ -291,6 +301,17 @@ pub fn world_entry_state(ctx: &mut GameContext, queue_entry_announcement: bool) 
             );
             return share(CityMenuState::new(ctx, true));
         }
+        // A trip saved on a CDL that has since been pulled -- quit on the
+        // roadside screen that pulled it, or a save from before a mid-drive
+        // suspension ended the run -- does not resume: it closes out the
+        // way the roadside does, and the terminal says the CDL status.
+        if close_out_pulled_licence_trip(ctx) {
+            ctx.say(
+                "Your saved run cannot go on: dispatch cancels it, and a relief driver brings \
+                 the truck back.",
+            );
+            return share(CityMenuState::new(ctx, true));
+        }
         let snapshot = ctx
             .profile
             .as_ref()
@@ -306,9 +327,32 @@ pub fn world_entry_state(ctx: &mut GameContext, queue_entry_announcement: bool) 
                         .borrow()
                         .as_any()
                         .downcast_ref::<DrivingState>()
-                        .map(|drive| drive.job.deadline_game_h);
-                    if let Some(deadline) = deadline {
-                        persist_deadline_migration(ctx, deadline);
+                        .map(|drive| (drive.job.deadline_game_h, drive.job.deadline_covers_rest));
+                    if let Some((deadline, covers_rest)) = deadline {
+                        let before = snapshot
+                            .get("job")
+                            .and_then(|job| job.get("deadline_game_h"))
+                            .and_then(serde_json::Value::as_f64);
+                        let prior_model = snapshot
+                            .get("deadline_model")
+                            .and_then(serde_json::Value::as_i64)
+                            .unwrap_or(0);
+                        if persist_deadline_migration(ctx, deadline, covers_rest)
+                            && before.is_some_and(|old| deadline > old)
+                        {
+                            let reason = if prior_model == 1 && covers_rest {
+                                " The adjusted time covers the 10-hour sleep your current legal hours require."
+                            } else {
+                                " The adjusted time covers the route's legal driving plan."
+                            };
+                            ctx.say_with(
+                                format!(
+                                    "Dispatch adjusted this saved delivery deadline to {} hours.{reason}",
+                                    fmt_f(deadline, 1)
+                                ),
+                                Say::queued(),
+                            );
+                        }
                     }
                 })
         };
@@ -326,10 +370,25 @@ pub fn world_entry_state(ctx: &mut GameContext, queue_entry_announcement: bool) 
     share(CityMenuState::new(ctx, queue_entry_announcement))
 }
 
-/// Write the one-time fair-deadline floor back into the saved active trip.
+/// Clear and save a saved trip the CDL no longer allows. False (nothing
+/// touched) while the CDL is clear.
+fn close_out_pulled_licence_trip(ctx: &mut GameContext) -> bool {
+    let Some(p) = ctx.profile.as_mut() else {
+        return false;
+    };
+    if !p.driving_record.suspended(p.game_hours) {
+        return false;
+    }
+    p.active_trip = None;
+    p.pay_advance_used_for_load = false;
+    ctx.save_profile();
+    true
+}
+
+/// Write a one-time fair-deadline repair back into the saved active trip.
 ///
-/// `DrivingState::from_snapshot` applies the floor to a snapshot written
-/// before the deadline model existed, but it reads a `&Value` and so cannot
+/// `DrivingState::from_snapshot` repairs snapshots written under an earlier
+/// deadline model, but it reads a `&Value` and so cannot
 /// record that it did. That signature is deliberate: the pause menu and the
 /// snapshot round-trip tests hand it detached snapshots which must not reach
 /// into the career at all. Python got the write-back for free because its
@@ -347,7 +406,11 @@ pub fn world_entry_state(ctx: &mut GameContext, queue_entry_announcement: bool) 
 /// is where Python left it: a session that ends without one would re-apply
 /// the floor on the next launch, which is the same exploit through a slower
 /// door.
-fn persist_deadline_migration(ctx: &mut GameContext, deadline_game_h: f64) {
+fn persist_deadline_migration(
+    ctx: &mut GameContext,
+    deadline_game_h: f64,
+    deadline_covers_rest: bool,
+) -> bool {
     let migrated = ctx
         .profile
         .as_mut()
@@ -369,6 +432,10 @@ fn persist_deadline_migration(ctx: &mut GameContext, deadline_game_h: f64) {
                     "deadline_game_h".to_string(),
                     serde_json::json!(deadline_game_h),
                 );
+                job.insert(
+                    "deadline_covers_rest".to_string(),
+                    serde_json::json!(deadline_covers_rest),
+                );
             }
             trip.insert(
                 "deadline_model".to_string(),
@@ -379,6 +446,7 @@ fn persist_deadline_migration(ctx: &mut GameContext, deadline_game_h: f64) {
     if migrated {
         ctx.save_profile();
     }
+    migrated
 }
 
 // -- career summaries ---------------------------------------------------------------
@@ -495,7 +563,7 @@ pub fn career_summary(
             profile.carrier_name,
             status_label(&profile.business_status)
         ),
-        format!("{} dollars", fmt_grouped(profile.money, 0)),
+        format!("{} dollars", fmt_grouped(profile.money(), 0)),
         career_location(ctx, profile),
         format!("{} deliveries", profile.career.deliveries),
     ];
@@ -523,7 +591,7 @@ impl MainMenuState {
 
     /// Start a fresh silent check for the next main-menu update cycle.
     pub fn arm_update_check(settings: &ff_core::settings::Settings) {
-        if !updater::is_frozen() {
+        if !updater::is_frozen() || !updater::SELF_UPDATES {
             return;
         }
         let mut guard = UPDATE_CHECK.lock().unwrap_or_else(|e| e.into_inner());
@@ -553,21 +621,9 @@ impl MainMenuState {
         ctx.profile = Some(latest);
         let lever_notes = apply_continue_levers(ctx);
         let p = ctx.profile.as_ref().expect("just loaded");
-        let welcome = if p.active_trip.is_some() {
-            format!("Welcome back, {}.", p.name)
-        } else {
-            let terminal_name = ctx
-                .world
-                .home_terminal(&p.current_city)
-                .map(|t| t.name)
-                .unwrap_or_default();
-            format!(
-                "Welcome back, {}. You are parked at {terminal_name} in {} with {} dollars.",
-                p.name,
-                ctx.world.spoken_city(&p.current_city, None),
-                fmt_grouped(p.money, 0)
-            )
-        };
+        // The terminal (or the resumed drive) says where and with what
+        // right behind this line.
+        let welcome = format!("Welcome back, {}.", p.name);
         ctx.say(&welcome);
         // This welcome is spoken first; a resumed drive already queues its own
         // lines, and only the plain city-menu hand-off needs telling not to
@@ -595,12 +651,12 @@ impl MainMenuState {
             ));
             return;
         }
-        ctx.say(
+        ctx.say(&format!(
             "Opening the bug report page in your web browser. Attach your game \
-             log: game.log in the logs folder next to the game. If you restarted \
-             the game after the problem, attach game.prev.log, the previous \
-             run's log.",
-        );
+             log: game.log in {}. If you restarted the game after the problem, \
+             attach game.prev.log, the previous run's log.",
+            crate::app::logging::log_folder_words()
+        ));
     }
 }
 
@@ -620,7 +676,7 @@ impl Menu for MainMenuState {
     }
 
     fn enter(&mut self, ctx: &mut GameContext) {
-        let sequence = reuse_loadable_saves_scan(|| {
+        let (sequence, ambience) = reuse_loadable_saves_scan(|| {
             // The base `Menu::enter`: rebuild the rows, play the open sound,
             // announce.
             self.refresh(ctx, true);
@@ -636,10 +692,15 @@ impl Menu for MainMenuState {
                     newest.as_ref()
                 }
             };
-            select_menu_music_sequence(profile.map(|p| p as &dyn MenuMusicProfile))
+            let profile = profile.map(|p| p as &dyn MenuMusicProfile);
+            (
+                select_menu_music_sequence(profile),
+                select_menu_ambience(profile),
+            )
         });
         let refs: Vec<&str> = sequence.iter().map(String::as_str).collect();
         ctx.play_music_sequence("menu", &refs);
+        ctx.audio.set_ambient(Some(ambience));
         let armed = UPDATE_CHECK
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -648,6 +709,10 @@ impl Menu for MainMenuState {
         if !armed {
             Self::arm_update_check(&ctx.settings);
         }
+    }
+
+    fn exit(&mut self, ctx: &mut GameContext) {
+        ctx.audio.set_ambient(None);
     }
 
     fn update(&mut self, ctx: &mut GameContext, dt: f64) {
@@ -660,6 +725,14 @@ impl Menu for MainMenuState {
                 "Game sounds could not start on this computer: the voice, but \
                  no engine, traffic, or alert sounds. Check that sound works \
                  elsewhere, then start Freight Fate again.",
+            );
+        }
+        if crate::online_presence::take_secret_store_timeout_notice() {
+            ctx.say(
+                "The system password store did not answer in time, so online \
+                 features may need you to link your account again under Online. \
+                 If a permission dialog is still open, allow Freight Fate and \
+                 restart.",
             );
         }
         let info = {
@@ -717,6 +790,17 @@ impl Menu for MainMenuState {
                  elsewhere, then start Freight Fate again. ",
             );
         }
+        if crate::online_presence::take_secret_store_timeout_notice() {
+            // A Keychain ACL prompt after a new Mac signature can block the
+            // driver-token read at launch. We stop waiting after a few
+            // seconds so the menu opens; say why online may need a re-link.
+            warning.push_str(
+                "The system password store did not answer in time, so online \
+                 features may need you to link your account again under Online. \
+                 If a permission dialog is still open, allow Freight Fate and \
+                 restart. ",
+            );
+        }
         if loadable_saves().is_empty() && !legacy_saves().is_empty() {
             // Every saved career predates 1.9, so there is no Continue item
             // where the player expects one. Say where the careers went before
@@ -728,7 +812,7 @@ impl Menu for MainMenuState {
             );
         }
         let text = format!(
-            "Welcome to Freight Fate, version {}. An audio trucking adventure across America. {warning}",
+            "Freight Fate {}. {warning}",
             updater::spoken_version(version())
         );
         ctx.say(text.trim_end());
@@ -762,7 +846,7 @@ impl Menu for MainMenuState {
                 .help("Any saved career, not only the newest."),
             );
         }
-        if !saves.is_empty() {
+        if !saves.is_empty() || !legacy_saves().is_empty() {
             items.push(
                 MenuItem::new("Manage careers", |_s: &mut Self, ctx| {
                     ctx.push_state(ManageCareersState::new())
@@ -789,7 +873,7 @@ impl Menu for MainMenuState {
             })
             .help(
                 "Drivers on duty, your orinks.net account, cloud backup \
-                 and restore, and sharing choices like Mastodon and Discord.",
+                 and restore, and Discord presence.",
             ),
         );
         items.push(
@@ -805,23 +889,39 @@ impl Menu for MainMenuState {
             .help("Any sound the road uses, and what it means."),
         );
         items.push(
+            MenuItem::new("Practice keys and buttons", |_s: &mut Self, ctx| {
+                ctx.push_state(InputPracticeState::new())
+            })
+            .help("Names what each key or controller button does while driving."),
+        );
+        items.push(
             MenuItem::new("Settings", |_s: &mut Self, ctx| {
                 ctx.push_state(SettingsState::new())
             })
-            .help(
+            .help(if cfg!(target_os = "ios") {
+                "Units, transmission mode, volumes, weather, voices, and trip pacing."
+            } else {
                 "Units, transmission mode, volumes, weather, voices, \
-                 update channel, and trip pacing.",
-            ),
+                 update channel, and trip pacing."
+            }),
         );
         items.push(
             MenuItem::new("Report a problem", |s: &mut Self, ctx| s.report_issue(ctx))
                 .help("The bug report page on GitHub, in your web browser."),
         );
-        items.push(MenuItem::new("Quit", |_s: &mut Self, ctx| ctx.quit()).help("Exit the game."));
+        // An iPhone app is never quit from inside; the system closes it.
+        if !cfg!(target_os = "ios") {
+            items.push(
+                MenuItem::new("Quit", |_s: &mut Self, ctx| ctx.quit()).help("Exit the game."),
+            );
+        }
         items
     }
 
     fn go_back(&mut self, ctx: &mut GameContext) {
+        if cfg!(target_os = "ios") {
+            return;
+        }
         ctx.audio.play("ui/menu_back");
         ctx.push_state(ConfirmQuitState::new());
     }
@@ -958,11 +1058,14 @@ impl TextEntry for NameEntryState {
     }
 
     fn enter(&mut self, ctx: &mut GameContext) {
-        ctx.say(
-            "New career. Type your driver name, then Enter. Left and Right \
-             arrows review the letters, Home and End jump to the start or \
-             end. Escape cancels.",
-        );
+        if crate::states::text_entry::touch_prompt(ctx) {
+            ctx.say(&format!(
+                "New career. Type your driver name. {}",
+                crate::states::text_entry::TOUCH_FIELD_HELP
+            ));
+            return;
+        }
+        ctx.say("New career. Type your driver name, then Enter.");
     }
 
     fn confirm(&mut self, ctx: &mut GameContext) {

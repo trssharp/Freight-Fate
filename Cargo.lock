@@ -580,6 +580,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 name = "ff-core"
 version = "1.9.0"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "base64 0.22.1",
  "bincode",
@@ -660,6 +661,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "bass-sys",
+ "cc",
  "chrono",
  "discord-rich-presence",
  "env_logger",
@@ -671,13 +673,14 @@ dependencies = [
  "log",
  "once_cell",
  "parking_lot",
- "prism",
+ "prismer",
  "raw-window-handle",
  "regex",
  "sdl2",
  "serde",
  "serde_json",
  "sha2",
+ "sys-locale",
  "tar",
  "tempfile",
  "thiserror",
@@ -1360,20 +1363,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "prism"
-version = "1.9.0"
+name = "prism-sys"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9056b582fac161198bd0ce7dd84424e5c287495ab3cbfb1dc106553bcd2ea4c9"
 dependencies = [
- "log",
- "prism-sys",
- "thiserror",
+ "cmake",
 ]
 
 [[package]]
-name = "prism-sys"
-version = "1.9.0"
+name = "prismer"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fab1f6ae95403371691d7ea661c98a4811613cdc3cbb45a35b774386a6ffa78"
 dependencies = [
- "libloading",
- "log",
+ "prism-sys",
 ]
 
 [[package]]
@@ -1925,6 +1929,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "sys-locale"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8eab9a99a024a169fe8a903cf9d4a3b3601109bcc13bd9e3c6fff259138626c4"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

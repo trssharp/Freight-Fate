@@ -37,6 +37,7 @@
 //!   come from the zone bench below, which is where the defect was: see
 //!   `keeper_holds_the_posted_number_up_a_grade`.
 
+use ff_core::data::corners::corner_speed_mph;
 use ff_core::data::curves::RouteCurve;
 use ff_core::data::world::get_world;
 use ff_core::data::world_models::{Leg, Route};
@@ -49,7 +50,6 @@ use freight_fate::playtest::harness::{PlaytestHarness, RouteSetup};
 use freight_fate::states::base::Key;
 use freight_fate::states::driving::DrivingState;
 use freight_fate::states::driving_core::{KEEPER_DROOP_MPH, KEEPER_MAX_THROTTLE};
-use freight_fate::states::driving_turns::TURN_CORNER_MAX_MPH;
 
 use crate::transcript_cruise_support::{
     bench_road_segments, frame, hold, quiet, release_keys, start_drive, BENCH_MILES, DT,
@@ -81,7 +81,7 @@ pub fn keeper_bench(name: &str, zone_mph: f64, grade: f64, from_mph: f64) -> Pla
         d.trip.zones = vec![Zone::new(0.0, BENCH_MILES, zone_mph, "construction")];
         d.trip.position_mi = START_MI;
         d.truck_mut().transmission.automatic = true;
-        d.truck_mut().cargo_kg = 18_000.0;
+        d.truck_mut().cargo_kg = CORNER_RUN_CARGO_KG;
         d.truck_mut().start_engine();
         d.truck_mut().set_air_ready(false);
         d.truck_mut().velocity_mps = from_mph * MPS_PER_MPH;
@@ -269,8 +269,8 @@ fn keeper_builds_to_the_merge_number() {
 /// A driver who cannot see the speedometer has the engine note and the
 /// downshifts, which say the truck is working but not that it is losing --
 /// and losing is the part that decides whether to take it over by hand.
-/// Adaptive cruise has said this for a while ("Cruise is flat out and still
-/// losing the grade"); the keeper said nothing at all, so a truck twenty-one
+/// Adaptive cruise has said this for a while ("Cruise down to 38 on
+/// this grade"); the keeper said nothing at all, so a truck twenty-one
 /// miles an hour under its own announced number was completely silent.
 #[test]
 fn keeper_says_so_when_the_grade_beats_it() {
@@ -282,7 +282,7 @@ fn keeper_says_so_when_the_grade_beats_it() {
     );
     let heard = harness.transcript_text();
     assert!(
-        heard.contains("Speed keeper is flat out and cannot make 55 miles per hour on this grade."),
+        heard.contains("Speed keeper down to ") && heard.contains(" on this grade."),
         "the keeper never owned up to losing the grade:\n{heard}"
     );
 }
@@ -298,7 +298,7 @@ fn keeper_droop_warning_is_said_once() {
     let said = harness
         .transcript()
         .iter()
-        .filter(|line| line.contains("Speed keeper is flat out"))
+        .filter(|line| line.contains("Speed keeper down to"))
         .count();
     assert_eq!(said, 1, "{}", harness.transcript_text());
 }
@@ -315,9 +315,7 @@ fn keeper_says_nothing_on_a_grade_it_can_hold() {
         "the bench has to be a grade the keeper CAN hold"
     );
     assert!(
-        !harness
-            .transcript_text()
-            .contains("Speed keeper is flat out"),
+        !harness.transcript_text().contains("Speed keeper down to"),
         "{}",
         harness.transcript_text()
     );
@@ -389,7 +387,7 @@ fn take_the_corner(street_mph: f64) -> CornerRun {
         street_chain_at(d, street_mph);
         d.departure_checked = true;
         d.truck_mut().transmission.automatic = true;
-        d.truck_mut().cargo_kg = 18_000.0;
+        d.truck_mut().cargo_kg = CORNER_RUN_CARGO_KG;
         d.truck_mut().start_engine();
         d.truck_mut().set_air_ready(false);
         d.truck_mut().velocity_mps = street_mph * MPS_PER_MPH;
@@ -447,6 +445,14 @@ fn take_the_corner(street_mph: f64) -> CornerRun {
     }
 }
 
+/// What `corner_run` loads the trailer with, kg.
+const CORNER_RUN_CARGO_KG: f64 = 18_000.0;
+
+/// The load `corner_run` puts on the truck, as the corner model sees it.
+fn corner_run_load_fraction() -> f64 {
+    (CORNER_RUN_CARGO_KG / ff_core::sim::vehicle::REFERENCE_CARGO_KG).clamp(0.0, 1.0)
+}
+
 /// The keeper eases for a corner only where the corner asks for less than the
 /// street does.
 ///
@@ -468,11 +474,19 @@ fn take_the_corner(street_mph: f64) -> CornerRun {
 fn the_keeper_eases_for_a_corner_only_when_the_corner_asks_for_less() {
     // (street posted, what a trailer may take the corner at, may the keeper
     //  ease for it)
+    // The corner's own geometry sets the advise speed now, so every street
+    // here gets the same number -- these fixtures carry no measured angle, so
+    // they price as square corners. What the street still decides is whether
+    // there is anything to EASE: a street already at or under the corner's
+    // speed has nothing to shed.
+    // The fixture's own load: the corner price rides it, so the expectation
+    // has to read the same number the drive does.
+    let square = corner_speed_mph(None, corner_run_load_fraction());
     let cases = [
-        (35.0f64, TURN_CORNER_MAX_MPH, true),
-        (25.0, TURN_CORNER_MAX_MPH, true),
-        (20.0, 20.0, false),
-        (15.0, 15.0, false),
+        (35.0f64, square, true),
+        (25.0, square, true),
+        (20.0, square, true),
+        (15.0, square, true),
     ];
     for (street_mph, advise_mph, may_ease) in cases {
         let run = take_the_corner(street_mph);
@@ -1093,10 +1107,10 @@ fn keeper_corridor_measurement() {
         let owned_up = drive
             .heard
             .iter()
-            .filter(|l| l.contains("flat out"))
+            .filter(|l| l.contains("on this grade.") && l.contains(" down to "))
             .count();
         if owned_up > 0 {
-            println!("  (the controller said it was flat out and losing {owned_up} time(s))");
+            println!("  (the controller said it could not hold its speed {owned_up} time(s))");
         }
         for d in &dev {
             println!("  DEVIATION {}", d.report());
