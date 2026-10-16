@@ -46,7 +46,7 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
-ENGINE_DIR = ROOT / "src" / "freight_fate" / "assets" / "sounds-licensed" / "engine"
+ENGINE_DIR = ROOT / "assets" / "sounds-licensed" / "engine"
 OUT_DIR = Path(__file__).resolve().parent / "render-cab"
 
 BANDS = ("idle", "low", "mid", "midhigh", "high")
@@ -108,9 +108,7 @@ def peaking(sr: float, fc: float, gain_db: float, q: float):
     w0 = 2.0 * math.pi * fc / sr
     alpha = math.sin(w0) / (2.0 * q)
     cw = math.cos(w0)
-    return _biquad(
-        1 + alpha * a, -2 * cw, 1 - alpha * a, 1 + alpha / a, -2 * cw, 1 - alpha / a
-    )
+    return _biquad(1 + alpha * a, -2 * cw, 1 - alpha * a, 1 + alpha / a, -2 * cw, 1 - alpha / a)
 
 
 def lowpass(sr: float, fc: float, q: float = 0.7071):
@@ -185,9 +183,7 @@ def main() -> int:
                 high_shelf(sr, HIGH_SHELF_HZ, shelf_db),
                 lowpass(sr, lp_hz),
             ]
-            y = np.column_stack(
-                [filt_circular(x[:, c], chain) for c in range(x.shape[1])]
-            )
+            y = np.column_stack([filt_circular(x[:, c], chain) for c in range(x.shape[1])])
             y = early_reflections(y, sr, taps)
             rms_out = math.sqrt(float(np.mean(y**2)))
             if rms_out > 0:

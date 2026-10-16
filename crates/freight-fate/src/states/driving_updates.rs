@@ -19,10 +19,13 @@
 //!   jake growl, the air-fill loop, and automatic retarder management.
 //! * [`radio`] -- reception, the FM fringe, station rotation and personal
 //!   playlists, the dial keys, and the live-data source syncs.
+//! * [`radio_synth`] -- the Roadhouse in Synthesized mode.
 //! * [`hazards`] -- the braking budget, automatic emergency braking, hazard
 //!   resolution, and the grade advisory.
 //! * [`enforcement`] -- the dash overspeed alert, the pull-over and its
 //!   compliance tracker, weigh stations, and the run-from-the-stop opt-in.
+//! * [`pacing`] -- a mid-drive pace change, the merge handoff's bound, and
+//!   the session-log trace of the clock's real-time pins.
 //! * [`conditions`] -- hot brakes, the destination approach assist, traction
 //!   states and the chain law.
 //!
@@ -42,8 +45,11 @@ pub mod frame;
 pub mod hazards;
 pub mod lanes;
 pub mod live_sources;
+pub mod pacing;
 pub mod pending;
 pub mod radio;
+pub mod radio_channel3000;
+pub mod radio_synth;
 pub mod stops;
 
 use std::cell::Cell;
@@ -182,6 +188,25 @@ pub const JAKE_LOOP_RPMS: [i64; 6] = [1200, 1400, 1600, 1800, 2000, 2200];
 // recording of a real low stage -- do not dramatize what we cannot confirm.
 pub const JAKE_STAGE_GAIN: [f64; 3] = [0.25, 0.65, 1.0];
 pub const JAKE_MIN_RPM: f64 = 950.0;
+// How long the growl's loop is kept, silent, through a gap before it is
+// stopped. The gap is still heard (shift, clutch, a throttle blip), but the
+// return is the same loop coming back up rather than the loop restarted from
+// its top: a controller trading throttle and jake near a no-engine-brake zone
+// restarted it dozens of times in a row (agent drive, 2026-09-24). Assumed:
+// longer than a shift or a cruise throttle pulse, short enough that a jake
+// switched off is simply off.
+pub const JAKE_CUE_HOLD_S: f64 = 2.0;
+// Both jake voices are 1600 rpm cuts (the one real recording and the one
+// synth kept beside it), and one voice stands for every band, so the growl
+// used to sit on one note however the revs moved. It is re-pitched from
+// this native speed every frame instead: a downshift on a grade now climbs
+// with the revs and a gear run down to the shift point falls with them,
+// which is what a manual driver listens for. Clamped so 950 rpm and redline
+// stay inside what a re-pitched recording can carry without sounding like
+// tape.
+pub const JAKE_VOICE_NATIVE_RPM: f64 = 1600.0;
+pub const JAKE_RATE_MIN: f64 = 0.55;
+pub const JAKE_RATE_MAX: f64 = 1.4;
 
 // How far over a curve's advisory speed the truck has to be before the curve
 // assist reaches for the retarder. The engine brake is for shedding real
@@ -208,9 +233,12 @@ pub const AUTO_JAKE_OVER_MPH: f64 = 1.0; // this far above target: step up
 pub const AUTO_JAKE_UNDER_MPH: f64 = 3.0; // this far below target: step down
                                           // Still this far over the number and the stage stands, so the release does
                                           // not chase the raise threshold a quarter of a mile per hour away. The same
-                                          // hysteresis pair adaptive cruise uses (CRUISE_JAKE_OVER_MPH against
-                                          // CRUISE_JAKE_RELEASE_MPH), sized to this controller's own raise line.
+                                          // hysteresis the raise line needs, sized to this controller's own raise
+                                          // line.
 pub const AUTO_JAKE_RELEASE_MPH: f64 = 0.25;
+// A step back the other way waits this long -- adaptive cruise's own
+// reversal time (`CRUISE_JAKE_REVERSE_S`), for the same reason.
+pub const AUTO_JAKE_REVERSE_S: f64 = crate::states::driving_core::CRUISE_JAKE_REVERSE_S;
 
 // The air-fill loop re-arms only this far below governor release. air_ready
 // flips at exactly 100 psi and normal service braking dips the reservoirs a
@@ -251,6 +279,50 @@ pub mod live {
         static HAZARD_ACTIVE: Cell<bool> = const { Cell::new(false) };
         static ARRIVAL_MENU_OPEN: Cell<bool> = const { Cell::new(false) };
         static GATE_STOP_PROMPTED: Cell<bool> = const { Cell::new(false) };
+        static ON_RAMP: Cell<bool> = const { Cell::new(false) };
+        static RAMP_HOLDING: Cell<bool> = const { Cell::new(false) };
+        static MOVE_LOCKOUT: Cell<u8> = const { Cell::new(0) };
+    }
+
+    /// What is stopping the truck moving under its own throttle, if
+    /// anything: 0 nothing, then [`LOCKOUT_ENGINE_OFF`], [`LOCKOUT_AIR`],
+    /// [`LOCKOUT_PARKING_BRAKE`]. The lockout's queued line speaks only
+    /// while its own reason still holds: queued behind other speech, "Parking
+    /// brake set. Press P to release it." spoke after the brake was off and
+    /// the truck rolling, and pressing P there slams the spring brakes on
+    /// (agent drive out of Aberdeen Company Yard, 2026-09-30).
+    pub fn set_move_lockout(value: u8) {
+        MOVE_LOCKOUT.with(|cell| cell.set(value));
+    }
+
+    pub fn move_lockout() -> u8 {
+        MOVE_LOCKOUT.with(|cell| cell.get())
+    }
+
+    pub const LOCKOUT_ENGINE_OFF: u8 = 1;
+    pub const LOCKOUT_AIR: u8 = 2;
+    pub const LOCKOUT_PARKING_BRAKE: u8 = 3;
+
+    /// Whether the truck has left the mainline for a ramp. A mainline line
+    /// ("Speed limit raised to 75") cut by the take line is about a road
+    /// the truck is no longer on, so it is not worth handing back.
+    pub fn set_on_ramp(value: bool) {
+        ON_RAMP.with(|cell| cell.set(value));
+    }
+
+    pub fn on_ramp() -> bool {
+        ON_RAMP.with(|cell| cell.get())
+    }
+
+    /// Whether the truck is still held at a ramp terminal's bar, waiting for
+    /// its gap or its green. "Assistance is holding for your gap" is true
+    /// only while this is; once the gap comes it is superseded.
+    pub fn set_ramp_holding(value: bool) {
+        RAMP_HOLDING.with(|cell| cell.set(value));
+    }
+
+    pub fn ramp_holding() -> bool {
+        RAMP_HOLDING.with(|cell| cell.get())
     }
 
     pub fn set_overspeed_active(value: bool) {

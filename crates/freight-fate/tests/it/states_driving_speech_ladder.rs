@@ -12,8 +12,7 @@
 //! The capture sits BELOW the ladder gate and below the event pacer, where
 //! Python's stub replaced `ctx.say_event` and sat above both. So "spoken" here
 //! means what a player would actually hear at that rung: a STATUS line at
-//! `urgent_only` is not in `event_lines()` at all, and the words are read off
-//! `ctx.message_log`, which the gate still writes.
+//! `urgent_only` is absent from both `event_lines()` and message review.
 //!
 //! And the pacer measures in REAL seconds. A case that calls the same standing
 //! condition twice in the same instant is answered by the plain
@@ -30,8 +29,7 @@ use ff_core::models::profile::Profile;
 use ff_core::sim::trip::{Trip, TripOptions};
 use ff_core::sim::trip_models::{TrafficPressure, TripEvent, TripEventData, TripEventKind};
 use ff_core::sim::weather::{WeatherKind, WeatherSystem};
-use ff_core::sound_catalog::CATALOG;
-use ff_core::speech_pacing::{disposition_for, Disposition, SpeechCategory, DRIVING_SPEECH_MODES};
+use ff_core::speech_pacing::{disposition_for, Disposition, SpeechCategory};
 use ff_core::speech_text::{stop_callout, SpokenMessage, StopCalloutParts};
 
 use ff_core::data::world_models::{Leg, Route};
@@ -39,7 +37,7 @@ use freight_fate::app::testing::TestApp;
 use freight_fate::app::SayEvent;
 use freight_fate::playtest::breaker::{self, tweak_rigs, Verdict};
 use freight_fate::playtest::harness::{PlaytestHarness, StartDelivery};
-use freight_fate::states::base::State;
+use freight_fate::states::base::{InputEvent, Key, Mods, State};
 use freight_fate::states::driving::DrivingState;
 use freight_fate::states::driving_core::*;
 use freight_fate::states::driving_events::{event_category_for_kind, FLAVOR_EVENT_KINDS};
@@ -206,7 +204,7 @@ fn test_the_lead_announcement_yields_before_the_turn_itself() {
     );
     assert_eq!(
         disposition_for("urgent_only", Some(SpeechCategory::NavigationAdvisory)),
-        Disposition::Earcon
+        Disposition::Silent
     );
     for rung in ["quiet", "urgent_only"] {
         assert_eq!(
@@ -324,31 +322,6 @@ fn test_every_trip_event_kind_is_classified() {
         both.is_empty(),
         "trip event kinds claimed by both lists: {both:?}"
     );
-}
-
-#[test]
-fn test_every_earcon_category_is_learnable() {
-    // R14's standing rule, binding S4's substitutions: no earcon may carry
-    // meaning that the Learn game sounds screen cannot teach. This is what
-    // makes "the rung replaces words with sounds" legitimate rather than
-    // exclusionary.
-    let learnable: Vec<&str> = CATALOG
-        .iter()
-        .flat_map(|category| category.entries.iter().map(|entry| entry.name))
-        .collect();
-    for rung in DRIVING_SPEECH_MODES {
-        for category in SpeechCategory::ALL {
-            if disposition_for(rung, Some(category)) == Disposition::Earcon {
-                let cue = ff_core::speech_pacing::ladder_earcon(category).unwrap_or_else(|| {
-                    panic!("{category:?} becomes an earcon at {rung} with no cue at all")
-                });
-                assert!(
-                    learnable.contains(&cue),
-                    "{category:?} becomes an earcon at {rung} with nothing to learn it by"
-                );
-            }
-        }
-    }
 }
 
 // -- the gate, with a literal line ---------------------------------------------------
@@ -654,7 +627,7 @@ fn test_the_air_brake_lockout_recurs_once_it_clears_and_comes_back() {
 // -- money and safety on the real lines ----------------------------------------------
 
 #[test]
-fn test_cargo_condition_speaks_at_urgent_only_as_money() {
+fn test_routine_cargo_condition_is_silent_at_urgent_only() {
     // The coaching tail only rides the first report; every message this sends
     // -- including that first one -- carries the pay consequence (an
     // exception, a claim, a refused load). MONEY, not COACHING, governs the
@@ -666,19 +639,14 @@ fn test_cargo_condition_speaks_at_urgent_only_as_money() {
 
     drive.announce_cargo_condition(&mut app.ctx);
 
-    assert!(!app.event_lines().is_empty());
+    assert!(app.event_lines().is_empty());
     app.shutdown();
 }
 
 #[test]
-fn test_the_carrier_grounding_speaks_at_urgent_only_as_money() {
-    // The company driver's twin of the owner-operator's roadside-repair report
-    // (already MONEY) -- same moment, but this one was tagged CONFIRMATION, an
-    // EARCON category at quiet and urgent_only. A company driver at either
-    // rung would have heard one chime and learned neither that dispatch took
-    // the tractor, the reputation hit, nor the damage on the truck they are
-    // now in. A bare profile defaults to COMPANY_DRIVER, so no extra setup
-    // lands this in the carrier branch rather than its owner-operator sibling.
+fn test_the_carrier_grounding_speaks_at_urgent_only_as_safety() {
+    // A replacement tractor and its restart instruction are essential recovery
+    // information, even though the message also names financial consequences.
     let mut app = an_urgent_only_app();
     let mut drive = a_drive(&mut app);
     app.clear_speech();
@@ -742,10 +710,73 @@ fn test_an_engine_stall_speaks_at_urgent_only_as_safety() {
 }
 
 #[test]
-fn test_a_tire_chain_release_speaks_at_urgent_only_as_money() {
-    // "The set is scrap" is a purchase, and running unchained under an active
-    // chain law is citation exposure -- MONEY, matching its own text, not
-    // CONFIRMATION.
+fn test_the_manual_stall_line_leads_to_first_gear_not_a_second_stall() {
+    // A manual only stalls in fourth or taller, where shifting up goes taller
+    // still: "restart, then select W" put a truck stalled in fifth into sixth,
+    // and letting the clutch out stalled it again. The keys the line names,
+    // pressed in its order, must leave the truck running in first.
+    let mut app = an_app();
+    let mut drive = a_drive(&mut app);
+    app.ctx.settings.automatic_transmission = false;
+    let t = &mut drive.trip.truck;
+    t.start_engine();
+    t.set_air_ready(false);
+    t.transmission.automatic = false;
+    t.transmission.clutch = 1.0;
+    assert!(t.transmission.request_gear(5).ok);
+    t.transmission.clutch = 0.0;
+    app.clear_speech();
+    for _ in 0..(60 * 5) {
+        drive.update(&mut app.ctx, DT);
+        if drive.trip.truck.stalled {
+            break;
+        }
+    }
+    assert!(
+        drive.trip.truck.stalled,
+        "fifth at a standstill no longer stalls"
+    );
+    let lines = app.event_lines();
+    let line = lines
+        .iter()
+        .find(|line| line.contains("Engine stalled"))
+        .unwrap_or_else(|| panic!("no stall line in {lines:?}"));
+    assert!(
+        line.contains("Press N for neutral and E to restart")
+            && line.contains("hold Left Shift and press W for first gear"),
+        "{line}"
+    );
+
+    let press = |drive: &mut DrivingState, app: &mut TestApp, key: Key, mods: Mods| {
+        let event = InputEvent::KeyDown {
+            key,
+            mods,
+            text: None,
+            repeat: false,
+        };
+        drive.handle_key_event(&mut app.ctx, &event);
+    };
+    press(&mut drive, &mut app, Key::N, Mods::NONE);
+    press(&mut drive, &mut app, Key::E, Mods::NONE);
+    app.ctx.input.press(Key::LShift, Mods::NONE);
+    drive.update(&mut app.ctx, DT);
+    press(&mut drive, &mut app, Key::W, Mods::SHIFT);
+    for _ in 0..30 {
+        drive.update(&mut app.ctx, DT);
+    }
+    app.ctx.input.release(Key::LShift, Mods::NONE);
+    for _ in 0..(60 * 2) {
+        drive.update(&mut app.ctx, DT);
+    }
+    let t = &drive.trip.truck;
+    assert_eq!(t.transmission.gear, 1);
+    assert!(t.engine_on && !t.stalled, "stalled again after the restart");
+    app.shutdown();
+}
+
+#[test]
+fn test_a_tire_chain_release_speaks_at_urgent_only_as_safety() {
+    // Losing chains changes traction immediately, so this remains a safety call.
     let mut app = an_urgent_only_app();
     let mut drive = a_drive(&mut app);
     drive.trip.truck.chains_just_snapped = true;
@@ -757,7 +788,10 @@ fn test_a_tire_chain_release_speaks_at_urgent_only_as_money() {
     let last = lines
         .last()
         .unwrap_or_else(|| panic!("the chain let go in silence"));
-    assert!(last.to_lowercase().contains("scrap"), "{last}");
+    assert_eq!(
+        last,
+        "A tire chain broke and is flailing. Slow down and pull over to check it."
+    );
     app.shutdown();
 }
 
@@ -955,11 +989,11 @@ fn test_a_queued_stop_notice_speaks_the_distance_it_delivers_at() {
 // -- the terse halves the rung renders -----------------------------------------------
 
 #[test]
-fn test_traffic_advisories_have_a_terse_half() {
-    // They shipped as plain strings, which the ladder treats as their own
-    // terse rendering -- so "Exit traffic building in 2 miles. Signal early,
-    // hold the right exit lane, and be ready to slow near 45" was spoken whole
-    // at quiet, the longest line on the drive.
+fn test_traffic_advisories_are_short_at_every_rung() {
+    // They shipped as long sentences: "Exit traffic building in 2 miles.
+    // Signal early, hold the right exit lane, and be ready to slow near 45"
+    // was the longest line on the drive. Now one short form serves every
+    // rung, so there is no separate terse half to fall out of step.
     let mut app = an_app();
     let drive = a_drive(&mut app);
     for kind in ["exit", "construction_merge", "route_merge", "pack"] {
@@ -973,12 +1007,13 @@ fn test_traffic_advisories_have_a_terse_half() {
             reason: "on-ramp".to_string(),
         };
         let message = drive.trip.traffic_pressure_message(&pressure, 2.0);
-        let terse = message
-            .terse
-            .as_deref()
-            .unwrap_or_else(|| panic!("{kind} has no terse half"));
-        assert!(!terse.is_empty(), "{kind}");
-        assert!(terse.len() < message.normal.len(), "{kind}");
+        assert!(message.terse.is_none(), "{kind}");
+        assert!(
+            message.normal.split(". ").count() <= 2,
+            "{kind}: {}",
+            message.normal
+        );
+        assert!(message.normal.len() < 50, "{kind}: {}", message.normal);
     }
     app.shutdown();
 }
@@ -1154,8 +1189,8 @@ fn call_is_tagged(call: &SayEventCall) -> bool {
         return true;
     }
     // The options are the last argument. When it is a plain binding --
-    // `opts`, or `opts()` for the closure form -- follow it back to where it
-    // was built or assigned inside this function.
+    // `opts`, or `opts()` / `opts(reason)` for the closure form -- follow it
+    // back to where it was built or assigned inside this function.
     // A multi-line call ends with a trailing comma, so the last split piece is
     // whitespace: take the last one that is not.
     let Some(last) = call
@@ -1166,7 +1201,7 @@ fn call_is_tagged(call: &SayEventCall) -> bool {
     else {
         return false;
     };
-    let name = last.trim_end_matches("()").trim();
+    let name = last.split('(').next().unwrap_or(last).trim();
     if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
         return false;
     }
@@ -1424,8 +1459,8 @@ fn read_call(masked: &[char], open: usize) -> (String, usize, usize) {
 /// STATUS or CONFIRMATION call site that survives the per-condition repeat
 /// suppression, so their rung-to-rung counts are flat and would make this a
 /// vacuous test. This one reliably says a fresh "engine is screaming at
-/// redline" STATUS readout on each further mile of engine wear -- earcon
-/// silenced at quiet and urgent_only, full words at standard.
+/// redline" STATUS readout on each further mile of engine wear -- short
+/// words at quiet, silence at urgent_only, full words at standard.
 const SCENARIO: &str = "reverse_down_the_route";
 
 /// One scenario's transcript at one rung.
@@ -1452,38 +1487,12 @@ fn transcript_at(rung: &str) -> Vec<String> {
 
 #[test]
 fn test_a_drive_gets_quieter_as_the_rung_tightens() {
-    // The owner's report is a COUNT complaint, not a length complaint, so the
-    // pin is a count.
     let standard = transcript_at("standard");
     let quiet = transcript_at("quiet");
     let urgent_only = transcript_at("urgent_only");
-
-    // Non-vacuous: the top rung must actually carry a line from a category
-    // quiet and urgent_only cut to EARCON, or a tie further down the ladder
-    // would pass for the wrong reason (nothing left to cut).
-    assert!(
-        standard.join("\n").contains("Engine at redline"),
-        "{standard:#?}"
-    );
-    // And that it is really cut, not merely present at the top.
-    assert!(
-        !quiet.join("\n").contains("Engine at redline"),
-        "{quiet:#?}"
-    );
-
-    assert!(
-        standard.len() > quiet.len(),
-        "standard {} vs quiet {}",
-        standard.len(),
-        quiet.len()
-    );
-
-    // On THIS scenario quiet and urgent_only tie: it has no navigation
-    // advisory (no bend, no lead-in, no stop ahead), which is the only
-    // category that separates them AT THE VOICE. The separation itself is
-    // covered by the lead-announcement case above. Pinned as full transcript
-    // equality, not just a count tie, so a future asymmetry between the two
-    // rungs is caught immediately rather than only once it changes a length.
-    assert!(quiet.len() >= urgent_only.len());
-    assert_eq!(quiet, urgent_only);
+    assert!(standard.join("\n").contains("Engine at redline"));
+    assert!(quiet.join("\n").contains("Redline. Engine wear"));
+    assert!(!urgent_only.join("\n").contains("Redline. Engine wear"));
+    assert!(quiet.len() > urgent_only.len());
+    assert!(quiet.join(" ").len() <= standard.join(" ").len());
 }

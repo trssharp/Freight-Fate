@@ -1,7 +1,7 @@
 //! `TruckState.auto_shift`: the vehicle's half of the automatic gearbox --
 //! everything the box is told about the road, the load and the retarder.
 
-use super::{TruckState, G, JAKE_RPM_FLOOR, JAKE_STAGES, REFERENCE_CARGO_KG};
+use super::{TruckState, G, JAKE_RPM_FLOOR, JAKE_STAGES};
 use crate::sim::transmission::{
     AutoUpdateArgs, AUTO_DOWNSHIFT_RPM, DOWNSHIFT_TIME, PROGRESSIVE_UPSHIFT_RPM,
 };
@@ -26,8 +26,15 @@ impl TruckState {
         // blip to keep the target speed must not release the hold and grab a
         // taller gear that guts the retarder mid-descent.
         jaking = jaking || (self.engine_brake() && self.engine_on && self.grade < -0.01);
+        // Descent control holding the grade holds the gear the way a brake
+        // application does: a downgrade is no place for an economy upshift.
+        // Not as the retarder does, though: with no stage on, its pre-select
+        // walked a bobtail down from eighth to sixth on Red Mountain's 8.4
+        // percent, into a gear the truck then rode at the rev ceiling (bend
+        // sweep, 2026-09-25). The engine still upshifts past the ceiling.
+        let descent_hold = self.descent_gear_hold && self.engine_on && self.throttle <= 0.05;
         let bobtail = !self.trailer_attached;
-        let load_fraction = (self.cargo_kg / REFERENCE_CARGO_KG).clamp(0.0, 1.0);
+        let load_fraction = self.load_fraction();
         let base_interval = if bobtail { 1.1 } else { 1.25 };
         let minimum_shift_interval_s = if braking {
             1.75
@@ -174,7 +181,7 @@ impl TruckState {
             rpm: rpm_est,
             throttle: self.throttle,
             moving: self.velocity_mps > 0.5,
-            braking,
+            braking: braking || descent_hold,
             can_upshift,
             minimum_shift_interval_s,
             upshift_rpm,

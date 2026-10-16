@@ -18,9 +18,12 @@ use crate::states::driving_updates::live;
 impl DrivingState {
     /// `_handle_pickup_gate()`.
     pub fn handle_pickup_gate(&mut self, ctx: &mut GameContext) {
-        if self.trip.truck.speed_mph() <= DOCKING_MAX_MPH
-            && (ctx.settings.destination_approach_assist || self.trip.truck.parking_brake)
-        {
+        // The assist stops the truck here, exactly as it does at a dock, and
+        // holds for the driver's key; see `hold_at_facility_entrance`.
+        if self.hold_at_facility_entrance(ctx) {
+            return;
+        }
+        if self.trip.truck.speed_mph() <= DOCKING_MAX_MPH && self.trip.truck.parking_brake {
             self.open_pickup_arrival(ctx);
             return;
         }
@@ -79,11 +82,7 @@ impl DrivingState {
         let message = if ctx.settings.destination_approach_assist {
             format!("At {facility}. Stop to check in.")
         } else {
-            format!(
-                "At {facility}. Stop, set the parking brake with {}, then {} opens the facility.",
-                ctx.control_hint("parking_brake"),
-                ctx.control_hint("rest")
-            )
+            format!("At {facility}. Stop and set the parking brake.")
         };
         ctx.say_event_with(
             message,
@@ -102,7 +101,7 @@ impl DrivingState {
         // throttle (automation-handoff sweep, 2026-08-20, the deferred
         // 2026-08-15 audit).
         ctx.say_event_with(
-            "Automatic speed control paused for pickup. It resumes when you depart.",
+            "Automatic speed control paused for pickup.",
             SayEvent::queued()
                 .priority(EventPriority::Route)
                 .category(SpeechCategory::Confirmation),
@@ -142,6 +141,12 @@ impl DrivingState {
         let trip_minutes = self.trip.game_minutes;
         {
             let p = profile_mut_of(ctx);
+            // A relayed load's deadhead ended in the shipper's city: the
+            // truck is parked there now, and the board, the logbook and the
+            // next dispatch all read the city off the profile.
+            if p.current_city != self.job.origin {
+                p.current_city = self.job.origin.clone();
+            }
             // Store the whole record, not just fuel and damage: this line also
             // accrues brake and engine wear, which the flat names do not carry.
             p.store_truck_condition(&self.trip.truck);
@@ -171,7 +176,7 @@ impl DrivingState {
             TimedMessageState::new(
                 "Pulling into pickup",
                 &format!("Pulling into {facility}."),
-                "Pulling into the pickup facility. Please wait.",
+                "Pulling into the pickup.",
                 STOP_PULL_IN_WAIT_S,
                 move |ctx: &mut GameContext| {
                     drive.with(ctx, |drive, ctx| {

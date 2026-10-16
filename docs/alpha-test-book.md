@@ -27,7 +27,7 @@ book assumes you have.
 ### 0.1 The alpha talks to a test server, not the real orinks.net
 
 Every online feature in this alpha — the drivers board, profile sharing,
-cloud backup, Mastodon posting — talks to a staging copy of the website
+cloud backup — talks to a staging copy of the website
 instead of the real one. It is a separate site, with separate accounts
 and separate data.
 
@@ -77,9 +77,8 @@ an account now turns profile sharing and cloud backup on, because the
 career statistics on your public profile are read out of the backup, and
 an account that publishes nothing left new drivers looking at an empty
 profile. Both are single items on the Online menu if you want either
-off. Mastodon posting is still a separate yes and still needs its own
-linked account. A confirmation that claims otherwise, in either
-direction, is a bug.
+off. A confirmation that claims otherwise, in either direction, is a
+bug.
 
 Also expected: right after you create your very first career, the game
 offers this setup once, unprompted, with "Not now" already selected. It
@@ -94,8 +93,7 @@ unless Discord is running. The master switch is only a master switch:
 everything underneath it is off or needs an account, so nothing is
 published because of it.
 
-Off until you turn each one on: Mastodon posting, and live weather,
-traffic and parking. Profile sharing and cloud backup are off too until
+Off until you turn each one on: live weather, traffic and parking. Profile sharing and cloud backup are off too until
 you connect an account, which is what turns them on — see 0.2.
 
 The radio plays its full dial out of the box, real public streams
@@ -160,7 +158,7 @@ past its limit now wears the engine. Companion volume, checklists 5
 and 9.
 
 **Winter is real.** Freezing rain is its own weather and the one worth
-parking for. Winter tires are a garage choice with honest trade-offs.
+parking for. Winter tires are a garage choice with trade-offs.
 Chains ride in the side box, take real minutes and fatigue to hang (more
 in the dark), transform ice stops and icy descents, and grind apart on
 bare pavement. Chain laws activate over the steep passes with flashing
@@ -184,9 +182,9 @@ nothing. Chapter 3.
 **The lane is a place.** Discrete lanes with real traffic in them:
 dodgeable hazards, sideswipe risk, construction lane closures, keep-right
 nags, and exits that gate on being in the right lane. Highway exits take
-a real setup — signal with X, get to the exit lane, make ramp speed at
-the gore. Signalized ramp terminals run a red/green cycle with dedicated
-earcons. Chapter 4.
+a real setup — signal with X, get to the right lane, steer into the exit
+lane where it opens just before the gore, and slow down in it. Signalized ramp terminals run a stable green/yellow/red cycle with
+dedicated earcons and a cross-traffic clearance before green. Chapter 4.
 
 **Traffic has a clock.** Congestion is grounded in real federal traffic
 counts per leg: metro stretches jam at rush hour and flow free at
@@ -203,14 +201,13 @@ real local dealer where sourced data exists. Chapter 6.
 **The law is watching more than your speed.** Weigh-station blow-pasts
 and severe visible damage draw stops; running from lights escalates to a
 felony stop with spike strips; construction zones stage a merge and
-flagger before the barrels; CB chatter hints at bears ahead. Traffic
+flagger before the barrels; CB chatter hints at troopers ahead. Traffic
 stops read a real logbook — the in-cab Record of Duty Status — and dock
 work takes spoken on-duty time. Chapter 7.
 
-**Three driving-pressure modes.** Relaxed keeps every system but spaces
-hazards wider, allows more response time, and quiets routine speech;
-Standard keeps the old balance; the former Fast is now called Realistic.
-Chapter 8.
+**Three trip-pacing modes.** Relaxed runs at ten times real time, Standard
+at twenty times, and Real time at normal speed. The retired Realistic
+pacing choice now uses Standard. Chapter 8 compares the accelerated modes.
 
 **The career reads like employment.** New careers choose among fictional
 starter carriers (assigned equipment, carrier-paid fuel and repairs,
@@ -253,7 +250,7 @@ with per-kind switches in Settings. The career clock crosses real US time
 zones, spoken, with deadlines in destination local time. Chapter 11.
 
 **Online services point at a test server.** The drivers board, profile
-sharing, cloud backup and Mastodon posting all talk to a staging copy of
+sharing and cloud backup all talk to a staging copy of
 orinks.net, with its own accounts and its own throwaway data. You need a
 fresh account there and your real one will not work. Chapter 0.
 
@@ -291,7 +288,7 @@ lugging and the loaded hours, tire wear from the miles.
 
 ### 2.2 Wear talks back
 
-Setup: force a worn truck honestly (many legs) or use an established
+Setup: wear a truck through many legs or use an established
 high-mileage profile.
 
 Do: compare a hard stop and a fuel readout against a fresh truck's.
@@ -415,7 +412,7 @@ the lane readout always agrees with what you last did.
 
 ### 4.2 Change lanes or brake
 
-Setup: a busy leg, Standard or Realistic pressure.
+Setup: a busy leg with Standard trip pacing.
 
 Do: when a dodgeable hazard calls "Change lanes or brake!", dodge with a
 lane change instead of braking — but press L first to know where the
@@ -425,7 +422,7 @@ Listen for: a clean dodge when the adjacent lane is clear; sideswipe
 risk spoken when it is not; the CB nagging you to keep right if you camp
 the hammer lane afterward.
 
-Pass when: the lane change genuinely resolves the hazard and sideswiping
+Pass when: the lane change resolves the hazard and sideswiping
 real traffic carries real consequences.
 
 ### 4.2a The warning leaves you time to answer it
@@ -534,10 +531,11 @@ Setup: any leg with announced exits; know your destination exit (R for
 progress, Shift+R for what the next exit offers).
 
 Do: when your exit is announced, press X to commit to it. Follow the
-GPS: right-side exit lane, then ramp speed by the gore. Once, miss the
+GPS: the right lane, then the exit lane where it opens. Once, miss the
 exit on purpose.
 
-Listen for: the GPS asking for the exit lane, checking your speed at the
+Listen for: the GPS asking for the right lane only while you are out of
+it, and for the exit lane once, where it opens; checking your speed at the
 gore point, and explaining plainly what happens now that you missed —
 and merge/exit traffic pressuring the maneuver while you do it.
 
@@ -751,15 +749,15 @@ delivery windows price it in.
 ### 8.1 Relaxed is calmer, not smaller
 
 Setup: the same leg, same load, driven twice: once in Relaxed, once in
-Realistic (Settings, driving mode).
+Standard (Settings, driving mode).
 
-Do: drive both honestly.
+Do: drive the leg in each mode with the same load.
 
 Listen for: Relaxed keeping every system — weather, traffic, air brakes,
 fatigue, hazards, consequences — but spacing hazards farther apart,
 allowing more response time, building damage and fatigue more gently,
-and speaking routine matters more quietly. Realistic keeping the
-quickest decision cadence. Safety warnings staying ahead of hours and
+and speaking routine matters more quietly. Standard keeping the
+quicker decision cadence. Safety warnings staying ahead of hours and
 fatigue chatter in both.
 
 Pass when: the difference is pacing and breathing room, never missing
@@ -1020,7 +1018,7 @@ Press the limit key whenever something sounds wrong, so you can tell a
 real sign from a phantom.
 
 Listen for: curve calls that match the road you are on — a hairpin only
-where the country is genuinely steep enough for one. And a posted limit
+where the country is steep enough for one. And a posted limit
 that changes when the road changes and holds otherwise, rather than
 dipping and recovering for no reason you can hear.
 
@@ -1117,12 +1115,12 @@ place for the only copy of a career.
 Do: restore it.
 
 Listen for: a clean, ordinary restore. The new integrity layer runs
-behind the server's signature on every restore; an honest save should
-never hear it. If a restore is ever refused, the spoken line names the
-first problem in plain words — that sentence is the bug report.
+behind the server's signature on every restore; a valid save should
+restore without an integrity warning. If a restore is refused, the spoken
+line names the first problem in plain words. Include that sentence in the bug report.
 
-Pass when: honest saves restore silently and any refusal you can
-provoke says exactly why.
+Pass when: valid saves restore without an integrity warning and any refusal
+you can provoke says exactly why.
 
 ## Appendix A. Levers and keys
 
@@ -1195,7 +1193,7 @@ main menu, and unset them when the scenario is done. In PowerShell:
 Unset with `Remove-Item Env:FREIGHT_FATE_FORCE_CITY` (and the same for
 the other two) before normal play. When shared profiles arrive, the
 event ledger must record forced relocations and clock moves so a
-shared save carries an honest history (see docs/profile-invariants.md).
+shared save records those changes (see docs/profile-invariants.md).
 
 ## Appendix B. Reporting a run
 

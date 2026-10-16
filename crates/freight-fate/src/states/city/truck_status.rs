@@ -9,6 +9,12 @@ use crate::app::GameContext;
 use crate::impl_state_for_menu;
 use crate::states::base::{Menu, MenuCore, MenuItem};
 use crate::states::city::profile;
+use crate::states::driving_damage::{maintenance_status_line, MaintenanceComponent};
+
+/// The Assignment row's help while the driver slip-seats.
+const SLIP_SEAT_HELP: &str = "Until level 9, dispatch matches a spare to each load, and each \
+     spare keeps its own fuel and wear. From level 9 you keep one truck for every load until \
+     dispatch moves you up to the next fleet.";
 
 /// Reviewable terminal status for the active tractor.
 pub struct TruckStatusState {
@@ -66,17 +72,12 @@ impl TruckStatusState {
                 "Eligibility: owned tractor, carrier fleet rules do not apply.".to_string(),
             ]
         } else {
-            let mut assignment = format!(
+            // How slip-seating works is the row's F1 help, not the row.
+            let assignment = format!(
                 "Assignment: assigned {} tractor. {}",
                 carrier_name(p),
                 fleet_assignment_text(p)
             );
-            if slip_seats(p) {
-                assignment.push_str(
-                    " Slip-seating: dispatch matches a yard spare to each load, and each spare \
-                     keeps its own fuel and wear. A dedicated seat comes at level 9.",
-                );
-            }
             let mut lines = vec![assignment];
             lines.extend(
                 equipment_status_lines(p)
@@ -86,6 +87,30 @@ impl TruckStatusState {
             lines
         };
 
+        let tire_wear = p.tire_wear_pct();
+        let tire_line = if tire_wear >= ff_core::sim::vehicle::COMPONENT_SERVICE_WARNING_PCT {
+            format!(
+                "{} Compound: {compound}.",
+                maintenance_status_line(MaintenanceComponent::Tires, tire_wear)
+            )
+        } else {
+            format!(
+                "Tire wear: {} percent, {compound} compound.",
+                fmt_f(tire_wear, 0)
+            )
+        };
+        let brake_wear = p.brake_wear_pct();
+        let brake_line = if brake_wear >= ff_core::sim::vehicle::COMPONENT_SERVICE_WARNING_PCT {
+            maintenance_status_line(MaintenanceComponent::Brakes, brake_wear)
+        } else {
+            format!("Brake wear: {} percent.", fmt_f(brake_wear, 0))
+        };
+        let engine_wear = p.engine_wear_pct();
+        let engine_line = if engine_wear >= ff_core::sim::vehicle::COMPONENT_SERVICE_WARNING_PCT {
+            maintenance_status_line(MaintenanceComponent::Engine, engine_wear)
+        } else {
+            format!("Engine wear: {} percent.", fmt_f(engine_wear, 0))
+        };
         lines.extend([
             format!(
                 "Fuel: {} percent, {} gallons of {}.",
@@ -97,12 +122,9 @@ impl TruckStatusState {
                 "Tractor condition: {condition}, {} percent damage.",
                 fmt_f(damage, 0)
             ),
-            format!(
-                "Tire wear: {} percent, {compound} compound.",
-                fmt_f(p.tire_wear_pct(), 0)
-            ),
-            format!("Brake wear: {} percent.", fmt_f(p.brake_wear_pct(), 0)),
-            format!("Engine wear: {} percent.", fmt_f(p.engine_wear_pct(), 0)),
+            tire_line,
+            brake_line,
+            engine_line,
             format!("Road grime: {} percent.", fmt_f(p.road_grime_pct(), 0)),
             chains,
         ]);
@@ -126,12 +148,20 @@ impl Menu for TruckStatusState {
     }
 
     fn build_items(&mut self, ctx: &mut GameContext) -> Vec<MenuItem<Self>> {
+        let slip_seating = {
+            let p = profile(ctx);
+            !p.owns_equipment() && slip_seats(p)
+        };
         let mut items: Vec<MenuItem<Self>> = Self::status_lines(ctx)
             .into_iter()
             .map(|line| {
+                let help = if slip_seating && line.starts_with("Assignment: ") {
+                    SLIP_SEAT_HELP
+                } else {
+                    "Repeat this truck-status line."
+                };
                 let spoken = line.clone();
-                MenuItem::new(line, move |_s: &mut Self, ctx| ctx.say(&spoken))
-                    .help("Repeat this truck-status line.")
+                MenuItem::new(line, move |_s: &mut Self, ctx| ctx.say(&spoken)).help(help)
             })
             .collect();
         items.push(

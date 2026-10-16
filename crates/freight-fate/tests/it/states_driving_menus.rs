@@ -69,6 +69,7 @@ fn test_status_menu_lists_every_screen_and_a_way_back() {
             "Map",
             "Radio",
             "Driver apps",
+            "Driving commands",
             "Back to driving",
         ]
     );
@@ -127,6 +128,27 @@ fn test_map_screen_speaks_city_names_never_slug_keys() {
             "slug key leaked into spoken text: {text:?}"
         );
     }
+}
+
+#[test]
+fn test_map_route_line_collapses_consecutive_deadhead_city_repeats() {
+    // Facility approaches store one city key per local leg, so a deadhead
+    // into Portland (or Rochester here) used to speak the destination many
+    // times on the Map Route line (GitHub #205).
+    let mut app = TestApp::new();
+    let drive = a_drive(&mut app);
+    with_drive(&drive, |d| {
+        let end = d.route.cities.last().cloned().expect("destination");
+        d.route.cities.extend(std::iter::repeat_n(end, 8));
+    });
+    let mut screen = DrivingStatusScreenState::new(drive_ref(&drive), "map");
+    let texts = build_labels(&mut screen, &mut app.ctx);
+    assert_eq!(
+        texts[0], "Route: Buffalo, New York to Rochester, New York",
+        "consecutive destination repeats must collapse on the spoken Route line"
+    );
+    let rochester_mentions = texts[0].matches("Rochester").count();
+    assert_eq!(rochester_mentions, 1, "{}", texts[0]);
 }
 
 #[test]
@@ -424,7 +446,7 @@ fn settlement_job() -> Job {
 fn settle(app: &mut TestApp, damage: f64, fuel_fraction: f64) -> ArrivalState {
     let world = ff_core::data::world::get_world();
     let mut profile = Profile::named_in("Readout Audit", "New York");
-    profile.money = 1000.0;
+    profile.set_money(1000.0);
     profile.business_status = COMPANY_DRIVER.to_string();
     app.ctx.profile = Some(profile);
     let route = world

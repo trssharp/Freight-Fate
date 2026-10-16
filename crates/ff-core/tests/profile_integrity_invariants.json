@@ -1,4 +1,764 @@
 {
+  "achievementCategories": [
+    {
+      "key": "road",
+      "title": "Out on the Road"
+    },
+    {
+      "key": "working_day",
+      "title": "The Working Day"
+    },
+    {
+      "key": "career",
+      "title": "Career and Rank"
+    },
+    {
+      "key": "radio_songs",
+      "title": "The Dial and Song Towns"
+    },
+    {
+      "key": "weather_seasons",
+      "title": "Weather and the Calendar"
+    },
+    {
+      "key": "places",
+      "title": "Places on the Map"
+    },
+    {
+      "key": "hidden",
+      "title": "Deep Cuts"
+    }
+  ],
+  "achievementDetails": {
+    "abilene_arrival": {
+      "category": "radio_songs",
+      "description": "Freight into Abilene. The song got there first, but the load needed a truck."
+    },
+    "air_ready": {
+      "category": "road",
+      "description": "You built air like a pro. Even the fastest rig on the interstate needs its PSI."
+    },
+    "all_regions": {
+      "category": "places",
+      "description": "You've hauled in every region on the map. That list of towns is finally long enough."
+    },
+    "all_terrain_route": {
+      "category": "road",
+      "description": "Flats, hills, and a real mountain grade on one route. The freight never noticed."
+    },
+    "all_upgrades": {
+      "category": "career",
+      "description": "Every upgrade in the catalog, installed. A fully loaded tractor still turns heads."
+    },
+    "amarillo_arrival": {
+      "category": "places",
+      "description": "Into Amarillo, load on the dock by daybreak. No pony, but a fine Panhandle dawn."
+    },
+    "appalachia_delivery": {
+      "category": "places",
+      "description": "Into Appalachian coal and ridge country, on roads that bend like fiddle tunes."
+    },
+    "appreciation_week": {
+      "category": "hidden",
+      "description": "A load during Truck Driver Appreciation Week. Doughnuts at the window and a thank-you from dispatch."
+    },
+    "april_first": {
+      "category": "hidden",
+      "description": "A delivery on April 1. The load was real, and the joke was on nobody."
+    },
+    "authority_active": {
+      "category": "career",
+      "description": "Your own authority is active. Your freight, your rates, your risk, and all the upside."
+    },
+    "bakersfield_arrival": {
+      "category": "places",
+      "description": "Freight on the dock in Bakersfield. Your air brakes kept the twang's beat."
+    },
+    "baton_rouge_arrival": {
+      "category": "places",
+      "description": "Into Baton Rouge with a paycheck coming. Beats busted flat with a harmonica."
+    },
+    "big_payday": {
+      "category": "career",
+      "description": "One load over 4,000 dollars gross. Big money, on the right side of the law."
+    },
+    "birmingham_morning": {
+      "category": "places",
+      "description": "Birmingham before the coffee kicked in. You'd been rolling since before the birds."
+    },
+    "bobtail_done": {
+      "category": "career",
+      "description": "A bobtail move, no trailer. Turning around takes a lot less room without the box."
+    },
+    "brake_smoke": {
+      "category": "road",
+      "description": "You cooked the brakes until they started to fade. Next hill, pick a lower gear."
+    },
+    "break_taken": {
+      "category": "working_day",
+      "description": "Your 30-minute break, taken. One more cup, and your knees said thanks."
+    },
+    "chattanooga_arrival": {
+      "category": "radio_songs",
+      "description": "Freight into Chattanooga, quicker than any old train on a schedule."
+    },
+    "christmas_delivery": {
+      "category": "weather_seasons",
+      "description": "A load signed for on Christmas Day. Somewhere, dinner went on without you."
+    },
+    "clean_delivery": {
+      "category": "road",
+      "description": "Delivered without a new dent. The rig's still pretty enough for a billboard."
+    },
+    "coast_to_coast": {
+      "category": "road",
+      "description": "One run across most of a continent, salt air to salt air."
+    },
+    "coffee_regular": {
+      "category": "working_day",
+      "description": "Twenty-five breaks taken right. It's not the coffee. It's the sitting down."
+    },
+    "construction_zone": {
+      "category": "working_day",
+      "description": "You crept through the cones like each one had a lawyer."
+    },
+    "dakota_delivery": {
+      "category": "places",
+      "description": "A load into the Dakotas, where the horizon talks and the wind argues back."
+    },
+    "dawn_run": {
+      "category": "road",
+      "description": "You pulled out before first light. Early starts pay off in yawns and bonuses."
+    },
+    "deadline_squeaker": {
+      "category": "road",
+      "description": "On time with almost nothing to spare. The dock tore up the late note."
+    },
+    "deep_repair": {
+      "category": "career",
+      "description": "You brought the truck back from 75 percent damage or worse. Only one way to go from there."
+    },
+    "desert_summer": {
+      "category": "weather_seasons",
+      "description": "A summer delivery into the desert Southwest, where the door handle bites."
+    },
+    "detention_paid": {
+      "category": "road",
+      "description": "A shipper held you past free time, and the carrier billed them. The clock worked for you."
+    },
+    "detroit_run": {
+      "category": "places",
+      "description": "A load out of Detroit. Home keeps calling, but freight pays better."
+    },
+    "doubles_load": {
+      "category": "road",
+      "description": "Your first set of doubles, delivered whole. The rear trailer wandered; the mirrors told the truth."
+    },
+    "dropped_the_bad_one": {
+      "category": "road",
+      "description": "You hauled a written-up trailer across the country and left it in the receiver's yard. You checked the lights at every stop."
+    },
+    "eastbound_delivery": {
+      "category": "places",
+      "description": "A load hauled east and on the dock. Eastbound, hammer down, and nobody waited."
+    },
+    "eighty_eight_mph": {
+      "category": "hidden",
+      "description": "88 miles per hour in a loaded truck. No time travel, just a brief lapse in judgment."
+    },
+    "el_paso_arrival": {
+      "category": "places",
+      "description": "Freight into El Paso. The old ballads end in heartbreak; yours ended with a signature."
+    },
+    "every_fleet_tier": {
+      "category": "career",
+      "description": "You've driven every tier of the fleet, trainer rig to first pick. The good iron was worth the wait."
+    },
+    "farm_load": {
+      "category": "road",
+      "description": "Farm freight where it was needed. Somewhere a rancher checked the sky and said much obliged."
+    },
+    "fifteen_states": {
+      "category": "places",
+      "description": "Freight delivered in 15 states. The glovebox is mostly toll receipts."
+    },
+    "fifty_deliveries": {
+      "category": "career",
+      "description": "Fifty deliveries. The board knows your handle, and the windshield knows every bug."
+    },
+    "fifty_five_mph": {
+      "category": "hidden",
+      "description": "Not the mid-90s anymore, whatever Jim Kitchen told you in Trucker. Wrong game. Floor it and hit 88."
+    },
+    "fifty_thousand_miles": {
+      "category": "career",
+      "description": "Fifty thousand miles. The long ribbon of road won't let you walk away."
+    },
+    "first_day": {
+      "category": "career",
+      "description": "First load, first dock, and the air built to cut-out. Day one is in the books."
+    },
+    "first_delivery": {
+      "category": "road",
+      "description": "Your first load, signed for and gone. Clean paperwork, no fanfare."
+    },
+    "first_delivery_drop": {
+      "category": "road",
+      "description": "Your first drop at the receiver. Leave the loaded trailer, hook an empty, and roll."
+    },
+    "first_dispatch": {
+      "category": "career",
+      "description": "Your first load off the board. Just a handle, a load number, and somewhere to be, good buddy."
+    },
+    "first_drop_hook": {
+      "category": "road",
+      "description": "Your first drop and hook. You were rolling before a dock could find you a door."
+    },
+    "first_late": {
+      "category": "road",
+      "description": "Your first late delivery. The bonus walked, and you learned how much cushion a deadline has."
+    },
+    "first_on_time": {
+      "category": "road",
+      "description": "You beat the deadline to the dock. Dispatch only reads the timestamp anyway."
+    },
+    "first_pickup": {
+      "category": "career",
+      "description": "Cargo's aboard and sealed. Eighteen wheels don't roll themselves to the dock."
+    },
+    "first_rest_stop": {
+      "category": "working_day",
+      "description": "Your first rest stop. The romance lasted as long as the vending machine's stare."
+    },
+    "first_ticket": {
+      "category": "working_day",
+      "description": "Your first speeding ticket, paid at the roadside. Dispatch wasn't even surprised."
+    },
+    "first_upgrade": {
+      "category": "career",
+      "description": "Your first upgrade, a small taste of souped-up confidence."
+    },
+    "five_deliveries": {
+      "category": "career",
+      "description": "Five deliveries. That itch to roll finally has a stat line."
+    },
+    "five_hundred_mile_run": {
+      "category": "road",
+      "description": "One dispatch over a thousand miles. The weather changed its mind twice."
+    },
+    "five_tractors": {
+      "category": "career",
+      "description": "Five different tractors under you. You know which spares pull and which just make noise."
+    },
+    "fleet_flagship": {
+      "category": "career",
+      "description": "The fleet flagship, with the big bunk. The yard hands you the keys first."
+    },
+    "fleet_upgrade": {
+      "category": "career",
+      "description": "Dispatch gave you a newer tractor, fueled and washed. Seniority smells like fresh upholstery."
+    },
+    "fort_worth_arrival": {
+      "category": "radio_songs",
+      "description": "A load into Fort Worth. The stockyards went showbiz; the freight stayed honest."
+    },
+    "four_seasons": {
+      "category": "weather_seasons",
+      "description": "Deliveries in all four seasons. You've seen the road's whole wardrobe."
+    },
+    "friday_thirteenth": {
+      "category": "hidden",
+      "description": "Delivered on Friday the 13th without a scratch. Bad luck took the day off."
+    },
+    "fuel_fumes": {
+      "category": "road",
+      "description": "You made the dock on fumes and prayer. Hope is not a fuel plan."
+    },
+    "garage_repair": {
+      "category": "career",
+      "description": "Fixed right at a real garage. An honest bill, and the truck earns its keep again."
+    },
+    "georgia_arrival": {
+      "category": "places",
+      "description": "Midnight freight into Georgia. No first-class ticket, just a sleeper and a thermos."
+    },
+    "grueling_clean": {
+      "category": "road",
+      "description": "Over 1,200 miles, on time and spotless. No run comes easy, except yours."
+    },
+    "gulf_coast_by_two": {
+      "category": "places",
+      "description": "On the Mississippi Gulf Coast by two o'clock. Shrimp boats, salt air, signed bills."
+    },
+    "half_million_earned": {
+      "category": "career",
+      "description": "Half a million dollars earned over your career. Not easy money, but it spends."
+    },
+    "hazard_avoided": {
+      "category": "working_day",
+      "description": "You slowed in time for a road hazard. Your brake pedal had other plans."
+    },
+    "hazmat_load": {
+      "category": "road",
+      "description": "Your first placarded load, no incidents. The paperwork rode shotgun. Careful pays."
+    },
+    "heavy_haul_load": {
+      "category": "road",
+      "description": "Your first heavy-haul load. Every gear change felt like moving a legend."
+    },
+    "heavy_hauler": {
+      "category": "career",
+      "description": "You bought the heavy hauler. The hills got nervous, and so did the fuel bill."
+    },
+    "high_value_load": {
+      "category": "road",
+      "description": "Your first high-value load, seals intact. It rode quiet and never stopped for souvenirs."
+    },
+    "home_return": {
+      "category": "career",
+      "description": "With 10 deliveries behind you, you brought a load home. The streets shrank; the welcome didn't."
+    },
+    "hooked_a_bad_one": {
+      "category": "road",
+      "description": "You hooked a yard trailer and found a defect on the walk-around. Now it's yours."
+    },
+    "houston_arrival": {
+      "category": "radio_songs",
+      "description": "Freight into Houston, sprawling enough for four rush hours. Every mile counted."
+    },
+    "hundred_deliveries": {
+      "category": "career",
+      "description": "A hundred deliveries. No fuss, just load after load until the number got serious."
+    },
+    "hundred_fifty_cities": {
+      "category": "places",
+      "description": "A hundred fifty cities delivered. The far side of the map is feeling left out."
+    },
+    "hundred_grand": {
+      "category": "career",
+      "description": "A hundred thousand dollars banked. Slow as a Cadillac a piece at a time, but legal."
+    },
+    "hundred_k_miles": {
+      "category": "career",
+      "description": "A hundred thousand miles. The road owns most of you now, but not all of you today."
+    },
+    "inspection": {
+      "category": "working_day",
+      "description": "An inspection with your paperwork in order and your axle weights behaving."
+    },
+    "jackson_arrival": {
+      "category": "radio_songs",
+      "description": "A load into Jackson. Tennessee or Mississippi, this badge takes either."
+    },
+    "jake_only_descent": {
+      "category": "road",
+      "description": "Two miles of real downgrade without touching the service brake. The engine brake held it all."
+    },
+    "jam_and_cones": {
+      "category": "working_day",
+      "description": "Cones and a traffic jam on one trip. The truck became a waiting room with mud flaps."
+    },
+    "jersey_delivery": {
+      "category": "places",
+      "description": "You delivered in New Jersey and lived to merge again. Jughandles and all."
+    },
+    "kansas_city_arrival": {
+      "category": "radio_songs",
+      "description": "Freight into Kansas City. Burnt ends, wide boulevards, and no help backing into the dock."
+    },
+    "kentucky_delivery": {
+      "category": "places",
+      "description": "A load signed for in Kentucky. The grass is blue; the money was green."
+    },
+    "laredo_arrival": {
+      "category": "places",
+      "description": "Freight in Laredo, right on the border. Strictly business, and everybody stayed cheerful."
+    },
+    "lcv_load": {
+      "category": "road",
+      "description": "Your first turnpike doubles run. Two long trailers, and every lane change planned half a mile out."
+    },
+    "level_fifteen": {
+      "category": "career",
+      "description": "Career level 15. The owner-operator plan is taped to the sun visor now."
+    },
+    "level_five": {
+      "category": "career",
+      "description": "Career level 5. Dispatch quit double-checking, and you can turn down a load without a lecture."
+    },
+    "level_ten": {
+      "category": "career",
+      "description": "Career level 10, senior driver. Better freight, and new hires think you know every dock."
+    },
+    "level_thirty": {
+      "category": "career",
+      "description": "Career level 30, the top rung. The road ahead is yours to choose."
+    },
+    "level_three": {
+      "category": "career",
+      "description": "Career level 3. Another new town, but this chapter pays better."
+    },
+    "level_twenty_five": {
+      "category": "career",
+      "description": "Career level 25. You qualify for your own operating authority. In freight, that's arriving."
+    },
+    "long_day_run": {
+      "category": "road",
+      "description": "One dispatch longer than a day on the trip clock. The last hundred miles felt personal."
+    },
+    "long_haul": {
+      "category": "road",
+      "description": "One loaded haul over 900 miles. Long enough for the seat cushion to earn seniority."
+    },
+    "low_visibility": {
+      "category": "weather_seasons",
+      "description": "Fog thick enough to bend a banjo string, and you never lost the road."
+    },
+    "lubbock_arrival": {
+      "category": "places",
+      "description": "Out of Lubbock with a load, the hometown shrinking in the mirror."
+    },
+    "manual_driver": {
+      "category": "road",
+      "description": "You ran in manual. Every clean shift sounds cool until the grade changes key."
+    },
+    "max_gross_load": {
+      "category": "road",
+      "description": "A load near the legal weight limit, and the scale house waved it through."
+    },
+    "max_level": {
+      "category": "career",
+      "description": "Career level 20. Same docks, same diner pie, but the pages turn easier now."
+    },
+    "memphis_arrival": {
+      "category": "radio_songs",
+      "description": "Freight in Memphis, where the river hauls nearly as much as the highway."
+    },
+    "midnight_delivery": {
+      "category": "road",
+      "description": "Freight delivered between midnight and first light. Whatever rode along signed nothing."
+    },
+    "montana_delivery": {
+      "category": "places",
+      "description": "Freight in Montana, where the radio runs out and the sky doesn't."
+    },
+    "month_on_road": {
+      "category": "career",
+      "description": "A full month on the career clock. Docks, diners, and dawn starts, and you want more."
+    },
+    "mountain_clean": {
+      "category": "road",
+      "description": "A mountain grade, and the freight came down clean. The brakes politely declined to fail."
+    },
+    "multi_leg_haul": {
+      "category": "career",
+      "description": "One dispatch, four corridors, run nose to tail."
+    },
+    "multi_state": {
+      "category": "road",
+      "description": "Three states on one route. The map had to clear its throat."
+    },
+    "muskogee_arrival": {
+      "category": "radio_songs",
+      "description": "A load into Muskogee, Oklahoma. Clean paperwork counts as manners here."
+    },
+    "nashville_delivery": {
+      "category": "places",
+      "description": "A load in Nashville, where songwriters wait years. Your freight broke through on the first try."
+    },
+    "never_fought_the_law": {
+      "category": "road",
+      "description": "Fifty deliveries without a ticket. No story to tell, and that's the point."
+    },
+    "new_england_delivery": {
+      "category": "places",
+      "description": "Into northern New England: narrow bridges, frost heaves, and town names that fight the GPS."
+    },
+    "new_orleans_arrival": {
+      "category": "radio_songs",
+      "description": "A load into New Orleans, a little behind the beat. The coffee fixed it."
+    },
+    "new_year_run": {
+      "category": "hidden",
+      "description": "Midnight on New Year's, between two towns. They counted down; you counted mile markers."
+    },
+    "night_shift_regular": {
+      "category": "road",
+      "description": "Ten loads delivered in the small hours. Empty lanes and surprised receivers."
+    },
+    "no_toll_long": {
+      "category": "road",
+      "description": "Over 300 loaded miles without a toll. This run never got the memo."
+    },
+    "norcal_giants": {
+      "category": "places",
+      "description": "Up in far Northern California, where the redwoods make a trailer feel small."
+    },
+    "one_for_the_road": {
+      "category": "road",
+      "description": "After midnight, on fumes, in the rain, and still on time. Nothing went wrong fast enough to matter."
+    },
+    "owner_operator_buyin": {
+      "category": "career",
+      "description": "You leased on as an owner-operator. Bigger revenue, your bills, your calls."
+    },
+    "perfect_streak": {
+      "category": "road",
+      "description": "Five straight on time, undamaged, and ticket-free. Quiet on the CB, good on the paycheck."
+    },
+    "phoenix_arrival": {
+      "category": "places",
+      "description": "Freight delivered in Phoenix. The desert never did cool off."
+    },
+    "pnw_delivery": {
+      "category": "places",
+      "description": "Freight in the Pacific Northwest, where the evergreens crowd the shoulder and the rain sets its own schedule."
+    },
+    "port_load": {
+      "category": "road",
+      "description": "Your first container off the port. Your card got you through the gate."
+    },
+    "predictive_crest": {
+      "category": "road",
+      "description": "Cruise read the hill ahead, banked a little speed, and carried it over the top."
+    },
+    "quarter_million_bank": {
+      "category": "career",
+      "description": "250,000 dollars banked. The teller quit counting out loud."
+    },
+    "radio_dial_wanderer": {
+      "category": "radio_songs",
+      "description": "Twenty-five stations found and left behind. You're reading the country off the dial."
+    },
+    "radio_faded_out": {
+      "category": "radio_songs",
+      "description": "You rode a station to the edge of its reach, until the hill got in the way."
+    },
+    "radio_fringe_catch": {
+      "category": "radio_songs",
+      "description": "You caught a station far outside its range, up where the air is thin."
+    },
+    "radio_three_states": {
+      "category": "radio_songs",
+      "description": "One station carried you across three states. The transmitter's still trying."
+    },
+    "rain_driver": {
+      "category": "weather_seasons",
+      "description": "Through the rain, wipers keeping time and your following distance keeping order."
+    },
+    "reefer_load": {
+      "category": "road",
+      "description": "Your first reefer load, temperature steady. The trailer ran cold; your mood didn't."
+    },
+    "refused_the_trailer": {
+      "category": "road",
+      "description": "You found what was wrong with a trailer and refused it. Thirty minutes for the swap."
+    },
+    "rep_ninety": {
+      "category": "career",
+      "description": "Reputation 90 or better. Stroll the truck stop like you own the coffee machine."
+    },
+    "return_trip": {
+      "category": "road",
+      "description": "You hauled the next load right back where you started. This week the horizon ran a shuttle."
+    },
+    "roadside_fix": {
+      "category": "career",
+      "description": "Broke down, waited out roadside help, and finished the run. The show rolls on."
+    },
+    "route66_run": {
+      "category": "places",
+      "description": "A haul between two old Mother Road towns. The neon's faded, but you still got your kicks."
+    },
+    "route_refuel": {
+      "category": "working_day",
+      "description": "You topped off before it got dramatic, then kept on truckin'."
+    },
+    "sacramento_arrival": {
+      "category": "places",
+      "description": "Freight into Sacramento. You heard a train whistle near Folsom and kept rolling, free."
+    },
+    "saginaw_arrival": {
+      "category": "radio_songs",
+      "description": "A delivery into Saginaw, where the bay wind finds every gap in the cab."
+    },
+    "san_antonio_arrival": {
+      "category": "radio_songs",
+      "description": "Freight in San Antonio. The river walks; your trailer rolled."
+    },
+    "scale_regular": {
+      "category": "working_day",
+      "description": "Five inspections over your career. You could clear the scale house in your sleep."
+    },
+    "second_ticket": {
+      "category": "working_day",
+      "description": "Two speeding tickets in one run. The first was a lesson; the second was a choice."
+    },
+    "securement_load": {
+      "category": "road",
+      "description": "Your first flatbed load, every chain still tight. You checked within the first 50 miles, by the book."
+    },
+    "self_paid_course": {
+      "category": "career",
+      "description": "You paid for an endorsement course yourself. Ambition has tuition, and you paid cash."
+    },
+    "seventy_five_cities": {
+      "category": "places",
+      "description": "Seventy-five cities have signed for your freight, and the coffee's bad in every one."
+    },
+    "sixteen_tons": {
+      "category": "road",
+      "description": "Sixteen tons in one load. And what did you get? A sore back and a dispatcher asking for more."
+    },
+    "sixty_nine_mph": {
+      "category": "hidden",
+      "description": "Exactly 69 miles per hour for a full mile. No significance. You know what you did."
+    },
+    "sleep_before_exhaustion": {
+      "category": "working_day",
+      "description": "You bunked down before fatigue took the wheel. This time you listened."
+    },
+    "slept_on_route": {
+      "category": "working_day",
+      "description": "Ten hours in the bunk, and you woke up legal. Unglamorous, and heroic."
+    },
+    "southbound_run": {
+      "category": "road",
+      "description": "A delivery that ran hard south, toward warmer air and somebody waiting on freight."
+    },
+    "speed_limit_saint": {
+      "category": "road",
+      "description": "A whole run without one speeding strike. You thought hard about the insurance."
+    },
+    "spotless_long": {
+      "category": "road",
+      "description": "Over 300 miles, on time, with no damage, strikes, or tickets. The paperwork is your only trace."
+    },
+    "state_crossing": {
+      "category": "road",
+      "description": "Your first state line with freight aboard, kept between the lines."
+    },
+    "storm_driving": {
+      "category": "weather_seasons",
+      "description": "Through a real thunderstorm, and the trailer stayed behind you where it belongs."
+    },
+    "tank_load": {
+      "category": "road",
+      "description": "Your first tanker load, delivered. The surge tried to drive the whole way. You didn't let it."
+    },
+    "ten_deliveries": {
+      "category": "career",
+      "description": "Ten deliveries. A long, strange road, and the receipts pile up faster than the stories."
+    },
+    "ten_four_day": {
+      "category": "hidden",
+      "description": "A load settled on the fourth of October, ten-four day. A white knight started it, and the whole channel said it back."
+    },
+    "ten_thousand_miles": {
+      "category": "career",
+      "description": "Ten thousand miles. The white-line fever isn't a symptom now. It's the job."
+    },
+    "texas_triangle": {
+      "category": "places",
+      "description": "Both ends of the load inside the Texas Triangle. This week the whole map was one state."
+    },
+    "thirty_states": {
+      "category": "places",
+      "description": "Thirty states delivered. Most folks need a camper and a lifetime to see that much."
+    },
+    "thousand_miles": {
+      "category": "career",
+      "description": "A thousand miles. The white-line fever's in your blood, and the bugs are on the glass."
+    },
+    "three_regions": {
+      "category": "road",
+      "description": "You've worked three freight regions. Dispatch still mispronounces the next one."
+    },
+    "three_trucks": {
+      "category": "career",
+      "description": "Three tractors with your name on the titles. The insurance folder calls it a fleet."
+    },
+    "thrifty_run": {
+      "category": "road",
+      "description": "A whole run at better than 8 miles per gallon. Light foot, right gear."
+    },
+    "toll_paid": {
+      "category": "road",
+      "description": "One beep at the toll, and the carrier ate it. Accounting took the wheel."
+    },
+    "top_reputation": {
+      "category": "career",
+      "description": "Your reputation pinned the meter. The channel knows your handle, and dispatch takes your word."
+    },
+    "traffic_slowing": {
+      "category": "working_day",
+      "description": "Heavy traffic, and you kept a sane following distance. You let the jam breathe."
+    },
+    "true_north_run": {
+      "category": "road",
+      "description": "A delivery that ran hard north. You found a bearing, and it had a dock at the end."
+    },
+    "tulsa_arrival": {
+      "category": "places",
+      "description": "Into Tulsa right on time. The dock was glad to see you."
+    },
+    "twenty_five_cities": {
+      "category": "places",
+      "description": "Deliveries in 25 cities. The atlas falls open to the right page now."
+    },
+    "twenty_five_deliveries": {
+      "category": "career",
+      "description": "Twenty-five deliveries. Not a rookie, not a veteran, just more road than most."
+    },
+    "twenty_five_grand": {
+      "category": "career",
+      "description": "25,000 dollars banked, a load at a time. Slower than a Cadillac in a lunchbox, but legal."
+    },
+    "two_hundred_deliveries": {
+      "category": "career",
+      "description": "Two hundred deliveries. Not a phase anymore. It's a body of work."
+    },
+    "vegas_arrival": {
+      "category": "places",
+      "description": "A load into Las Vegas. You only gambled on the merge, and the house lost."
+    },
+    "virginia_line": {
+      "category": "places",
+      "description": "Freight on a Virginia dock, across a county line worth singing about."
+    },
+    "waco_survivor": {
+      "category": "places",
+      "description": "Freight into Waco without a scratch. Whatever the songs say, you kept your health."
+    },
+    "weather_collector": {
+      "category": "weather_seasons",
+      "description": "You've driven under every sky in the forecast. None of it lasted; you did."
+    },
+    "westbound_delivery": {
+      "category": "places",
+      "description": "A load hauled west, chasing the sun down to the dock."
+    },
+    "wichita_arrival": {
+      "category": "places",
+      "description": "A load signed for in Wichita. A lineman waved; you were watching the wind."
+    },
+    "winslow_arrival": {
+      "category": "radio_songs",
+      "description": "A load into Winslow, Arizona. You're the second most photographed thing on the corner."
+    },
+    "winter_delivery": {
+      "category": "weather_seasons",
+      "description": "A load delivered in the dead of winter, heater roaring. You kept rolling."
+    },
+    "winter_or_wind": {
+      "category": "weather_seasons",
+      "description": "Snow or crosswind, the trailer stayed in line and out of the headlines."
+    },
+    "wyoming_delivery": {
+      "category": "places",
+      "description": "A delivery in Wyoming. No traffic, just wind, antelope, and the odd legend."
+    }
+  },
   "achievementIds": [
     "abilene_arrival",
     "air_ready",
@@ -7,6 +767,7 @@
     "all_upgrades",
     "amarillo_arrival",
     "appalachia_delivery",
+    "appreciation_week",
     "april_first",
     "authority_active",
     "bakersfield_arrival",
@@ -38,6 +799,7 @@
     "farm_load",
     "fifteen_states",
     "fifty_deliveries",
+    "fifty_five_mph",
     "fifty_thousand_miles",
     "first_day",
     "first_delivery",
@@ -153,6 +915,7 @@
     "storm_driving",
     "tank_load",
     "ten_deliveries",
+    "ten_four_day",
     "ten_thousand_miles",
     "texas_triangle",
     "thirty_states",
@@ -188,6 +951,7 @@
     "all_upgrades": "Every Box on the Order Sheet",
     "amarillo_arrival": "Amarillo by Daybreak",
     "appalachia_delivery": "Freight Up the Holler",
+    "appreciation_week": "Somebody Said Thank You",
     "april_first": "Nobody's Fool on the First",
     "authority_active": "Running Under Your Own Numbers",
     "bakersfield_arrival": "The Bakersfield Sound",
@@ -219,6 +983,7 @@
     "farm_load": "Feed, Seed, and Freight",
     "fifteen_states": "Fifteen State Lines Behind You",
     "fifty_deliveries": "Fifty Loads Down the Road",
+    "fifty_five_mph": "Wrong Game, No Limit",
     "fifty_thousand_miles": "Highway Lifer",
     "first_day": "First Day",
     "first_delivery": "Signed, Sealed, Hauled",
@@ -334,6 +1099,7 @@
     "storm_driving": "Dark Line on the Radar",
     "tank_load": "The Load That Pushes Back",
     "ten_deliveries": "What a Long, Strange Haul",
+    "ten_four_day": "Copy That, October",
     "ten_thousand_miles": "Ten Thousand Down the Line",
     "texas_triangle": "All Your Loads Live in Texas",
     "thirty_states": "Thirty States and Counting",
@@ -369,6 +1135,7 @@
     "pending_credentials",
     "purchased_endorsements",
     "reputation",
+    "standing",
     "total_earnings",
     "total_miles",
     "unacknowledged_grants",
@@ -412,6 +1179,68 @@
     "prairie_link": "Prairie Link Regional",
     "roadstead_owner_operator": "Northstar Freight Lines",
     "summit_value": "Summit Value Logistics"
+  },
+  "carriers": {
+    "great_lakes_training": {
+      "description": "A practical training-fleet start. Stop pay is better on short loads, and dispatch leans toward shorter training work with a little more deadline room. Equipment and routine costs stay carrier-paid. At level 4 with full dispatch trust, Business status lets you move to another carrier.",
+      "dispatch": "more short training loads, more appointment slack",
+      "favoredFreight": [],
+      "name": "Great Lakes Training Transport",
+      "pay": {
+        "minPerMile": 0.74,
+        "onTimeBonusShare": 0.02,
+        "payShare": 0.33,
+        "stopPay": 225
+      },
+      "suggestedHomeTerminal": "Milwaukee"
+    },
+    "northstar": {
+      "description": "A balanced company-driver path. The carrier assigns and maintains the tractor, pays fuel and routine repairs, and offers steady wage math without a sharp specialty.",
+      "dispatch": "balanced dispatch",
+      "favoredFreight": [],
+      "name": "Northstar Freight Lines",
+      "pay": {
+        "minPerMile": 0.82,
+        "onTimeBonusShare": 0.04,
+        "payShare": 0.36,
+        "stopPay": 175
+      },
+      "suggestedHomeTerminal": "Chicago"
+    },
+    "prairie_link": {
+      "description": "A mile-focused company start. The per-mile wage floor is higher, but stop pay is lower, so it favors steady regional mileage over very short hops. Dispatch leans toward same-region grain and bulk work. The carrier still assigns and maintains the tractor.",
+      "dispatch": "more same-region lanes, more longer lanes",
+      "favoredFreight": [
+        "grain",
+        "farm inputs",
+        "bulk materials"
+      ],
+      "name": "Prairie Link Regional",
+      "pay": {
+        "minPerMile": 0.95,
+        "onTimeBonusShare": 0.03,
+        "payShare": 0.34,
+        "stopPay": 130
+      },
+      "suggestedHomeTerminal": "Kansas City"
+    },
+    "summit_value": {
+      "description": "A performance-sensitive company start. Good on-time runs pay better, but the guaranteed floor is smaller. Dispatch leans toward longer and higher-value lanes. The carrier still supplies equipment, authority, insurance, fuel, and repairs.",
+      "dispatch": "more longer lanes",
+      "favoredFreight": [
+        "electronics",
+        "automotive parts",
+        "parcel freight"
+      ],
+      "name": "Summit Value Logistics",
+      "pay": {
+        "minPerMile": 0.78,
+        "onTimeBonusShare": 0.06,
+        "payShare": 0.38,
+        "stopPay": 150
+      },
+      "suggestedHomeTerminal": "Denver"
+    }
   },
   "cityLabels": {
     "aberdeen_sd_us": "Aberdeen, South Dakota",
@@ -1039,6 +1868,43 @@
     "yuma_az_us": "Yuma, Arizona",
     "zanesville_oh_us": "Zanesville, Ohio"
   },
+  "companyCareerTitles": [
+    "Yard Trainee",
+    "New Hire Company Driver",
+    "Solo Company Driver",
+    "Regional Company Driver",
+    "Regional Regular",
+    "Experienced Company Driver",
+    "Long-Haul Company Driver",
+    "Heavy Freight Driver",
+    "High-Value Company Driver",
+    "Lead Company Driver",
+    "Specialized Company Driver",
+    "Premium Lane Driver",
+    "Carrier Mentor Driver",
+    "Business Prep Driver",
+    "Dedicated Company Driver",
+    "Fleet Senior Driver",
+    "Lead Fleet Driver",
+    "Company Fleet Captain",
+    "Veteran Company Hauler",
+    "Senior Fleet Regular",
+    "Carrier Elite Driver",
+    "Premium Company Lane Driver",
+    "Master Company Driver",
+    "Distinguished Fleet Driver",
+    "Senior Fleet Mentor",
+    "Carrier Lifetime Driver",
+    "Elite Specialized Company Driver",
+    "Top-Seniority Company Driver",
+    "Company Career Veteran",
+    "Freight Fate Company Driver"
+  ],
+  "companyPay": {
+    "assignedRepositionPayFraction": 0.6,
+    "reputationBonusMaxShare": 0.06
+  },
+  "companyRankForkLevel": 18,
   "endorsements": {
     "doubles_triples": {
       "label": "doubles",

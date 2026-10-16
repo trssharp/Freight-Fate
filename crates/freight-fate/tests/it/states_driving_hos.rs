@@ -328,10 +328,12 @@ fn test_rest_stop_menu_break_and_sleep() {
         assert!(approx(p.fatigue, 15.0), "{}", p.fatigue);
     }
 
-    harness.select_menu_item("Sleep 10 hours");
+    // The break is the first half hour of the ten.
+    harness.select_menu_item("Sleep 9.5 hours more to finish a 10-hour reset");
+    harness.select_menu_item("Sleep 9.5 hours more to finish a 10-hour reset");
     assert!(approx(
         harness.read_drive(|d| d.trip.game_minutes),
-        minutes_before + 30.0 + 600.0
+        minutes_before + 600.0
     ));
     {
         let p = harness.app.ctx.profile.as_ref().expect("a career");
@@ -388,9 +390,9 @@ fn test_food_and_coffee_break_boosts_alertness_without_resetting_break_rule() {
         assert!(approx(p.fatigue, 47.0), "{}", p.fatigue);
     }
     let said = last(&harness);
-    assert!(said.contains("Coffee eases fatigue a little"), "{said}");
+    assert!(said.contains("Eases fatigue"), "{said}");
     assert!(
-        said.contains("does not reset your 30-minute break requirement"),
+        said.contains("does not count as your 30-minute break"),
         "{said}"
     );
 }
@@ -435,6 +437,7 @@ fn test_split_sleeper_rest_action_advances_clock_and_speaks_status() {
     harness.clear_speech();
 
     harness.select_menu_item("Sleep 8 hours in sleeper berth");
+    harness.select_menu_item("Sleep 8 hours in sleeper berth");
 
     assert!(approx(
         harness.read_drive(|d| d.trip.game_minutes),
@@ -458,7 +461,7 @@ fn test_split_sleeper_rest_action_advances_clock_and_speaks_status() {
     let lines = spoken(&harness);
     let status_at = lines
         .iter()
-        .position(|line| line.contains("Sleeper split pending"))
+        .position(|line| line.contains("Sleeper split open"))
         .unwrap_or_else(|| panic!("no pending-split status line: {lines:#?}"));
     let badge_at = lines
         .iter()
@@ -485,6 +488,7 @@ fn test_split_sleeper_rest_action_advances_clock_and_speaks_status() {
         .hos
         .drive(300.0);
     harness.select_menu_item("Sleep 2 hours in sleeper berth");
+    harness.select_menu_item("Sleep 2 hours in sleeper berth");
 
     let completed = spoken(&harness)
         .into_iter()
@@ -495,8 +499,75 @@ fn test_split_sleeper_rest_action_advances_clock_and_speaks_status() {
                 spoken(&harness)
             )
         });
-    assert!(completed.contains("hours of driving left"), "{completed}");
-    assert!(completed.contains("duty window closes"), "{completed}");
+    assert!(completed.contains("of driving left"), "{completed}");
+    assert!(completed.contains("14-hour window"), "{completed}");
+}
+
+/// The long half of a split stops the duty window while it runs. A tester
+/// with 7 hours of duty on the clock slept 8 in the berth and woke to a
+/// closed window (2026-09-11); now the window waits, and the wake-up line
+/// says so.
+#[test]
+fn test_long_sleeper_period_pauses_duty_window_and_says_so() {
+    let mut harness = a_drive("Split Pause");
+    sleep_stop_here(&mut harness);
+    press_t(&mut harness);
+    assert!(harness.state_is::<RestStopState>());
+    harness
+        .app
+        .ctx
+        .profile
+        .as_mut()
+        .expect("a career")
+        .hos
+        .drive(420.0);
+    // The drive so far already put some duty on the clock; the window must
+    // read exactly the same after the sleep as before it.
+    let before = harness
+        .app
+        .ctx
+        .profile
+        .as_ref()
+        .expect("a career")
+        .hos
+        .clone();
+    harness.clear_speech();
+
+    harness.select_menu_item("Sleep 8 hours in sleeper berth");
+    harness.select_menu_item("Sleep 8 hours in sleeper berth");
+
+    let hos = harness
+        .app
+        .ctx
+        .profile
+        .as_ref()
+        .expect("a career")
+        .hos
+        .clone();
+    assert!(
+        approx(hos.duty_min, before.duty_min),
+        "duty window ran on: {} -> {}",
+        before.duty_min,
+        hos.duty_min
+    );
+    assert!(
+        approx(hos.driving_min, before.driving_min),
+        "{}",
+        hos.driving_min
+    );
+    assert!(!hos.in_violation("realistic"));
+    let woke = spoken(&harness)
+        .into_iter()
+        .find(|line| line.contains("You slept 8 hours"))
+        .unwrap_or_else(|| panic!("no wake-up line: {:#?}", spoken(&harness)));
+    let left = ff_core::pyfmt::fmt_f((14.0 * 60.0 - before.duty_min) / 60.0, 1);
+    assert!(
+        woke.contains(&format!(
+            "your duty window paused while you slept. It closes in {left} hours"
+        )),
+        "{woke}"
+    );
+    assert!(woke.contains("Sleeper split open"), "{woke}");
 }
 
 #[test]
@@ -513,6 +584,7 @@ fn test_sleeping_shuts_down_a_running_engine() {
     assert!(harness.state_is::<RestStopState>());
     harness.clear_speech();
 
+    harness.select_menu_item("Sleep 10 hours");
     harness.select_menu_item("Sleep 10 hours");
 
     let cold_start_psi = harness.read_drive(|d| d.trip.truck.specs.air_cold_start_psi);
@@ -533,13 +605,7 @@ fn test_sleeping_shuts_down_a_running_engine() {
         .iter()
         .find(|l| l.contains("You slept 10 hours"))
         .unwrap_or_else(|| panic!("no wake line: {lines:#?}"));
-    assert!(wake.contains("Air pressure 55 psi"), "{wake}");
-    assert!(
-        wake.contains("Choose Back to the road, then press E to start the engine"),
-        "{wake}"
-    );
-    assert!(wake.contains("At air ready"), "{wake}");
-    assert!(wake.contains("P releases the parking brake"), "{wake}");
+    assert!(wake.contains("Engine off, air 55 psi."), "{wake}");
 
     harness.clear_speech();
     harness.select_menu_item("Sleep 10 hours");
@@ -690,7 +756,7 @@ fn test_full_parking_offers_drive_on_and_shoulder() {
     harness.select_menu_item("Park on the shoulder and sleep");
     assert!(harness.state_is::<ShoulderSleepConfirmationState>());
     let said = last(&harness);
-    assert!(said.contains("emergency-only"), "{said}");
+    assert!(said.contains("Emergency shoulder sleep:"), "{said}");
     assert!(
         said.contains("possible") || said.contains("may be ticketed"),
         "{said}"
@@ -701,7 +767,7 @@ fn test_full_parking_offers_drive_on_and_shoulder() {
         let p = harness.app.ctx.profile.as_mut().expect("a career");
         p.hos.drive(700.0);
         p.fatigue = 95.0;
-        p.money
+        p.money()
     };
     let damage_before = harness_damage(&harness);
     let minutes_before = harness.read_drive(|d| d.trip.game_minutes);
@@ -721,7 +787,7 @@ fn test_full_parking_offers_drive_on_and_shoulder() {
         // A clean career parked clear of roadwork pays the base amount; the
         // helper is asked so a rebalance moves one number, not this test.
         let expected = enforcement::citation_fine(hos::SHOULDER_FINE, 0, construction, None);
-        assert!(approx(p.money, money_before - expected), "{}", p.money);
+        assert!(approx(p.money(), money_before - expected), "{}", p.money());
         assert!(p.active_trip.is_some());
     }
     assert!(approx(
@@ -732,10 +798,7 @@ fn test_full_parking_offers_drive_on_and_shoulder() {
         .into_iter()
         .find(|line| line.contains("sleep poorly on the shoulder"))
         .unwrap_or_else(|| panic!("no shoulder wake line: {:#?}", spoken(&harness)));
-    assert!(
-        wake.contains("Air pressure 55 psi. Press E to start the engine"),
-        "{wake}"
-    );
+    assert!(wake.contains("Engine off, air 55 psi."), "{wake}");
     assert!(
         !wake.contains("Back to the road"),
         "there is no stop menu to go back to: {wake}"
@@ -796,14 +859,14 @@ fn test_emergency_shoulder_sleep_pause_menu_constraints() {
     assert!(harness.state_is::<ShoulderSleepConfirmationState>());
     let said = spoken(&harness)
         .into_iter()
-        .find(|line| line.contains("Shoulder sleep is emergency-only"))
+        .find(|line| line.contains("Emergency shoulder sleep:"))
         .unwrap_or_default();
     assert!(
-        said.contains("Hours of service reset if enforced"),
+        said.contains("HOS reset if enforced"),
         "{:?}",
         spoken(&harness)
     );
-    assert!(said.contains("minor truck damage"), "{said}");
+    assert!(said.contains("light damage possible"), "{said}");
     assert_eq!(
         harness.focused_label().expect("a focused row"),
         "Cancel and keep looking for a safe stop"
@@ -844,7 +907,7 @@ fn test_t_opens_roadside_sleep_confirmation_at_safe_stop() {
             .starts_with("Cancel"));
         let said = last(&harness);
         assert!(said.contains("poor rest"), "{said}");
-        assert!(said.contains("minor truck damage"), "{said}");
+        assert!(said.contains("light damage possible"), "{said}");
         harness.with_drive(|d, _| {
             assert!(d.trip.planned_stop_key.is_some());
             assert!(d.selected_stop_key.is_some());
@@ -888,14 +951,7 @@ fn test_t_plans_rest_instead_of_opening_roadside_sleep_while_moving() {
         // the truck, so the decline is the only honest answer -- and what T
         // must never do while rolling is open roadside sleep.
         let said = last(&harness);
-        assert!(
-            said.starts_with("No sleep-capable route stop is ahead on this route"),
-            "{said}"
-        );
-        assert!(
-            said.contains("Away from a route point, emergency shoulder sleep is available"),
-            "{said}"
-        );
+        assert_eq!(said, "No sleep stop ahead. Shoulder sleep available.");
         assert_eq!(harness.read_drive(|d| d.trip.game_minutes), minutes_before);
         assert!(!harness.read_drive(|d| d.trip.truck.parking_brake));
         drop(harness);
@@ -987,7 +1043,11 @@ fn test_shoulder_sleep_revalidates_stop_and_unwinds_without_stale_pause_speech()
         "the unwound pause menu must not speak on its way out: {:#?}",
         spoken(&harness)
     );
-    assert!(last(&harness).contains("Press E"), "{}", last(&harness));
+    assert!(
+        last(&harness).contains("Engine off, air"),
+        "{}",
+        last(&harness)
+    );
 }
 
 #[test]
@@ -1059,10 +1119,7 @@ fn test_hos_off_still_allows_fatigue_emergency_shoulder_sleep() {
     assert!(harness.state_is::<ShoulderSleepConfirmationState>());
     let said = last(&harness);
     assert!(said.contains("poor rest"), "{said}");
-    assert!(
-        said.contains("Hours of service reset if enforced"),
-        "{said}"
-    );
+    assert!(said.contains("HOS reset if enforced"), "{said}");
 
     let minutes_before = harness.read_drive(|d| d.trip.game_minutes);
     harness.key(InputEvent::key(Key::Return)); // the focused Cancel row
@@ -1100,7 +1157,7 @@ fn test_inspection_fines_escalate_and_hit_reputation() {
     let mut harness = a_drive("Inspection Fines");
     let (rep, money) = {
         let p = harness.app.ctx.profile.as_ref().expect("a career");
-        (p.career.reputation, p.money)
+        (p.career.reputation, p.money())
     };
     for key in ["scale:1", "scale:2"] {
         let event = TripEvent {
@@ -1116,9 +1173,9 @@ fn test_inspection_fines_escalate_and_hit_reputation() {
 
     let p = harness.app.ctx.profile.as_ref().expect("a career");
     assert!(
-        approx(p.money, money - hos::HOS_FINES[0] - hos::HOS_FINES[1]),
+        approx(p.money(), money - hos::HOS_FINES[0] - hos::HOS_FINES[1]),
         "{}",
-        p.money
+        p.money()
     );
     assert!(
         approx(p.career.reputation, rep - 2.0 * hos::HOS_REPUTATION_HIT),
@@ -1140,7 +1197,7 @@ fn test_serious_hos_inspection_orders_out_of_service_reset() {
         .expect("a career")
         .hos
         .drive(481.0);
-    let money = harness.app.ctx.profile.as_ref().expect("a career").money;
+    let money = harness.app.ctx.profile.as_ref().expect("a career").money();
     let minutes = harness.read_drive(|d| d.trip.game_minutes);
     let event = TripEvent {
         kind: TripEventKind::Inspection,
@@ -1164,7 +1221,7 @@ fn test_serious_hos_inspection_orders_out_of_service_reset() {
         assert_eq!(d.out_of_service_count, 0);
     });
     assert_eq!(
-        harness.app.ctx.profile.as_ref().expect("a career").money,
+        harness.app.ctx.profile.as_ref().expect("a career").money(),
         money
     );
     assert_eq!(harness.read_drive(|d| d.trip.game_minutes), minutes);
@@ -1187,9 +1244,18 @@ fn test_serious_hos_inspection_orders_out_of_service_reset() {
     });
     {
         let p = harness.app.ctx.profile.as_ref().expect("a career");
-        assert!(approx(p.money, money - hos::HOS_FINES[0]), "{}", p.money);
+        assert!(
+            approx(p.money(), money - hos::HOS_FINES[0]),
+            "{}",
+            p.money()
+        );
         assert_eq!(p.hos.driving_min, 481.0);
         assert_eq!(p.hos.since_break_min, 0.0);
+        // The order reaches the career record the safety record scores, not
+        // only the trip tally: it never did, so a scale kept waving a driver
+        // with out-of-service history through as clean.
+        assert_eq!(p.out_of_service_events, 1);
+        assert_eq!(p.driving_record.citations, 1);
     }
     assert!(approx(
         harness.read_drive(|d| d.trip.game_minutes),
@@ -1202,10 +1268,20 @@ fn test_serious_hos_inspection_orders_out_of_service_reset() {
     let staged = event.clone();
     harness.with_drive(move |d, ctx| d.handle_inspection(ctx, &staged));
     assert!(approx(
-        harness.app.ctx.profile.as_ref().expect("a career").money,
+        harness.app.ctx.profile.as_ref().expect("a career").money(),
         money - hos::HOS_FINES[0]
     ));
     assert_eq!(harness.read_drive(|d| d.out_of_service_count), 1);
+    assert_eq!(
+        harness
+            .app
+            .ctx
+            .profile
+            .as_ref()
+            .expect("a career")
+            .out_of_service_events,
+        1
+    );
 }
 
 #[test]
@@ -1253,6 +1329,66 @@ fn test_drive_limit_inspection_still_orders_ten_hours() {
         harness.read_drive(|d| d.trip.game_minutes),
         minutes + hos::SLEEP_MIN
     ));
+}
+
+/// Driving under an out-of-service order is a disqualifying offense (49 CFR
+/// 383.51 Table 4) the game has no path to: the order is written only once
+/// the truck is stopped on the shoulder, and served in full in the same call,
+/// so the truck is legal again before it can roll. Equipment orders are fixed
+/// on the spot (`test_bald_tires_in_the_lane_are_out_of_service_until_replaced`).
+/// If this ever fails, the offense needs modelling, not this test.
+#[test]
+fn test_the_truck_never_rolls_under_an_out_of_service_order() {
+    let mut harness = a_drive("Order Served");
+    harness.app.ctx.settings.hos_mode = "realistic".to_string();
+    harness
+        .app
+        .ctx
+        .profile
+        .as_mut()
+        .expect("a career")
+        .hos
+        .drive(11.0 * 60.0 + 1.0);
+    let minutes = harness.read_drive(|d| d.trip.game_minutes);
+    let career_h = harness
+        .app
+        .ctx
+        .profile
+        .as_ref()
+        .expect("a career")
+        .game_hours;
+    let event = TripEvent {
+        kind: TripEventKind::Inspection,
+        message: "Inspection station open.".into(),
+        data: TripEventData {
+            key: Some("scale:served".to_string()),
+            evidence: Some(vec!["HOS/ELD violation".to_string()]),
+            ..Default::default()
+        },
+    };
+    harness.with_drive(move |d, ctx| d.handle_inspection(ctx, &event));
+    // Lights on and still rolling: no order has been written yet.
+    harness.with_drive(|d, ctx| {
+        assert_eq!(d.pull_over.as_deref(), Some("lights"));
+        assert_eq!(d.out_of_service_count, 0);
+        let record = &ctx.profile.as_ref().expect("a career").driving_record;
+        assert!(record.out_of_service_times.is_empty());
+        d.pull_over_signaled = true;
+        d.truck_mut().velocity_mps = 0.0;
+        d.open_traffic_stop(ctx);
+    });
+    // Stopped: the order is written and already served when control returns.
+    let p = harness.app.ctx.profile.as_ref().expect("a career");
+    assert!(!p.hos.in_violation("realistic"));
+    assert_eq!(
+        p.driving_record.out_of_service_times,
+        vec![career_h + minutes / 60.0]
+    );
+    harness.with_drive(|d, _| {
+        assert_eq!(d.out_of_service_count, 1);
+        assert_eq!(d.trip.truck.velocity_mps, 0.0);
+        assert!(approx(d.trip.game_minutes, minutes + hos::SLEEP_MIN));
+    });
 }
 
 // -- the clock the shift runs on --------------------------------------------------------

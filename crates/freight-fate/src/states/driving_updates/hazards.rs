@@ -5,6 +5,7 @@
 use ff_core::pyrandom::PyRandom;
 use ff_core::sim::driving_modes::tuning_for_time_scale;
 use ff_core::sim::trip_models::HAZARDS;
+use ff_core::sim::vehicle::BrakeApplication;
 use ff_core::speech_pacing::{EventPriority, SpeechCategory};
 use ff_core::speech_text::terse_silent;
 
@@ -41,9 +42,23 @@ impl DrivingState {
     /// hot brakes (playtest transcript, 2026-07-16).
     pub fn brake_budget_s(&self, target_mph: f64) -> f64 {
         let t = &self.trip.truck;
-        let over_mps = 0.0f64.max((t.speed_mph() - target_mph) / MPH_PER_MPS);
-        let decel = t.full_service_decel_mps2() + G * t.grade;
-        over_mps / decel.max(0.5)
+        t.braking_time_for_s(
+            t.velocity_mps,
+            target_mph / MPH_PER_MPS,
+            true,
+            BrakeApplication::Service(1.0),
+        )
+    }
+
+    /// Seconds of emergency braking to reach the given safe speed.
+    pub fn emergency_brake_budget_s(&self, target_mph: f64) -> f64 {
+        let t = &self.trip.truck;
+        t.braking_time_for_s(
+            t.velocity_mps,
+            target_mph / MPH_PER_MPS,
+            true,
+            BrakeApplication::Emergency,
+        )
     }
 
     /// Time-to-hazard at which automatic braking has to take the truck.
@@ -83,7 +98,8 @@ impl DrivingState {
             // 2026-08-24).
             window += LANE_TAP_CHANGE_S;
         }
-        self.aeb_engage_s(self.hazard_target_mph(Some(shape))) + window
+        let target_mph = self.hazard_target_mph(Some(shape));
+        self.aeb_engage_s(target_mph) + window
     }
 
     /// The live hazard's own shape, for the assist to budget against.
@@ -264,19 +280,55 @@ impl DrivingState {
     /// box gives them: brake, and the transmission holds a lower gear for
     /// them (`auto_shift` picks the tallest gear landing in the 1050-1700
     /// band while braking, and never upshifts off the pedal).
-    pub fn descend_advice(&self, ctx: &GameContext) -> String {
-        let jake = ctx.control_hint("engine_brake");
-        if self.trip.truck.transmission.automatic {
-            return format!("Set the engine brake with {jake} before it starts.");
+    ///
+    /// And in terms of the state they are in: with the jake already on (or
+    /// the automatic jake armed), J turns it OFF, so "Set the engine brake
+    /// with J" told the driver to switch off the thing the hill needs (agent
+    /// drive, Silverthorne to Edwards, 2026-09-24). Then the jake clause
+    /// goes, and on an automatic nothing is left to advise.
+    ///
+    /// And only while it is still teaching. A driver who has switched the
+    /// engine brake on a few times knows the hill wants it, and hearing how on
+    /// every downgrade got old (bscross32, 2026-10: "I'll decide how to handle
+    /// it"). Once the J key is retired the call is just the grade and its
+    /// length. A remapped key or a new transmission teaches it again.
+    pub fn descend_advice(&self, ctx: &mut GameContext) -> String {
+        if self.instruction_retired(ctx, "engine_brake") {
+            return String::new();
         }
-        format!("Pick your gear and set the engine brake with {jake} before it starts.")
+        let jake_set = self.trip.truck.engine_brake() || self.auto_jake;
+        let automatic = self.trip.truck.transmission.automatic;
+        if jake_set {
+            return if automatic {
+                String::new()
+            } else {
+                "Pick your gear before it starts.".to_string()
+            };
+        }
+        format!("Set the jake with {}.", ctx.control_hint("engine_brake"))
     }
 
     /// How far a grade of this sign keeps its character from `start_mi`.
     ///
     /// Sampled at the stride the baked grade segments use, so the answer is
     /// the run the road data actually has rather than an interpolation of it.
+    ///
+    /// The ONE length a steep grade has. The advisory, the G key's "running
+    /// 2 miles" for the grade ahead and its "for another" for the grade
+    /// underneath all read it here. The G key used to measure until the
+    /// road stopped going downhill at all, so one seven percent pitch was
+    /// "running 2 miles" from the top and "for another 10 miles" a minute
+    /// later, on it (agent drive into Denver, 2026-09-24): the gentle grade
+    /// below it was being counted as the seven percent.
     pub fn grade_run_mi(&self, start_mi: f64, sign: i32) -> f64 {
+        self.grade_run_over_mi(start_mi, sign, GRADE_WARN_CLEAR_PCT)
+    }
+
+    /// [`Self::grade_run_mi`] with the floor named: the run lasts while the
+    /// grade holds at least `floor_pct` in the direction of `sign`. Only a
+    /// grade already gentler than the steep line's release is measured on a
+    /// lower floor, and it has no steep run to disagree with.
+    pub fn grade_run_over_mi(&self, start_mi: f64, sign: i32, floor_pct: f64) -> f64 {
         let mut run = 0.0;
         let mut probe = start_mi;
         while run < GRADE_WARN_SCAN_MI {
@@ -284,7 +336,7 @@ impl DrivingState {
             if probe >= self.trip.total_miles() {
                 break;
             }
-            if self.trip.grade_at(probe) * sign as f64 * 100.0 < GRADE_WARN_CLEAR_PCT {
+            if self.trip.grade_at(probe) * sign as f64 * 100.0 < floor_pct {
                 break;
             }
             run += GRADE_WARN_STEP_MI;
@@ -368,18 +420,26 @@ impl DrivingState {
             ""
         };
         let length = format!(" for {about}{}", self.trip.distance_text(run_mi));
-        let direction = if sign > 0 { "upgrade" } else { "downgrade" };
+        let direction = if sign > 0 {
+            "uphill grade"
+        } else {
+            "downhill grade"
+        };
         ctx.audio.play_with("ui/notify", 0.55, 0.0);
+        // An uphill grade needs no advice: the truck slowing on it is the
+        // expected thing, and saying so was one more sentence to sit through.
         let advice = if sign < 0 {
             self.descend_advice(ctx)
         } else {
-            "Expect to lose speed.".to_string()
+            String::new()
         };
         ctx.say_event_with(
             format!(
                 "{:.1} percent {direction} ahead{length}. {advice}",
                 pct.abs()
-            ),
+            )
+            .trim_end()
+            .to_string(),
             SayEvent::queued()
                 .priority(EventPriority::Route)
                 .category(SpeechCategory::Navigation),
@@ -432,7 +492,7 @@ impl DrivingState {
             return;
         }
         let text = format!(
-            "The horn does it, {} clears the road. Well done.",
+            "The horn does it, {} clears the road.",
             self.hazard_names_text()
         );
         self.finish_hazard_clear(ctx, &text);
@@ -458,38 +518,17 @@ impl DrivingState {
         }
     }
 
-    /// What actually happened, said in the driver's terms.
-    ///
-    /// A hazard with a LEAD SPEED is a vehicle, and since `hazard_target_mph`
-    /// started clearing those by matching the vehicle rather than by nearly
-    /// stopping (Brandon, 2026-08-23) this line had gone untrue: the truck
-    /// eased from sixty-five to fifty-five and was told it had nearly stopped
-    /// and eased around. On a one-lane road it was untrue twice over -- there
-    /// was nothing to ease around into, which is the same road the call
-    /// itself already gets right with a bare "Brake!". Easing around belongs
-    /// to a fixed object in the lane, which is the case that still has no
-    /// lead speed at all.
-    ///
-    /// And easing around needs a lane to ease into. A carcass on a one-lane
-    /// road is answered by nearly stopping and crawling past it, so that is
-    /// what the line says now -- the same untruth the vehicle case had, in
-    /// the case the vehicle fix did not reach.
+    /// The hazard is behind the truck. Only the outcome: the driver did the
+    /// braking or the easing around and does not need it narrated back --
+    /// and narrating it is how this line went untrue before (a truck that
+    /// matched a vehicle's speed was told it had nearly stopped and eased
+    /// around; Brandon, 2026-08-23).
     pub fn hazard_resolution_text(&self) -> String {
         let names = self.hazard_names_text();
-        if self.hazard_lead_mph.is_some() {
-            return format!("You slow to match {names}. Well done.");
-        }
-        if self.hazard_in_lane {
-            return if self.hazard_dodgeable {
-                format!("You slow nearly to a stop and ease around {names}. Well done.")
-            } else {
-                format!("You slow nearly to a stop for {names}. Well done.")
-            };
-        }
         if names == "it" {
-            return "Hazard avoided. Well done.".to_string();
+            return "Clear.".to_string();
         }
-        format!("Past {names}. Well done.")
+        format!("Clear of {names}.")
     }
 
     /// Common tail of every way a pending hazard can resolve: brake,
@@ -530,7 +569,7 @@ impl DrivingState {
                 .priority(EventPriority::Route)
                 .category(SpeechCategory::Confirmation),
         );
-        ctx.award_achievement("hazard_avoided");
+        ctx.award_driving_achievement("hazard_avoided");
         self.hazard_names.clear();
     }
 
@@ -582,7 +621,7 @@ impl DrivingState {
             let hint = if side.is_open() {
                 format!(
                     "It is still in your lane. Nearly stop, or change lanes. {}",
-                    side.spoken()
+                    self.trip.open_side_spoken(side)
                 )
             } else {
                 "It is still in your lane. Nearly stop.".to_string()
@@ -680,10 +719,8 @@ impl DrivingState {
             severity *= tuning_for_time_scale(self.trip.time_scale).collision_damage;
             ctx.controller.rumble.impact(severity);
             self.trip.truck.apply_collision(severity, true);
-            let mut message = format!(
-                "Collision! The truck took damage. Total damage {:.0} percent.",
-                self.trip.truck.damage_pct
-            );
+            let damage = self.trip.truck.damage_pct;
+            let mut message = format!("Collision! Damage {damage:.0} percent.");
             // A dodgeable hazard's announcement leaves the session armed --
             // see `handle_trip_event` -- on the promise that only braking
             // ends it: the driver's own, or AEB's (which already cancels the
@@ -696,7 +733,7 @@ impl DrivingState {
             // stopped being answerable the moment it hit the truck.
             if self.speed_control_armed || self.cruise_mph.is_some() || self.keeper_mph.is_some() {
                 self.disarm_speed_control(ctx);
-                message = format!("{message} Automatic speed control canceled.");
+                message.push_str(" Cruise off.");
             }
             self.last_event_message = message.clone();
             // valid: a damage total is only true at the moment it was

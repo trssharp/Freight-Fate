@@ -55,12 +55,16 @@ use ff_core::models::trucks::truck_model;
 use ff_core::pyfmt::fmt_grouped;
 use ff_core::settings::Settings;
 use ff_core::sim::trip_models::FACILITY_GATE_ZONE_MI;
-use ff_core::sim::vehicle::TruckState;
-use ff_core::speech_pacing::SpeechCategory;
+use ff_core::sim::vehicle::{TruckState, COMPONENT_SERVICE_LIMIT_PCT};
+use ff_core::speech_pacing::{EventPriority, SpeechCategory};
 
 use crate::app::{GameContext, SayEvent};
 use crate::states::driving::DrivingState;
 use crate::states::driving_core::*;
+
+mod maintenance;
+use maintenance::natural_list;
+pub use maintenance::{maintenance_status_line, MaintenanceComponent};
 
 /// The condition rungs, in the order a load passes them, for the in-drive cue.
 pub const CARGO_CUE_STEPS: [f64; 3] = [CARGO_EXCEPTION_PCT, CARGO_CLAIM_PCT, CARGO_REJECT_PCT];
@@ -170,22 +174,48 @@ impl DrivingState {
     /// worst kind of surprise for a player who cannot see the trailer -- so
     /// each rung speaks once, when it is crossed.
     pub fn update_cargo_condition(&mut self, ctx: &mut GameContext, _dt: f64) {
-        let curve = self.trip.curve_at(self.trip.position_mi);
-        let bend = curve.filter(|curve| !curve.connector);
+        // The bend under the truck: a mapped one on the highway, or the exit
+        // ramp's own curve past its deceleration lane. The ramp is the same
+        // corner to the freight -- the exit speed is its advisory and its
+        // radius is that speed's AASHTO minimum -- so a ramp curve taken hot
+        // moves the load, and rolls the truck, exactly as a mainline bend
+        // would (`driving_rollover`).
+        let (advisory_mph, radius_ft, bank) = if self.ramp_mi.is_some() {
+            match (
+                self.ramp_curve_radius_ft(),
+                self.ramp_layout,
+                self.ramp_curve_geometry(),
+            ) {
+                (Some(radius), Some(layout), Some((_, bank))) => {
+                    (Some(layout.curve_mph), radius, bank)
+                }
+                _ => (None, 0.0, 0.0),
+            }
+        } else {
+            let curve = self.trip.curve_at(self.trip.position_mi);
+            match curve.filter(|curve| !curve.connector) {
+                Some(bend) => (
+                    Some(bend.advisory_mph as f64),
+                    bend.min_radius_ft as f64,
+                    self.bend_bank(&bend),
+                ),
+                None => (None, 0.0, 0.0),
+            }
+        };
         let speed_mph = self.trip.truck.speed_mph();
         let t = &mut self.trip.truck;
-        t.corner_overspeed_mph = match &bend {
-            Some(bend) => (speed_mph - bend.advisory_mph as f64).max(0.0),
-            None => 0.0,
-        };
+        t.corner_overspeed_mph =
+            advisory_mph.map_or(0.0, |advisory| (speed_mph - advisory).max(0.0));
         // The advisory itself as well as the excess: a liquid load needs the
         // ratio, because what a bend pulls sideways goes with the square of
         // how far over the posting it is being taken.
-        t.corner_advisory_mph = bend.as_ref().map_or(0.0, |b| b.advisory_mph as f64);
+        t.corner_advisory_mph = advisory_mph.unwrap_or(0.0);
         // And the geometry, for dry freight: a pallet is moved by the sideways
         // pull, which comes from the radius rather than from the sign.
-        t.corner_radius_ft = bend.as_ref().map_or(0.0, |b| b.min_radius_ft as f64);
-        let condition = t.cargo_damage_pct;
+        t.corner_radius_ft = radius_ft;
+        t.corner_bank = bank;
+        self.update_rollover(ctx);
+        let condition = self.trip.truck.cargo_damage_pct;
         // The HIGHEST rung crossed, not the next one up. A collision can put a
         // load through all three at once, and walking them a frame apart would
         // fire three interrupting warnings inside a tenth of a second; the
@@ -266,11 +296,13 @@ impl DrivingState {
 
     /// Announce band edges, hold the cap, and run recovery at the wall.
     pub fn update_damage_bands(&mut self, ctx: &mut GameContext, dt: f64) {
+        let maintenance_limit_crossed = self.update_maintenance_warnings(ctx);
         let band = self.trip.truck.damage_band();
         // Settlement grades the run, not the moment it ended: a driver who
         // spent an hour in limp mode and then paid for a patch did something
         // to get there, and a clean arrival number would hide it.
         self.worst_damage_band = self.worst_damage_band.max(band);
+        let damage_wall_announced = band != self.damage_band && band == DAMAGE_BAND_OUT_OF_SERVICE;
         if band != self.damage_band {
             let previous = self.damage_band;
             self.damage_band = band;
@@ -278,6 +310,16 @@ impl DrivingState {
             if band == DAMAGE_BAND_OUT_OF_SERVICE {
                 self.out_of_service_creep_s = 0.0;
             }
+        }
+        if maintenance_limit_crossed && !damage_wall_announced {
+            ctx.audio.play("ui/warning");
+            ctx.say_event_with(
+                self.out_of_service_message(ctx),
+                SayEvent::new()
+                    .priority(EventPriority::Critical)
+                    .category(SpeechCategory::Safety),
+            );
+            self.out_of_service_creep_s = 0.0;
         }
         self.update_damage_cap(dt);
         if self.trip.truck.out_of_service() {
@@ -369,7 +411,7 @@ impl DrivingState {
                     format!("Damage {damage:.0} percent. Still in limp mode, capped at {cap}.")
                 };
             }
-            ctx.audio.play("ui/notify");
+            ctx.play_event_cue(Some(category), "ui/notify", 1.0, 0.0);
         }
         ctx.say_event_with(message, SayEvent::new().category(category));
     }
@@ -381,6 +423,48 @@ impl DrivingState {
     /// order, in both verbosities.
     pub fn out_of_service_message(&self, ctx: &GameContext) -> String {
         let creep = ctx.settings.speed_text(DAMAGE_CREEP_CAP_MPH);
+        let failures = self.maintenance_failures();
+        if !failures.is_empty() {
+            let incident_damage = if self.trip.truck.damage_pct >= DAMAGE_OUT_OF_SERVICE_PCT {
+                format!(
+                    " Incident damage is also {:.0} percent.",
+                    self.trip.truck.damage_pct
+                )
+            } else {
+                String::new()
+            };
+            let cause = natural_list(
+                failures
+                    .iter()
+                    .map(|component| {
+                        format!(
+                            "{} reached {:.0} percent",
+                            component.failure_name(),
+                            COMPONENT_SERVICE_LIMIT_PCT
+                        )
+                    })
+                    .collect(),
+            );
+            let work = natural_list(
+                failures
+                    .iter()
+                    .map(|component| component.service_action().to_string())
+                    .collect(),
+            );
+            if self.terse_speech(ctx) {
+                return format!(
+                    "Out of service. {cause}.{incident_damage} {creep} to clear the lane, then stop. Road service \
+                     must {work}: {}.",
+                    self.recovery_cost_text(ctx)
+                );
+            }
+            return format!(
+                "Out of service. {cause}.{incident_damage} The truck requires service before it can continue. \
+                 {creep} to clear the lane, then stop on the shoulder. Road service will {work}. \
+                 {}.",
+                self.recovery_cost_text(ctx)
+            );
+        }
         if self.terse_speech(ctx) {
             return format!(
                 "Out of service. Damage {:.0} percent. {creep} to clear the lane, then brake to a \
@@ -400,7 +484,15 @@ impl DrivingState {
     /// What getting moving again will cost, said before it is charged.
     pub fn recovery_cost_text(&self, ctx: &GameContext) -> String {
         if player_pays_operating_costs(&profile_of(ctx).business_status) {
-            let cost = self.roadside_repair_cost();
+            let cost = self.roadside_service_cost();
+            if !self.maintenance_failures().is_empty() && profile_of(ctx).money() < cost {
+                return format!(
+                    "The repair will cost about {} dollars and most of {:.0} hours; any unpaid \
+                     balance becomes debt",
+                    fmt_grouped(cost, 0),
+                    BREAKDOWN_REPAIR_MIN / 60.0
+                );
+            }
             return format!(
                 "The repair will cost about {} dollars and most of {:.0} hours",
                 fmt_grouped(cost, 0),
@@ -471,7 +563,7 @@ impl DrivingState {
 
     /// Say once per engagement that limp mode, not the grade, owns the target.
     ///
-    /// Mirrors the "cruise is flat out and still losing the grade" cue: the
+    /// Mirrors the "Cruise down to 38 on this grade" cue: the
     /// set speed is unreachable for a reason the driver cannot see, so name it
     /// and name what cruise is holding instead.
     pub fn announce_limp_cruise_cap(&mut self, ctx: &mut GameContext) {
@@ -485,15 +577,7 @@ impl DrivingState {
             return;
         }
         self.limp_cruise_said = true;
-        let message = if self.terse_speech(ctx) {
-            format!("Limp mode. Holding {}.", ctx.settings.speed_text(cap))
-        } else {
-            format!(
-                "Cruise cannot hold {}; the truck is in limp mode. Holding {}.",
-                ctx.settings.speed_text(target),
-                ctx.settings.speed_text(cap)
-            )
-        };
+        let message = format!("Limp mode. Holding {}.", ctx.settings.speed_text(cap));
         // ROUTE, not the ambient default: cruise is silently holding a lower
         // speed than the driver set, the same class as the adaptive-cruise
         // easing line -- an assist changing what the truck does is a
@@ -532,7 +616,9 @@ impl DrivingState {
         self.recovering = false;
         self.cancel_cruise(ctx, false);
         self.limp_cap_mph = None;
+        self.trip.truck.speed_cap_mph = None;
         self.out_of_service_creep_s = 0.0;
+        self.maintenance_levels = self.maintenance_wear_levels();
         // The recovery line IS the announcement for the band it lands in, so
         // the edge watcher must not speak it a second time.
         self.damage_band = self.trip.truck.damage_band();
@@ -540,20 +626,69 @@ impl DrivingState {
 
     /// Owner-operator: their truck, their bill, and it is not refusable.
     pub fn roadside_repair_out_of_pocket(&mut self, ctx: &mut GameContext) {
-        let cost = self.roadside_repair_cost();
+        let failures = self.maintenance_failures();
+        let damage_failed = self.trip.truck.damage_pct >= DAMAGE_OUT_OF_SERVICE_PCT;
+        let cost = self.roadside_service_cost();
         let money = {
             let p = profile_mut_of(ctx);
-            p.money -= cost; // can go negative: the truck cannot move otherwise
-            p.money
+            p.spend(cost); // can go negative: the truck cannot move otherwise
+            p.money()
         };
-        self.trip
-            .truck
-            .recover_from_breakdown(BREAKDOWN_REPAIR_DAMAGE_PCT);
+        if damage_failed {
+            self.trip
+                .truck
+                .recover_from_breakdown(BREAKDOWN_REPAIR_DAMAGE_PCT);
+        } else {
+            self.trip.truck.recover_from_fuel_depletion();
+        }
+        for component in &failures {
+            component.clear(&mut self.trip.truck);
+        }
         self.trip.game_minutes += BREAKDOWN_REPAIR_MIN;
         hos_mut_of(ctx).on_duty(BREAKDOWN_REPAIR_MIN);
         ctx.audio.play("ui/error");
         let damage_pct = self.trip.truck.damage_pct;
-        let message = if self.terse_speech(ctx) {
+        let message = if !failures.is_empty() {
+            let work = natural_list(
+                failures
+                    .iter()
+                    .map(|component| component.service_done().to_string())
+                    .collect(),
+            );
+            let cleared = natural_list(
+                failures
+                    .iter()
+                    .map(|component| component.failure_name().to_string())
+                    .collect(),
+            );
+            let cleared_verb = if failures.len() == 1 { "is" } else { "are" };
+            let damage = if damage_failed {
+                format!(" Damage is down to {damage_pct:.0} percent.")
+            } else {
+                String::new()
+            };
+            if self.terse_speech(ctx) {
+                format!(
+                    "Road service {work}, {} dollars. {cleared} {cleared_verb} now 0 \
+                     percent.{damage} You have \
+                     {} dollars.",
+                    fmt_grouped(cost, 0),
+                    fmt_grouped(money, 0)
+                )
+            } else {
+                format!(
+                    "Road service {work} for {} dollars. The truck is cleared to continue.{damage} \
+                     {cleared} {cleared_verb} now 0 percent. The work took {:.0} hours and it is \
+                     now {}. You \
+                     have {} dollars. Press {} to restart the engine.",
+                    fmt_grouped(cost, 0),
+                    BREAKDOWN_REPAIR_MIN / 60.0,
+                    clock_text(self.trip.local_hour()),
+                    fmt_grouped(money, 0),
+                    ctx.control_hint("engine")
+                )
+            }
+        } else if self.terse_speech(ctx) {
             format!(
                 "Roadside repair, {} dollars. Damage {damage_pct:.0} percent, {}. You have {} \
                  dollars.",
@@ -573,7 +708,7 @@ impl DrivingState {
                 ctx.control_hint("engine")
             )
         };
-        ctx.say_event_with(message, SayEvent::new().category(SpeechCategory::Money));
+        ctx.say_event_with(message, SayEvent::new().category(SpeechCategory::Safety));
     }
 
     /// Company driver: the carrier takes the truck, and the driver waits.
@@ -584,6 +719,8 @@ impl DrivingState {
     /// dispatch-trust layer, which reads the event; nothing here terminates
     /// anybody.
     pub fn carrier_grounds_the_tractor(&mut self, ctx: &mut GameContext) {
+        let failures = self.maintenance_failures();
+        let damage_failed = self.trip.truck.damage_pct >= DAMAGE_OUT_OF_SERVICE_PCT;
         {
             let p = profile_mut_of(ctx);
             p.career.reputation = 0.0f64.max(p.career.reputation - BREAKDOWN_REPUTATION_HIT);
@@ -597,24 +734,79 @@ impl DrivingState {
         let terse = self.terse_speech(ctx);
         let handover = match &spare {
             Some(spare) => {
+                let shop_work = natural_list(
+                    failures
+                        .iter()
+                        .map(|component| component.service_action().to_string())
+                        .collect(),
+                );
                 if terse {
-                    format!("You are in the {spare}")
+                    if shop_work.is_empty() {
+                        format!("You are in the {spare}")
+                    } else {
+                        format!(
+                            "You are in the {spare}; the shop will {shop_work} on the grounded \
+                             tractor"
+                        )
+                    }
                 } else {
-                    format!("Dispatch put you in the {spare} for the rest of this run")
+                    if shop_work.is_empty() {
+                        format!("Dispatch put you in the {spare} for the rest of this run")
+                    } else {
+                        format!(
+                            "Dispatch put you in the {spare} for the rest of this run. The \
+                             grounded tractor goes to the shop to {shop_work}"
+                        )
+                    }
                 }
             }
             None => {
                 // No spare to draw: the yard sends a road crew instead, and
                 // the tractor goes to the shop when the driver gets in.
-                self.trip
-                    .truck
-                    .recover_from_breakdown(BREAKDOWN_REPAIR_DAMAGE_PCT);
-                if terse {
-                    "Patched to finish the run".to_string()
+                if damage_failed {
+                    self.trip
+                        .truck
+                        .recover_from_breakdown(BREAKDOWN_REPAIR_DAMAGE_PCT);
                 } else {
-                    "The road crew put it right enough to finish the run, and the shop takes it \
-                     when you get in"
-                        .to_string()
+                    self.trip.truck.recover_from_fuel_depletion();
+                }
+                for component in &failures {
+                    component.clear(&mut self.trip.truck);
+                }
+                let service = natural_list(
+                    failures
+                        .iter()
+                        .map(|component| component.service_done().to_string())
+                        .collect(),
+                );
+                let cleared = natural_list(
+                    failures
+                        .iter()
+                        .map(|component| component.failure_name().to_string())
+                        .collect(),
+                );
+                let cleared_verb = if failures.len() == 1 { "is" } else { "are" };
+                if terse {
+                    if service.is_empty() {
+                        "Patched to finish the run".to_string()
+                    } else {
+                        format!(
+                            "Road service {service}; {cleared} {cleared_verb} now 0 percent; \
+                             cleared to finish the run"
+                        )
+                    }
+                } else {
+                    if service.is_empty() {
+                        "The road crew put it right enough to finish the run, and the shop takes \
+                         it when you get in"
+                            .to_string()
+                    } else {
+                        format!(
+                            "The road crew {service}. The truck is cleared to finish the run, and \
+                             {cleared} {cleared_verb} now 0 percent. The shop checks it again when \
+                             you get in"
+                        )
+                    }
                 }
             }
         };
@@ -636,7 +828,7 @@ impl DrivingState {
                 ctx.control_hint("engine")
             )
         };
-        ctx.say_event_with(message, SayEvent::new().category(SpeechCategory::Money));
+        ctx.say_event_with(message, SayEvent::new().category(SpeechCategory::Safety));
     }
 
     /// Leave the event on the career for the trust and termination layer.
@@ -670,9 +862,23 @@ impl DrivingState {
             return None;
         }
         let current = p.active_truck_key();
+        let condition_pct = |ctx: &GameContext, key: &str, field: &str| -> f64 {
+            profile_of(ctx)
+                .truck_conditions
+                .get(key)
+                .and_then(|record| record.get(field))
+                .and_then(|value| value.as_f64())
+                .unwrap_or(0.0)
+        };
+        let fit = |ctx: &GameContext, key: &str| {
+            condition_pct(ctx, key, "damage_pct") < DAMAGE_OUT_OF_SERVICE_PCT
+                && condition_pct(ctx, key, "tire_wear_pct") < COMPONENT_SERVICE_LIMIT_PCT
+                && condition_pct(ctx, key, "brake_wear_pct") < COMPONENT_SERVICE_LIMIT_PCT
+                && condition_pct(ctx, key, "engine_wear_pct") < COMPONENT_SERVICE_LIMIT_PCT
+        };
         let candidates: Vec<&'static str> = slip_seat_pool(p)
             .into_iter()
-            .filter(|key| *key != current)
+            .filter(|key| *key != current && fit(ctx, key))
             .collect();
         if candidates.is_empty() {
             return None;
@@ -689,18 +895,10 @@ impl DrivingState {
             .iter()
             .min_by(|a, b| damage_of(ctx, a).total_cmp(&damage_of(ctx, b)))
             .expect("a non-empty candidate list");
-        if damage_of(ctx, pick) >= DAMAGE_OUT_OF_SERVICE_PCT {
-            return None; // the yard has nothing fit either
-        }
-        let cargo_kg = self.trip.truck.cargo_kg;
-        let trailer_attached = self.trip.truck.trailer_attached;
-        let automatic = self.trip.truck.transmission.automatic;
-        let odometer_mi = self.trip.truck.odometer_mi;
         {
             // The grounded tractor keeps its damage.
-            let old = self.trip.truck.clone();
             let p = profile_mut_of(ctx);
-            p.store_truck_condition(&old);
+            p.store_truck_condition(&self.trip.truck);
             p.truck = pick.to_string();
             if p.truck_conditions.get(pick).is_none() {
                 p.provision_truck_condition(pick, None);
@@ -708,11 +906,19 @@ impl DrivingState {
             }
         }
         let specs = profile_of(ctx).truck_specs();
-        self.trip.truck = TruckState::new(specs);
-        self.trip.truck.cargo_kg = cargo_kg;
-        self.trip.truck.trailer_attached = trailer_attached;
-        self.trip.truck.transmission.automatic = automatic;
-        self.trip.truck.odometer_mi = odometer_mi;
+        let old = std::mem::replace(&mut self.trip.truck, TruckState::new(specs));
+        // The trailer, its load and what the run has done to it come along:
+        // a load wrecked or scrapped before the swap is still wrecked at the
+        // dock, and a tank load still surges.
+        let truck = &mut self.trip.truck;
+        truck.cargo_kg = old.cargo_kg;
+        truck.trailer_attached = old.trailer_attached;
+        truck.transmission.automatic = old.transmission.automatic;
+        truck.odometer_mi = old.odometer_mi;
+        truck.cargo_damage_pct = old.cargo_damage_pct;
+        truck.cargo_fragility = old.cargo_fragility;
+        truck.liquid = old.liquid;
+        truck.preventable_damage_pct = old.preventable_damage_pct;
         profile_of(ctx).load_truck_condition(&mut self.trip.truck);
         let damage_pct = self.trip.truck.damage_pct;
         self.trip.truck.recover_from_breakdown(damage_pct);

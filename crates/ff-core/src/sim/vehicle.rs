@@ -16,15 +16,26 @@ use crate::sim::surge::LiquidLoad;
 use crate::sim::transmission::Transmission;
 
 mod air;
+mod axles;
 mod condition;
+mod descent;
 mod forces;
+mod mass;
+mod roll;
 mod shifting;
 mod updates;
+
+pub use axles::{AxleLoads, TANDEM_LIMIT_LB};
+pub use descent::{DESCENT_SPEED_STEP_MPH, GSRS_BRAKE_LIMIT_C};
+pub use mass::DIESEL_KG_PER_GAL;
+pub use roll::ROLL_WARN_SHARE;
 
 #[cfg(test)]
 mod damage_band_tests;
 #[cfg(test)]
 mod physics_bench_tests;
+#[cfg(test)]
+mod realism_tests;
 #[cfg(test)]
 mod tests;
 
@@ -47,6 +58,16 @@ pub const SURGE_EXCUSE_FORCE_N: f64 = 1500.0;
 // Full service application plus the spring brakes: the hardest stop the rig
 // can make, still scaled by weather grip and brake fade.
 pub const EMERGENCY_BRAKE_MULT: f64 = 1.6;
+
+/// Foundation-brake application used by estimates and live force calculations.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BrakeApplication {
+    /// Normal treadle-valve application, from released through full service.
+    Service(f64),
+    /// Full service plus the emergency/spring-brake force used by the B key.
+    Emergency,
+}
+
 /// About 10 mph: backing speed, not road speed.
 pub const MAX_REVERSE_MPS: f64 = 4.5;
 
@@ -54,7 +75,7 @@ pub const MAX_REVERSE_MPS: f64 = 4.5;
 pub const KG_PER_TON: f64 = 1000.0;
 /// International avoirdupois pound, for the federal 80,000 lb GVW cap.
 pub const KG_PER_LB: f64 = 0.45359237;
-/// Federal combination gross vehicle weight limit. Fuel is not counted.
+/// Federal combination gross vehicle weight limit, including fuel.
 pub const LEGAL_GVW_LB: f64 = 80_000.0;
 pub const LEGAL_GVW_KG: f64 = LEGAL_GVW_LB * KG_PER_LB;
 // Reference loaded Class 8: ~36 t gross at a full ~21.5 t payload, leaving a
@@ -67,8 +88,8 @@ pub const REFERENCE_CARGO_KG: f64 = 21_500.0;
 // deadhead hauling an empty box.
 pub const TRAILER_TARE_KG: f64 = 6_400.0;
 
-/// Tractor plus empty trailer for the stock Class 8 specs, used to clamp
-/// dispatched cargo so a legal load stays at or under 80,000 lb GVW.
+/// Tractor, empty trailer, and full fuel tank for the stock specs.
+/// Dispatch reserves this operating tare so filling up keeps its loads legal.
 pub fn combination_tare_kg(specs: &TruckSpecs) -> f64 {
     (specs.mass_kg - REFERENCE_CARGO_KG).max(0.0)
 }
@@ -115,6 +136,10 @@ pub const ENGINE_WEAR_LUG_PCT_PER_S: f64 = 0.05;
 pub const LUG_THROTTLE: f64 = 0.7;
 /// Of peak-torque RPM.
 pub const LUG_RPM_FRACTION: f64 = 0.7;
+/// Gameplay threshold for an advance service warning.
+pub const COMPONENT_SERVICE_WARNING_PCT: f64 = 80.0;
+/// Gameplay threshold where the truck requires service before it can continue.
+pub const COMPONENT_SERVICE_LIMIT_PCT: f64 = 100.0;
 
 // -- incident damage bands ---------------------------------------------------------
 // A real truck does not fail all at once, and it does not shrug off a wreck
@@ -183,9 +208,11 @@ pub const DAMAGE_BAND_OUT_OF_SERVICE: i32 = 4;
 //
 // So: braking bites only past what a full service application can produce,
 // which leaves the emergency application, a grade adding its own g to the
-// stop, and collisions. Cornering bites from a shade under the rollover
-// threshold, where the load is working against its straps well before the
-// truck is in trouble.
+// stop, and collisions. Cornering bites below the rollover threshold, where
+// the load is working against its straps before the truck is in trouble: the
+// roll model's warning share of THIS load's threshold (`ROLL_WARN_SHARE`,
+// `vehicle/roll.rs`), so a full van, a tank and an empty trailer each start
+// moving freight where their own rollover ladder begins.
 /// Decel past which freight starts moving.
 pub const CARGO_HARD_BRAKE_G: f64 = 0.45;
 /// Per g of excess, per real second.
@@ -195,9 +222,9 @@ pub const CARGO_BRAKE_PCT_PER_G_S: f64 = 6.0;
 // advisory, which ranked bends backwards -- a hairpin and a sweeper taken the
 // same margin over their signs are not the same manoeuvre, and the hairpin,
 // which throws the load half again as hard, was costing it a third as much
-// because a short bend is over sooner.
-/// Lateral pull past which freight starts moving.
-pub const CARGO_CORNER_LAT_G: f64 = 0.40;
+// because a short bend is over sooner. It was also a flat 0.40 g, past the
+// 0.35 g a full trailer rolls over at, so a full load never shifted before it
+// would have gone over.
 /// Per g of excess, per real second.
 pub const CARGO_CORNER_PCT_PER_G_S: f64 = 12.0;
 // What a posted advisory is worth in lateral g, for bends whose data carries
@@ -558,6 +585,10 @@ pub struct TruckState {
     /// than the advisory, because what moves a pallet is the sideways pull, and
     /// that is a fact about the corner rather than about the sign beside it.
     pub corner_radius_ft: f64,
+    /// The bank the bend is built with, as a slope, set with the radius. The
+    /// share of the pull the bank carries never reaches the truck's own
+    /// frame, so the roll model reads what is left.
+    pub corner_bank: f64,
 
     /// The liquid aboard, if this is a tank load. None for every other kind of
     /// freight, and every surge term short-circuits on that -- a driver hauling
@@ -575,6 +606,12 @@ pub struct TruckState {
     /// a real ECM drops fast idle at the key cycle.
     pub high_idle_rpm: Option<f64>,
     pub last_service_air_application: f64,
+    /// Descent control is holding a downgrade: the automatic keeps its gear
+    /// off the throttle the way it does under a brake application, rather than
+    /// taking an economy upshift over the crest that the retarder then has
+    /// to take straight back. Not persisted -- the driving layer sets it
+    /// every frame cruise runs.
+    pub descent_gear_hold: bool,
 }
 
 impl Default for TruckState {
@@ -633,11 +670,13 @@ impl TruckState {
             corner_overspeed_mph: 0.0,
             corner_advisory_mph: 0.0,
             corner_radius_ft: 0.0,
+            corner_bank: 0.0,
             liquid: None,
             speed_cap_mph: None,
             stalled: false,
             high_idle_rpm: None,
             last_service_air_application: 0.0,
+            descent_gear_hold: false,
         }
     }
 
@@ -749,7 +788,14 @@ impl TruckState {
     /// to be able to crawl out of a live lane -- so what stops the trip is
     /// the creep cap the driving layer holds, not a dead engine.
     pub fn out_of_service(&self) -> bool {
-        self.damage_pct >= DAMAGE_OUT_OF_SERVICE_PCT
+        self.damage_pct >= DAMAGE_OUT_OF_SERVICE_PCT || self.maintenance_required()
+    }
+
+    /// Whether ordinary wear has reached the game's required-service limit.
+    pub fn maintenance_required(&self) -> bool {
+        self.tire_wear_pct >= COMPONENT_SERVICE_LIMIT_PCT
+            || self.brake_wear_pct >= COMPONENT_SERVICE_LIMIT_PCT
+            || self.engine_wear_pct >= COMPONENT_SERVICE_LIMIT_PCT
     }
 
     /// The road-speed governor is holding fuel off right now.
@@ -846,13 +892,9 @@ impl TruckState {
         1.0 - ENGINE_WEAR_POWER_LOSS * self.engine_wear_pct / 100.0
     }
 
-    /// Unloaded weight: the tractor, plus the empty trailer when hitched.
+    /// Unloaded operating weight, including remaining diesel.
     pub fn tare_kg(&self) -> f64 {
-        let base = (self.specs.mass_kg - REFERENCE_CARGO_KG).max(0.0);
-        if self.trailer_attached {
-            return base;
-        }
-        (base - TRAILER_TARE_KG).max(0.0)
+        self.dry_tare_kg() + self.fuel_mass_kg()
     }
 
     /// Current gross weight: tare plus the payload aboard.
@@ -865,7 +907,7 @@ impl TruckState {
     }
 
     /// Whether this combination is over the federal 80,000 lb GVW cap.
-    /// Tractor + trailer + cargo only; fuel is not counted.
+    /// Includes the tractor, attached trailer, cargo, and remaining diesel.
     pub fn is_over_legal_gvw(&self) -> bool {
         self.gross_mass_kg() > LEGAL_GVW_KG
     }

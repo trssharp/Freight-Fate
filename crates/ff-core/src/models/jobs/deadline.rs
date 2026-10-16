@@ -62,39 +62,38 @@ impl HosPlan {
         self.drive_h + self.breaks as f64 * 0.5 + self.sleeps as f64 * 10.0
     }
 
+    /// The plan in one short line; a break or sleep the route does not need
+    /// is not mentioned.
     pub fn summary(&self) -> String {
-        let break_text = if self.breaks == 0 {
-            "no 30-minute break".to_string()
-        } else {
-            format!(
-                "{} 30-minute break{}",
+        let mut plan = format!("{} driving hours", fmt_f(self.drive_h, 1));
+        if self.breaks != 0 {
+            plan.push_str(&format!(
+                ", {} 30-minute break{}",
                 self.breaks,
                 if self.breaks != 1 { "s" } else { "" }
-            )
-        };
-        let sleep_text = if self.sleeps == 0 {
-            "no 10-hour sleep".to_string()
-        } else {
-            format!(
-                "{} 10-hour sleep{}",
+            ));
+        }
+        if self.sleeps != 0 {
+            plan.push_str(&format!(
+                ", {} 10-hour sleep{}",
                 self.sleeps,
                 if self.sleeps != 1 { "s" } else { "" }
-            )
-        };
-        let mut coverage = String::new();
-        if self.break_stop_count != 0 || self.sleep_stop_count != 0 {
-            coverage = format!(
-                " Route has {} break-capable stop{} and {} sleep-capable stop{}.",
-                self.break_stop_count,
-                if self.break_stop_count != 1 { "s" } else { "" },
-                self.sleep_stop_count,
-                if self.sleep_stop_count != 1 { "s" } else { "" },
-            );
+            ));
         }
-        format!(
-            "Legal HOS plan: {} driving hours, {break_text}, {sleep_text}.{coverage}",
-            fmt_f(self.drive_h, 1)
-        )
+        let coverage = if self.has_stop_coverage() {
+            format!(
+                " Break stops: {}. Sleep stops: {}.",
+                self.break_stop_count, self.sleep_stop_count
+            )
+        } else {
+            String::new()
+        };
+        format!("{plan}.{coverage}")
+    }
+
+    /// Whether [`Self::summary`] names the route's break and sleep stops.
+    pub fn has_stop_coverage(&self) -> bool {
+        self.break_stop_count != 0 || self.sleep_stop_count != 0
     }
 }
 
@@ -148,16 +147,22 @@ fn plan_hos_for_drive_hours(
     let mut drive_this_shift = start_drive_h.max(0.0);
     let mut window_this_shift = start_window_h.max(0.0);
     while remaining > 1e-6 {
-        if since_break >= 8.0 {
-            breaks += 1;
-            since_break = 0.0;
-            window_this_shift += 0.5; // the 30-minute break burns window
-        }
-        if drive_this_shift >= 11.0 || window_this_shift >= 14.0 {
+        // A full sleep resets the break clock too. When both limits are due,
+        // planning a separate 30-minute break first invents legal time the
+        // driver does not have to spend.
+        if drive_this_shift >= 11.0
+            || window_this_shift >= 14.0
+            || (since_break >= 8.0 && window_this_shift + 0.5 >= 14.0)
+        {
             sleeps += 1;
             drive_this_shift = 0.0;
             window_this_shift = 0.0;
             since_break = 0.0;
+        }
+        if since_break >= 8.0 {
+            breaks += 1;
+            since_break = 0.0;
+            window_this_shift += 0.5; // the 30-minute break burns window
         }
         let step = remaining
             .min(8.0 - since_break)
@@ -209,6 +214,23 @@ pub fn route_required_hours(route: &Route, start_mi: f64, world: Option<&World>)
         0.0,
     )
     .total_h()
+}
+
+/// Legal plan for the route still ahead using the driver's current HOS clock.
+/// Used only for a one-time deadline repair of an older active delivery.
+pub fn remaining_route_hos_plan(
+    route: &Route,
+    start_mi: f64,
+    world: Option<&World>,
+    clock: &HosClock,
+) -> HosPlan {
+    plan_hos_for_drive_hours(
+        route_drive_hours(Some(route), start_mi, world),
+        Some(route),
+        clock.driving_min / 60.0,
+        clock.duty_min / 60.0,
+        clock.since_break_min / 60.0,
+    )
 }
 
 /// Deadline from the current route-aware timing model plus dispatch slack.
@@ -383,9 +405,21 @@ pub fn route_drive_hours_over(
     let Some(route) = route else {
         return 0.0;
     };
+    route_drive_hours_between(route, start_mi, route.miles(), world, ceilings)
+}
+
+/// Estimate one interval without adding travel beyond the chosen stop.
+pub(super) fn route_drive_hours_between(
+    route: &Route,
+    start_mi: f64,
+    end_mi: f64,
+    world: Option<&World>,
+    ceilings: &[CurveBand],
+) -> f64 {
     let route_miles = route.miles();
     let start_mi = start_mi.clamp(0.0, route_miles.max(0.0));
-    if route_miles <= start_mi {
+    let end_mi = end_mi.clamp(start_mi, route_miles.max(start_mi));
+    if end_mi <= start_mi {
         return 0.0;
     }
     let mut hours = 0.0;
@@ -401,14 +435,14 @@ pub fn route_drive_hours_over(
         route.cities.len() >= 2 && route.cities.first() == route.cities.last();
     for (index, (leg_start, leg)) in leg_starts.iter().zip(route.legs.iter()).enumerate() {
         let leg_start = *leg_start;
-        let leg_end = leg_start + leg.miles;
+        let leg_end = (leg_start + leg.miles).min(end_mi);
         let segment_start = start_mi.max(leg_start);
         if segment_start >= leg_end {
             continue;
         }
         let mut offset = segment_start - leg_start;
-        while offset < leg.miles - 1e-6 {
-            let step = DEADLINE_SAMPLE_MI.min(leg.miles - offset);
+        while offset < leg_end - leg_start - 1e-6 {
+            let step = DEADLINE_SAMPLE_MI.min(leg_end - leg_start - offset);
             let global_start = leg_start + offset;
             if global_start + step <= start_mi {
                 offset += step;
@@ -446,8 +480,16 @@ pub fn route_planning_limit(
 ) -> f64 {
     let route_miles = route.miles();
     let mut limit;
+    // A chain with the street detail plans each street at the limit the drive
+    // will post on it, the yard included (`Trip::street_zones`); a chain
+    // without it keeps the flat access-road number and the gate stretch.
+    let street_detail = is_facility_approach
+        && route
+            .legs
+            .iter()
+            .any(|leg| leg.local_limit.is_some() || leg.local_yard);
     if is_facility_approach {
-        limit = FACILITY_ACCESS_LIMIT_MPH;
+        limit = leg.street_limit_mph().unwrap_or(FACILITY_ACCESS_LIMIT_MPH);
     } else {
         let baked = leg_speed_limit_at(leg, offset_mi);
         let toward_city = &route.cities[(leg_index + 1).min(route.cities.len() - 1)];
@@ -470,7 +512,7 @@ pub fn route_planning_limit(
             limit = limit.min(DESTINATION_APPROACH_LIMIT_MPH);
         }
     }
-    if route_mi >= (route_miles - FACILITY_GATE_ZONE_MI).max(0.0) {
+    if !street_detail && route_mi >= (route_miles - FACILITY_GATE_ZONE_MI).max(0.0) {
         limit = limit.min(FACILITY_GATE_LIMIT_MPH);
     }
     limit * DEADLINE_PLANNING_SPEED_FACTOR

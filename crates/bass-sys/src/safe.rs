@@ -21,7 +21,7 @@
 use std::ffi::{CStr, CString};
 use std::fmt;
 use std::os::raw::{c_char, c_void};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::Arc;
 
@@ -326,15 +326,32 @@ pub fn plugin_free(handle: HPLUGIN) -> Result<(), BassError> {
 }
 
 /// Is this file name a BASS add-on (not the core library itself)?
+///
+/// On iOS the add-ons are embedded frameworks, `bassflac.framework` and the
+/// like, beside `bass.framework` in the app's `Frameworks` folder.
 fn is_plugin_file_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    if cfg!(windows) {
+    if cfg!(target_os = "ios") {
+        lower.starts_with("bass") && lower.ends_with(".framework") && lower != "bass.framework"
+    } else if cfg!(windows) {
         lower.starts_with("bass") && lower.ends_with(".dll") && lower != "bass.dll"
     } else {
         lower.starts_with("libbass")
             && (lower.ends_with(".so") || lower.ends_with(".dylib"))
             && lower != "libbass.so"
             && lower != "libbass.dylib"
+    }
+}
+
+/// The loadable binary for a plugin entry: the entry itself, or the binary
+/// inside a `.framework` bundle (`bassflac.framework/bassflac`).
+fn plugin_binary(entry: &Path) -> PathBuf {
+    let is_framework = entry
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("framework"));
+    match entry.file_stem() {
+        Some(stem) if is_framework => entry.join(stem),
+        _ => entry.to_path_buf(),
     }
 }
 
@@ -348,7 +365,7 @@ pub fn load_plugins_from(dir: &Path) -> Vec<(String, Result<HPLUGIN, BassError>)
     let mut names: Vec<String> = match std::fs::read_dir(dir) {
         Ok(entries) => entries
             .flatten()
-            .filter(|e| e.path().is_file())
+            .filter(|e| plugin_binary(&e.path()).is_file())
             .filter_map(|e| e.file_name().to_str().map(str::to_owned))
             .filter(|n| is_plugin_file_name(n))
             .collect(),
@@ -361,7 +378,7 @@ pub fn load_plugins_from(dir: &Path) -> Vec<(String, Result<HPLUGIN, BassError>)
     names
         .into_iter()
         .map(|name| {
-            let result = plugin_load(&dir.join(&name));
+            let result = plugin_load(&plugin_binary(&dir.join(&name)));
             match &result {
                 Ok(h) => log::info!("bass: loaded plugin {name} (handle {h})"),
                 Err(e) => log::warn!("bass: could not load plugin {name}: {e}"),
@@ -393,6 +410,8 @@ pub fn load_plugins_from(dir: &Path) -> Vec<(String, Result<HPLUGIN, BassError>)
 pub struct Stream {
     handle: HSTREAM,
     _buffer: Option<Arc<[u8]>>,
+    /// A MOD music handle (`BASS_MusicLoad`), freed with `BASS_MusicFree`.
+    music: bool,
 }
 
 // A handle is a number and BASS is thread-safe; the buffer is immutable.
@@ -412,9 +431,7 @@ impl Stream {
 
     /// Free the stream now and report whether BASS still knew it.
     pub fn free(mut self) -> Result<(), BassError> {
-        let a = lib()?;
-        // SAFETY: plain integer; BASS validates the handle.
-        let result = check(unsafe { (a.stream_free)(self.handle) });
+        let result = check(self.free_handle(lib()?));
         // Drop skips a zero handle, and releases the buffer only then -- after
         // StreamFree has returned, which is the ordering that matters.
         self.handle = 0;
@@ -429,6 +446,19 @@ impl Stream {
         std::mem::forget(self);
         handle
     }
+
+    /// `BASS_MusicFree` for a music handle, `BASS_StreamFree` otherwise.
+    fn free_handle(&self, a: &Api) -> BOOL {
+        // SAFETY: plain integer; BASS validates the handle. One that
+        // autofreed already answers BASS_ERROR_HANDLE, which is fine.
+        unsafe {
+            if self.music {
+                (a.music_free)(self.handle)
+            } else {
+                (a.stream_free)(self.handle)
+            }
+        }
+    }
 }
 
 impl Drop for Stream {
@@ -437,11 +467,7 @@ impl Drop for Stream {
             return;
         }
         if let Ok(a) = lib() {
-            // SAFETY: plain integer; BASS validates the handle. A stream that
-            // autofreed already answers BASS_ERROR_HANDLE, which is fine.
-            unsafe {
-                (a.stream_free)(self.handle);
-            }
+            self.free_handle(a);
         }
         // `_buffer` drops after this, i.e. after StreamFree has returned.
     }
@@ -469,6 +495,28 @@ pub fn stream_create_mem_shared(data: Arc<[u8]>, flags: u32) -> Result<Stream, B
     Ok(Stream {
         handle,
         _buffer: Some(data),
+        music: false,
+    })
+}
+
+/// `BASS_MusicLoad(TRUE, ..)` over a shared buffer: a tracker module (IT,
+/// XM, S3M, MOD, MO3) as a playable channel. BASS copies module data on
+/// load, but the buffer is pinned like a stream's for one ownership rule.
+pub fn music_load_mem_shared(data: Arc<[u8]>, flags: u32) -> Result<Stream, BassError> {
+    let a = lib()?;
+    let len = DWORD::try_from(data.len()).map_err(|_| BassError {
+        code: BASS_ERROR_FILEFORM,
+    })?;
+    // SAFETY: `data` is a valid buffer of `len` bytes, alive for the call
+    // and pinned in the returned Stream until after MusicFree.
+    let handle = unsafe { (a.music_load)(1, data.as_ptr().cast(), 0, len, flags, 0) };
+    if handle == 0 {
+        return Err(BassError::last());
+    }
+    Ok(Stream {
+        handle,
+        _buffer: Some(data),
+        music: true,
     })
 }
 
@@ -493,6 +541,7 @@ pub fn stream_create_url(url: &str, flags: u32) -> Result<Stream, BassError> {
     Ok(Stream {
         handle,
         _buffer: None,
+        music: false,
     })
 }
 
@@ -725,11 +774,17 @@ pub fn channel_frequency(handle: u32) -> Result<u32, BassError> {
 /// not loaded. UTF-8 when the server sent UTF-8, latin-1 otherwise. Parsing
 /// the `StreamTitle` out of it is the caller's job (`parse_icy_stream_title`).
 pub fn tags_meta(handle: u32) -> Option<String> {
+    tags_string(handle, BASS_TAG_META)
+}
+
+/// `BASS_ChannelGetTags(handle, kind)` for the tag kinds that are one C
+/// string (`BASS_TAG_META`, `BASS_TAG_HLS_EXTINF`), copied out.
+pub fn tags_string(handle: u32, kind: u32) -> Option<String> {
     let a = lib().ok()?;
     // SAFETY: plain integers; the returned pointer is NULL or a C string in
     // BASS's buffer, valid until the next metadata update, and we copy it
     // before returning.
-    unsafe { c_string_at((a.channel_get_tags)(handle, BASS_TAG_META)) }
+    unsafe { c_string_at((a.channel_get_tags)(handle, kind)) }
 }
 
 /// `BASS_ChannelGetTags(handle, kind)` for the list-shaped tag kinds
@@ -922,6 +977,18 @@ mod tests {
         assert_eq!(e.to_string(), "BASS_ERROR_HANDLE (5)");
         assert_eq!(BassError::NOT_LOADED.name(), "BASS_NOT_LOADED");
         assert_eq!(BassError { code: 999 }.name(), "BASS_ERROR_?");
+    }
+
+    #[test]
+    fn framework_plugins_load_their_inner_binary() {
+        assert_eq!(
+            plugin_binary(Path::new("Frameworks/bassflac.framework")),
+            Path::new("Frameworks/bassflac.framework/bassflac")
+        );
+        assert_eq!(
+            plugin_binary(Path::new("lib/libbassflac.dylib")),
+            Path::new("lib/libbassflac.dylib")
+        );
     }
 
     #[test]

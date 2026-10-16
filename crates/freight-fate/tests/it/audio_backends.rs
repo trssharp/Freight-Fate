@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use bass_sys::safe;
-use ff_core::ladder_earcons::{register_ladder_earcons, CONFIRMATION_NOTE_KEY};
+use ff_core::lane_guide_tone::{register_lane_guide_tone, LANE_GUIDE_TONE_KEY};
 use ff_core::music::ALL_MUSIC_TRACKS;
 use ff_core::pyrandom::PyRandom;
 use freight_fate::audio::*;
@@ -189,6 +189,16 @@ fn test_sound_lookup_prefers_ogg_when_available() {
 }
 
 #[test]
+fn test_main_menu_ambience_ships_in_the_pack() {
+    if !shipped_sounds() {
+        return;
+    }
+    for key in ff_core::music::MENU_AMBIENCE {
+        assert!(asset_bytes(key, SFX_EXTENSIONS).is_some(), "{key}");
+    }
+}
+
+#[test]
 fn test_engine_recordings_resolve_for_the_ring_and_one_shots() {
     // Looping beds may resolve to WAV (lossy edges break loop seams --
     // tools/fix_loop_seams.py); the licensed overlay's file wins where
@@ -246,6 +256,7 @@ fn test_asset_length_matches_a_real_decode_of_the_same_clip() {
         "driver/yawn",
         "events/spike_strip",
         "vehicle/signal_tone",
+        "vehicle/turn_signal_off",
         "vehicle/bar_solid",
     ] {
         let decoded = shipped_duration_s(key).unwrap();
@@ -259,11 +270,11 @@ fn test_asset_length_matches_a_real_decode_of_the_same_clip() {
 
 #[test]
 fn test_asset_length_covers_synthesized_cues_and_shrugs_at_unknown_keys() {
-    // The Python test registered the enforcement signature; the ladder
-    // earcons are the synthesized cues this build carries.
-    register_ladder_earcons();
+    // The Python test registered the enforcement signature; the lane guide
+    // tone is a synthesized cue this build carries.
+    register_lane_guide_tone();
     assert!(
-        asset_length_s(CONFIRMATION_NOTE_KEY) > 0.0,
+        asset_length_s(LANE_GUIDE_TONE_KEY) > 0.0,
         "a generated cue has a length too"
     );
     assert_eq!(asset_length_s("nothing/at_all"), 0.0);
@@ -713,6 +724,41 @@ fn test_horn_uses_reserved_loop_slot() {
 }
 
 #[test]
+fn test_stop_world_drops_the_liquid_surge_wash() {
+    // A tank still sloshing when the pause menu opens must not be heard
+    // through it: stop_world is what the pause menu calls, and the surge
+    // wash is a gated world loop like the jake and the air, not music or a
+    // menu sound that should survive a pause.
+    let Some(mut r) = bass_rig_with_recordings() else {
+        return;
+    };
+    r.engine
+        .start_loop_with(CH_SURGE, "vehicle/liquid_wash", 0.5, 90);
+    assert!(r.engine.backend().loop_entry(CH_SURGE).is_some());
+    r.engine.stop_world();
+    assert!(r.engine.backend().loop_entry(CH_SURGE).is_none());
+}
+
+#[test]
+fn test_stop_world_drops_the_scale_bed_and_lane_guide_tone() {
+    // Both are plain per-frame loops with no dead-man's switch of their own
+    // (unlike the alert and siren): leaving the drive with either still
+    // running left it playing into the main menu until the game closed.
+    let Some(mut r) = bass_rig_with_recordings() else {
+        return;
+    };
+    r.engine
+        .start_loop_with(CH_SCALE, "poi/weigh_station_lane", 0.5, 90);
+    r.engine
+        .start_loop_with(CH_LANE_GUIDE, "ui/menu_select", 0.5, 90);
+    assert!(r.engine.backend().loop_entry(CH_SCALE).is_some());
+    assert!(r.engine.backend().loop_entry(CH_LANE_GUIDE).is_some());
+    r.engine.stop_world();
+    assert!(r.engine.backend().loop_entry(CH_SCALE).is_none());
+    assert!(r.engine.backend().loop_entry(CH_LANE_GUIDE).is_none());
+}
+
+#[test]
 fn test_bass_horn_sustains_then_rings_out_on_release() {
     let Some(mut r) = bass_rig_with_recordings() else {
         return;
@@ -945,255 +991,12 @@ fn test_bass_road_noise_frequency_changes_with_speed() {
     assert!((target - base * 0.85).abs() < 1e-6);
 }
 
-#[test]
-fn test_the_classic_jake_voice_covers_every_rpm_band() {
-    // One voice per setting, whatever the rpm (owner, 2026-08-17: "it is
-    // playing both").
-    let mut r = rig();
-    let bands: Vec<String> = [1200, 1400, 1600, 1800, 2000, 2200]
-        .iter()
-        .map(|b| format!("engine/jake_{b}"))
-        .collect();
-    r.engine.set_jake_voice(true);
-    let classic: std::collections::BTreeSet<String> =
-        bands.iter().map(|k| r.engine.voice_key(k)).collect();
-    assert_eq!(
-        classic,
-        [JAKE_CLASSIC_KEY.to_string()].into_iter().collect()
-    );
+#[path = "audio_backend_jake.rs"]
+mod jake;
 
-    r.engine.set_jake_voice(false);
-    let recorded: std::collections::BTreeSet<String> =
-        bands.iter().map(|k| r.engine.voice_key(k)).collect();
-    // Real must collapse to the one recording too; the other bands are
-    // synths.
-    assert_eq!(
-        recorded,
-        [JAKE_RECORDED_KEY.to_string()].into_iter().collect()
-    );
-    assert!(!recorded.contains(JAKE_CLASSIC_KEY));
-}
-
-#[test]
-fn test_the_jake_voice_switch_applies_on_every_band_not_just_1600() {
-    let Some(mut r) = bass_rig_with_recordings() else {
-        return;
-    };
-    r.engine.set_jake_voice(false);
-    // Growling on a band that is NOT 1600 -- the case the guard missed.
-    r.engine
-        .start_loop_with(CH_JAKE, "engine/jake_1400", 0.5, 300);
-    assert_eq!(
-        r.engine.backend().loop_entry(CH_JAKE).unwrap().0,
-        JAKE_RECORDED_KEY
-    );
-
-    r.engine.set_jake_voice(true); // classic, live, mid-growl on 1400
-    let entry = r.engine.backend().loop_entry(CH_JAKE).unwrap();
-    assert_eq!(
-        entry.0, JAKE_CLASSIC_KEY,
-        "the switch did nothing off the 1600 band"
-    );
-    assert_eq!(entry.1, 0.5); // level carries across
-
-    r.engine.set_jake_voice(false); // back to real, live
-    assert!(r
-        .engine
-        .backend()
-        .loop_entry(CH_JAKE)
-        .unwrap()
-        .0
-        .starts_with(JAKE_BAND_PREFIX));
-    r.engine.stop_loop(CH_JAKE);
-}
-
-#[test]
-fn test_the_classic_jake_is_not_restarted_by_every_rpm_band() {
-    // On classic every band maps to one synth cut, so a caller caching
-    // the BAND key saw each rpm crossing as a new sound and restarted the
-    // same file over itself. `voice_key` exists so the drive can cache
-    // what will actually sound.
-    let mut r = rig();
-    let bands: Vec<String> = [1200, 1400, 1600, 1800, 2000, 2200]
-        .iter()
-        .map(|b| format!("engine/jake_{b}"))
-        .collect();
-    r.engine.set_jake_voice(true);
-    let distinct: std::collections::BTreeSet<String> =
-        bands.iter().map(|b| r.engine.voice_key(b)).collect();
-    assert_eq!(
-        distinct.len(),
-        1,
-        "the classic voice should resolve every band to one cut"
-    );
-    r.engine.set_jake_voice(false);
-    let distinct: std::collections::BTreeSet<String> =
-        bands.iter().map(|b| r.engine.voice_key(b)).collect();
-    assert_eq!(
-        distinct.len(),
-        1,
-        "real must resolve to one voice too -- there is only one recording"
-    );
-}
-
-#[test]
-fn test_one_jake_voice_sounds_whatever_the_rpm_in_both_directions() {
-    let mut r = rig();
-    let bands: Vec<String> = [1200, 1400, 1600, 1800, 2000, 2200]
-        .iter()
-        .map(|b| format!("engine/jake_{b}"))
-        .collect();
-    r.engine.set_jake_voice(false);
-    let keys: std::collections::BTreeSet<String> =
-        bands.iter().map(|b| r.engine.voice_key(b)).collect();
-    assert_eq!(keys, [JAKE_RECORDED_KEY.to_string()].into_iter().collect());
-
-    r.engine.set_jake_voice(true);
-    let keys: std::collections::BTreeSet<String> =
-        bands.iter().map(|b| r.engine.voice_key(b)).collect();
-    assert_eq!(keys, [JAKE_CLASSIC_KEY.to_string()].into_iter().collect());
-
-    // The Learn game sounds entry demos the classic cut by name, so asking
-    // for it explicitly must never be re-voiced into the other one.
-    for classic in [false, true] {
-        r.engine.set_jake_voice(classic);
-        assert_eq!(r.engine.voice_key(JAKE_CLASSIC_KEY), JAKE_CLASSIC_KEY);
-    }
-}
-
-#[test]
-fn test_held_alert_lapses_on_its_own_and_cues_latch() {
-    // The dead man's switches (ALERT_HOLD_TIMEOUT_S / CUE_HOLD_TIMEOUT_S):
-    // a tone whose owner stops re-asserting it goes quiet on its own.
-    let Some(mut r) = bass_rig_with_recordings() else {
-        return;
-    };
-    r.engine.hold_alert("vehicle/bar_solid");
-    assert_eq!(
-        r.engine.backend().loop_entry(CH_ALERT).unwrap().0,
-        "vehicle/bar_solid"
-    );
-    r.engine.update(ALERT_HOLD_TIMEOUT_S / 2.0);
-    assert!(r.engine.backend().loop_entry(CH_ALERT).is_some());
-    r.engine.update(ALERT_HOLD_TIMEOUT_S); // the owner went silent
-    assert!(r.engine.backend().loop_entry(CH_ALERT).is_none());
-
-    r.engine.hold_cue("tick");
-    assert!(r.engine.cue_held("tick"));
-    r.engine.update(CUE_HOLD_TIMEOUT_S + 0.01);
-    assert!(!r.engine.cue_held("tick"));
-    r.engine.hold_cue("tick");
-    r.engine.release_cue("tick");
-    assert!(!r.engine.cue_held("tick"));
-}
-/// `sound_lib.Channel.is_playing` for a handle, for the tests above.
 fn audio_support_is_playing(handle: u32) -> bool {
     bass_sys::safe::channel_is_active(handle) == bass_sys::BASS_ACTIVE_PLAYING
 }
 
-#[test]
-fn test_engine_pan_bands_and_legacy_inherit_and_preserve_engine_state() {
-    let Some(mut r) = bass_rig_with_recordings() else {
-        return;
-    };
-    for classic in [false, true] {
-        r.engine.engine_stop_with(false);
-        r.engine.set_engine_voice(classic);
-        r.engine.set_engine_pan(-0.6);
-        r.engine.engine_start_with(false);
-        r.engine.update(1.0);
-        r.engine.set_engine_rpm_with(1150.0, 0.7);
-        let handles = |engine: &AudioEngine| {
-            let bass = engine.bass().unwrap();
-            if classic {
-                assert!(bass.engine_bands().is_empty());
-                vec![bass.engine_stream_handle().expect("legacy engine stream")]
-            } else {
-                let bands = bass.engine_bands();
-                assert_eq!(bands.len(), ENGINE_BANDS.len());
-                bands.iter().map(|band| band.handle).collect::<Vec<_>>()
-            }
-        };
-        let original = handles(&r.engine);
-        let volumes: Vec<_> = original
-            .iter()
-            .map(|h| safe::channel_get_attribute(*h, bass_sys::BASS_ATTRIB_VOL).unwrap())
-            .collect();
-        let bands = r.engine.bass().unwrap().engine_bands();
-        let wobble = r.engine.bass().unwrap().engine_wobble();
-        for (pan, expected) in [
-            (-0.6, -0.6),
-            (0.0, 0.0),
-            (0.7, 0.7),
-            (-2.0, -1.0),
-            (2.0, 1.0),
-        ] {
-            // The first assertion also checks pan inherited at stream creation.
-            if pan != -0.6 {
-                r.engine.set_engine_pan(pan);
-            }
-            assert_eq!(handles(&r.engine), original, "pan must not restart streams");
-            for (i, handle) in original.iter().enumerate() {
-                assert!(
-                    (safe::channel_get_attribute(*handle, bass_sys::BASS_ATTRIB_PAN).unwrap()
-                        as f64
-                        - expected)
-                        .abs()
-                        < 1e-6
-                );
-                assert_eq!(
-                    safe::channel_get_attribute(*handle, bass_sys::BASS_ATTRIB_VOL).unwrap(),
-                    volumes[i]
-                );
-            }
-            let bass = r.engine.bass().unwrap();
-            assert_eq!(bass.engine_wobble(), wobble);
-            for (before, after) in bands.iter().zip(bass.engine_bands()) {
-                assert_eq!(before.last_rate_target, after.last_rate_target);
-                assert_eq!(before.last_volume, after.last_volume);
-            }
-        }
-        r.engine.engine_stop_with(false);
-        r.engine.engine_start_with(false);
-        for handle in handles(&r.engine) {
-            assert_eq!(
-                safe::channel_get_attribute(handle, bass_sys::BASS_ATTRIB_PAN).unwrap(),
-                1.0
-            );
-        }
-    }
-}
-
-#[test]
-fn test_blinker_repeat_waits_for_actual_playback_completion() {
-    let Some(mut r) = bass_rig_with_recordings() else {
-        return;
-    };
-    let key = "vehicle/turn_signal";
-    r.engine.play_if_idle(key, 0.5, -0.6);
-    let handle = r.engine.bass().unwrap().exclusive_cue_handle(key).unwrap();
-    for _ in 0..20 {
-        r.engine.play_if_idle(key, 0.5, 0.6);
-        assert_eq!(
-            r.engine.bass().unwrap().exclusive_cue_handle(key),
-            Some(handle)
-        );
-        assert!(
-            (safe::channel_get_attribute(handle, bass_sys::BASS_ATTRIB_PAN).unwrap() + 0.6).abs()
-                < 1e-6
-        );
-    }
-    // Real completion on BASS's silent device, not a guessed clip duration.
-    assert!(wait_for(
-        Duration::from_secs(5),
-        || safe::channel_is_active(handle) == bass_sys::BASS_ACTIVE_STOPPED
-    ));
-    r.engine.play_if_idle(key, 0.5, 0.6);
-    let next = r.engine.bass().unwrap().exclusive_cue_handle(key).unwrap();
-    assert_eq!(safe::channel_is_active(next), bass_sys::BASS_ACTIVE_PLAYING);
-    assert!(
-        (safe::channel_get_attribute(next, bass_sys::BASS_ATTRIB_PAN).unwrap() - 0.6).abs() < 1e-6
-    );
-    r.engine.shutdown();
-    assert_eq!(r.engine.bass().unwrap().exclusive_cue_handle(key), None);
-}
+#[path = "audio_backend_cues.rs"]
+mod cues;

@@ -17,20 +17,24 @@ use once_cell::sync::Lazy;
 
 use crate::music::{self, crc32, MusicTrack};
 
-/// `(station id, jingle 1 key/title/duration, jingle 2 ..., legal ID ...)`.
+/// `(station id, [(key, title, description, duration_s), ...])`.
 type IdRow = (
     &'static str,
-    [(&'static str, &'static str, &'static str, f64); 3],
+    &'static [(&'static str, &'static str, &'static str, f64)],
 );
 
 // Keyed by catalog station id (not the host voice key -- an ID speaks a
-// call sign, and several stations can share a host). Two produced jingles
-// (_01/_02, sung) plus a spoken legal ID (_03) per station, matching
-// tools/radio_content_plan.py STATIONS' jingle_prompts and id_lines.
+// call sign, and several stations can share a host). Sung jingles (_01, _02
+// and the second-wave _04), a spoken legal ID (_03) and spoken liners (_05,
+// _06) per station, matching tools/radio_content_plan.py STATIONS'
+// jingle_prompts and id_lines; the Roadhouse, Desert Rock and Neon Drive
+// carry extra IDs (_04 to _07) added straight to the pack on 2026-09-25.
+// A row only exists once its clip ships: a key
+// with no file behind it would play as dead air.
 const STATION_ID_ROWS: &[IdRow] = &[
     (
         "route_playlist",
-        [
+        &[
             (
                 "id_roadhouse_01",
                 "Freight Fate Roadhouse jingle 1",
@@ -49,11 +53,35 @@ const STATION_ID_ROWS: &[IdRow] = &[
                 "Spoken call-sign ID",
                 4.4,
             ),
+            (
+                "id_roadhouse_04",
+                "Freight Fate Roadhouse ID 4",
+                "Station ID",
+                8.8,
+            ),
+            (
+                "id_roadhouse_05",
+                "Freight Fate Roadhouse ID 5",
+                "Station ID",
+                8.6,
+            ),
+            (
+                "id_roadhouse_06",
+                "Freight Fate Roadhouse ID 6",
+                "Station ID",
+                8.2,
+            ),
+            (
+                "id_roadhouse_07",
+                "Freight Fate Roadhouse ID 7",
+                "Station ID",
+                8.8,
+            ),
         ],
     ),
     (
         "ff-night-line",
-        [
+        &[
             (
                 "id_nightline_01",
                 "Freight Fate Night Line jingle 1",
@@ -76,7 +104,7 @@ const STATION_ID_ROWS: &[IdRow] = &[
     ),
     (
         "krwl-dallas",
-        [
+        &[
             (
                 "id_rawhide_01",
                 "The Rawhide 98.1 jingle 1",
@@ -99,7 +127,7 @@ const STATION_ID_ROWS: &[IdRow] = &[
     ),
     (
         "whwy-nashville",
-        [
+        &[
             (
                 "id_bigwheel_01",
                 "Big Wheel Country 104.5 jingle 1",
@@ -122,7 +150,7 @@ const STATION_ID_ROWS: &[IdRow] = &[
     ),
     (
         "kpln-kansas-city",
-        [
+        &[
             (
                 "id_prairieline_01",
                 "Prairie Line 95.7 jingle 1",
@@ -145,7 +173,7 @@ const STATION_ID_ROWS: &[IdRow] = &[
     ),
     (
         "kbsk-billings",
-        [
+        &[
             (
                 "id_bigsky_01",
                 "Big Sky Country 99.3 jingle 1",
@@ -168,7 +196,7 @@ const STATION_ID_ROWS: &[IdRow] = &[
     ),
     (
         "wgrx-chicago",
-        [
+        &[
             (
                 "id_grind_01",
                 "The Grind 97.9 jingle 1",
@@ -191,7 +219,7 @@ const STATION_ID_ROWS: &[IdRow] = &[
     ),
     (
         "kdrt-phoenix",
-        [
+        &[
             (
                 "id_desertrock_01",
                 "Desert Rock 101.5 jingle 1",
@@ -210,11 +238,23 @@ const STATION_ID_ROWS: &[IdRow] = &[
                 "Spoken call-sign ID",
                 4.2,
             ),
+            (
+                "id_desertrock_04",
+                "Desert Rock 101.5 ID 4",
+                "Station ID",
+                8.4,
+            ),
+            (
+                "id_desertrock_05",
+                "Desert Rock 101.5 ID 5",
+                "Station ID",
+                8.4,
+            ),
         ],
     ),
     (
         "kchm-los-angeles",
-        [
+        &[
             (
                 "id_chrome_01",
                 "Chrome 106.3 jingle 1",
@@ -237,7 +277,7 @@ const STATION_ID_ROWS: &[IdRow] = &[
     ),
     (
         "krdg-denver",
-        [
+        &[
             (
                 "id_ridge_01",
                 "The Ridge 103.7 jingle 1",
@@ -260,7 +300,7 @@ const STATION_ID_ROWS: &[IdRow] = &[
     ),
     (
         "ksnd-seattle",
-        [
+        &[
             (
                 "id_sound_01",
                 "The Sound 102.1 jingle 1",
@@ -283,7 +323,7 @@ const STATION_ID_ROWS: &[IdRow] = &[
     ),
     (
         "wdlt-memphis",
-        [
+        &[
             (
                 "id_delta_01",
                 "The Delta 94.3 jingle 1",
@@ -306,7 +346,7 @@ const STATION_ID_ROWS: &[IdRow] = &[
     ),
     (
         "wbyu-new-orleans",
-        [
+        &[
             (
                 "id_bayou_01",
                 "Bayou Soul 100.9 jingle 1",
@@ -329,7 +369,7 @@ const STATION_ID_ROWS: &[IdRow] = &[
     ),
     (
         "wsol-atlanta",
-        [
+        &[
             (
                 "id_southernsoul_01",
                 "Southern Soul 96.5 jingle 1",
@@ -352,7 +392,7 @@ const STATION_ID_ROWS: &[IdRow] = &[
     ),
     (
         "wnah-nashville",
-        [
+        &[
             (
                 "id_afterhours_01",
                 "Nashville After Hours 92.9 jingle 1",
@@ -375,7 +415,7 @@ const STATION_ID_ROWS: &[IdRow] = &[
     ),
     (
         "kgol-oklahoma-city",
-        [
+        &[
             (
                 "id_cruisingold_01",
                 "Cruisin' Gold 105.9 jingle 1",
@@ -398,7 +438,7 @@ const STATION_ID_ROWS: &[IdRow] = &[
     ),
     (
         "wglr-birmingham",
-        [
+        &[
             (
                 "id_gloryroad_01",
                 "Glory Road 91.5 jingle 1",
@@ -421,7 +461,7 @@ const STATION_ID_ROWS: &[IdRow] = &[
     ),
     (
         "ktjo-san-antonio",
-        [
+        &[
             (
                 "id_purotejano_01",
                 "Puro Tejano 107.1 jingle 1",
@@ -444,7 +484,7 @@ const STATION_ID_ROWS: &[IdRow] = &[
     ),
     (
         "kndr-las-vegas",
-        [
+        &[
             (
                 "id_neondrive_01",
                 "Neon Drive 88.5 jingle 1",
@@ -463,6 +503,10 @@ const STATION_ID_ROWS: &[IdRow] = &[
                 "Spoken call-sign ID",
                 3.4,
             ),
+            ("id_neondrive_04", "Neon Drive 88.5 ID 4", "Station ID", 9.2),
+            ("id_neondrive_05", "Neon Drive 88.5 ID 5", "Station ID", 8.4),
+            ("id_neondrive_06", "Neon Drive 88.5 ID 6", "Station ID", 8.4),
+            ("id_neondrive_07", "Neon Drive 88.5 ID 7", "Station ID", 8.8),
         ],
     ),
 ];
@@ -501,6 +545,13 @@ const AD_ROWS: &[(&str, &str, f64)] = &[
     ("ad_quietcab_headsets", "QuietCab Headsets", 20.4),
     ("ad_truelane_navigation", "TrueLane Navigation", 21.5),
     ("ad_smokestack_jerky", "Smokestack Jerky Company", 24.4),
+    (
+        "ad_northstar_freight_hiring",
+        "Northstar Freight Lines",
+        22.4,
+    ),
+    ("ad_prairie_link_hiring", "Prairie Link Regional", 28.0),
+    ("ad_summit_value_hiring", "Summit Value Logistics", 24.2),
 ];
 
 // Which STATION_PLAYLISTS pools each spot may air on, from
@@ -605,12 +656,59 @@ const AD_FORMAT_ROWS: &[(&str, &[&str])] = &[
             "night",
         ],
     ),
+    // The three starting carriers' hiring spots air where Meridian's does.
+    (
+        "ad_northstar_freight_hiring",
+        &[
+            "country",
+            "classic_rock",
+            "gospel",
+            "tejano",
+            "blues",
+            "jazz",
+        ],
+    ),
+    (
+        "ad_prairie_link_hiring",
+        &[
+            "country",
+            "classic_rock",
+            "gospel",
+            "tejano",
+            "blues",
+            "jazz",
+        ],
+    ),
+    (
+        "ad_summit_value_hiring",
+        &[
+            "country",
+            "classic_rock",
+            "gospel",
+            "tejano",
+            "blues",
+            "jazz",
+        ],
+    ),
 ];
 
-/// One break after every 2 songs; break content cycles this pattern. An
-/// ad never runs without an ID chasing it back into music, so ads are
-/// never adjacent and an ID lands at least once per four breaks.
-pub const BREAK_PATTERN: &[&str] = &["host", "id", "host", "ad_id"];
+/// One break after every 2 songs; break content cycles this pattern. A
+/// slot kind is the pool names it draws, joined by underscores: a host
+/// break, a station ID on its own, and two stopsets (two spots then an
+/// ID, one spot then an ID). An ad break always ends with the station
+/// chasing itself back into music, and a six-break cycle (twelve songs)
+/// carries three spots, four IDs and two host breaks -- a light commercial
+/// load by broadcast standards, and about double what the first batch ran.
+pub const BREAK_PATTERN: &[&str] = &["host", "id", "ad_ad_id", "host", "id", "ad_id"];
+
+/// How many times `token` appears in the pattern kinds before `upto`.
+fn pool_uses(kinds: &[&str], token: &str) -> usize {
+    kinds
+        .iter()
+        .flat_map(|kind| kind.split('_'))
+        .filter(|t| *t == token)
+        .count()
+}
 
 /// The identity-content tables the break planner reads. The shipped set is
 /// [`ContentTables::shipped`]; tests build small ones.
@@ -715,14 +813,16 @@ impl ContentTables {
 
     /// Asset keys for one break slot. Empty when the station has no voice.
     ///
-    /// Slot kinds cycle BREAK_PATTERN; a kind whose pool is empty falls back
-    /// to a host break so the cadence the player learned never stutters.
+    /// Slot kinds cycle BREAK_PATTERN; a kind any of whose pools is empty
+    /// falls back to a host break so the cadence the player learned never
+    /// stutters.
     ///
-    /// Each pool advances on its OWN count, not on the global break index: a
-    /// host is heard twice per pattern cycle, an ID up to twice (its own slot
-    /// plus the tag chasing an ad), an ad once. Indexing every pool by the
-    /// global break number would sample them at stride 2 or 4 and leave most
-    /// of a pool permanently unreachable.
+    /// Each pool advances on its OWN count, not on the global break index:
+    /// a pool's position is how many times the pattern has drawn from it
+    /// so far (full cycles, plus the draws earlier in this cycle and earlier
+    /// in this slot). Indexing every pool by the global break number would
+    /// sample them at the pattern's stride and leave most of a pool
+    /// permanently unreachable.
     pub fn plan_break(
         &self,
         station_id: &str,
@@ -737,21 +837,43 @@ impl ContentTables {
         }
         let cycle = break_index / BREAK_PATTERN.len();
         let pattern_pos = break_index % BREAK_PATTERN.len();
-        let kind = BREAK_PATTERN[pattern_pos];
-        let host_pos = 2 * cycle + usize::from(pattern_pos == 2);
-        let id_pos = 2 * cycle + usize::from(kind == "ad_id");
         let ids = Self::lookup(&self.station_ids, station_id);
         let ads = self.station_ads(playlist);
-        if kind == "id" && !ids.is_empty() {
-            return vec![pick(ids, &format!("{seed_key}|id"), id_pos)];
+        let slots: Vec<&str> = BREAK_PATTERN[pattern_pos].split('_').collect();
+        let position = |token: &str, within: usize| {
+            cycle * pool_uses(BREAK_PATTERN, token)
+                + pool_uses(&BREAK_PATTERN[..pattern_pos], token)
+                + within
+        };
+        let pool_of = |token: &str| -> &[MusicTrack] {
+            match token {
+                "host" => hosts,
+                "id" => ids,
+                _ => ads.as_slice(),
+            }
+        };
+        if slots.iter().any(|token| pool_of(token).is_empty()) {
+            return vec![pick(
+                hosts,
+                &format!("{seed_key}|host"),
+                position("host", 0),
+            )];
         }
-        if kind == "ad_id" && !ads.is_empty() && !ids.is_empty() {
-            return vec![
-                pick(&ads, &format!("{seed_key}|ad"), cycle),
-                pick(ids, &format!("{seed_key}|tag"), id_pos),
-            ];
+        let mut planned: Vec<String> = Vec::with_capacity(slots.len());
+        for (i, token) in slots.iter().enumerate() {
+            let within = slots[..i].iter().filter(|t| *t == token).count();
+            let key = pick(
+                pool_of(token),
+                &format!("{seed_key}|{token}"),
+                position(token, within),
+            );
+            // A pool too small for a two-spot stopset airs the one spot once,
+            // never the same read twice in a row.
+            if !planned.contains(&key) {
+                planned.push(key);
+            }
         }
-        vec![pick(hosts, &format!("{seed_key}|host"), host_pos)]
+        planned
     }
 }
 
@@ -886,35 +1008,55 @@ mod tests {
     #[test]
     fn test_break_pattern_cycles_and_is_deterministic() {
         let tables = patched_pools();
-        let kinds = breaks(&tables, 8);
+        let kinds = breaks(&tables, 12);
         for (i, planned) in kinds.iter().enumerate() {
             assert_eq!(
                 *planned,
                 tables.plan_break(STATION, "x", "country", "seed", i)
             );
         }
-        // pattern: host, id, host, ad_id, repeated
-        for pos in [0, 2, 4, 6] {
+        // pattern: host, id, ad_ad_id, host, id, ad_id, repeated
+        for pos in [0, 3, 6, 9] {
+            assert_eq!(kinds[pos].len(), 1, "{pos}");
             assert!(kinds[pos][0].starts_with("host_"), "{pos}");
         }
-        for pos in [1, 5] {
+        for pos in [1, 4, 7, 10] {
+            assert_eq!(kinds[pos].len(), 1, "{pos}");
             assert!(kinds[pos][0].starts_with("id_"), "{pos}");
         }
-        for pos in [3, 7] {
-            assert!(
-                kinds[pos][0].starts_with("ad_") && kinds[pos][1].starts_with("id_"),
-                "{pos}"
+        for pos in [2, 8] {
+            assert_eq!(kinds[pos].len(), 3, "{pos}");
+            assert!(kinds[pos][0].starts_with("ad_") && kinds[pos][1].starts_with("ad_"));
+            assert_ne!(
+                kinds[pos][0], kinds[pos][1],
+                "two different spots per stopset"
             );
+            assert!(kinds[pos][2].starts_with("id_"), "{pos}");
         }
+        for pos in [5, 11] {
+            assert_eq!(kinds[pos].len(), 2, "{pos}");
+            assert!(kinds[pos][0].starts_with("ad_") && kinds[pos][1].starts_with("id_"));
+        }
+    }
+
+    #[test]
+    fn test_a_one_spot_pool_never_airs_the_same_read_twice_in_a_row() {
+        let mut tables = patched_pools();
+        tables.ad_spots.truncate(1);
+        tables.ad_format_tags.truncate(1);
+        let stopset = tables.plan_break(STATION, "x", "country", "seed", 2);
+        assert_eq!(stopset.len(), 2);
+        assert!(stopset[0].starts_with("ad_") && stopset[1].starts_with("id_"));
     }
 
     #[test]
     fn test_every_pool_entry_is_reachable_across_breaks() {
         // No segment is stranded: each pool advances on its own count.
         //
-        // Host slots land twice per four-break cycle, ID slots up to twice (own
-        // slot plus the tag chasing an ad), ads once -- so four cycles is enough
-        // for the 8/3/4 fixture pools to be heard out in full.
+        // Host slots land twice per six-break cycle, ID slots four times (two
+        // of their own plus the tag closing each stopset), ads three times --
+        // so four cycles is enough for the 8/3/4 fixture pools to be heard
+        // out in full.
         let tables = patched_pools();
         let planned = breaks(&tables, 4 * BREAK_PATTERN.len());
         let keys: Vec<&String> = planned.iter().flatten().collect();
@@ -1000,8 +1142,8 @@ mod tests {
                 );
             }
         }
-        assert_eq!(station_ids("route_playlist").len(), 3);
-        assert_eq!(ad_spots().len(), 18);
+        assert_eq!(station_ids("route_playlist").len(), 7);
+        assert_eq!(ad_spots().len(), 21);
         assert!(ad_format_tags("ad_wagon_wheel_inn").contains(&"night".to_string()));
         assert!(
             station_ads("route").is_empty(),

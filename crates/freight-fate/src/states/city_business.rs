@@ -11,19 +11,24 @@ use ff_core::models::business::{
 };
 use ff_core::models::career::PendingCredential;
 use ff_core::models::credentials::{
-    course_eligibility, course_offer_text, credential, Credential, CREDENTIALS,
+    course_eligibility, course_help_text, course_offer_text, credential, Credential, CREDENTIALS,
 };
 use ff_core::models::enforcement::HOURS_PER_DAY;
 use ff_core::models::solvency::{apply_return_to_company_driving, company_return_buy_back};
 use ff_core::models::trailers::{TrailerType, DEFAULT_TRAILER_PROGRAMS, TRAILER_CATALOG};
 use ff_core::models::trucks::{TruckModel, Upgrade, TRUCK_CATALOG, UPGRADE_CATALOG};
 use ff_core::pyfmt::{fmt_f, fmt_grouped};
+use ff_core::sim::driving_modes::tuning_for_time_scale;
+use ff_core::sim::hos;
+use ff_core::sim::timezones::to_local;
 
 use crate::app::GameContext;
 use crate::impl_state_for_menu;
 use crate::meaningful_play::MeaningfulPlayReason;
 use crate::states::base::{Label, Menu, MenuCore, MenuItem};
-use crate::states::city::{profile, profile_mut, py_capitalize};
+use crate::states::city::{city_local_zone, profile, profile_mut, py_capitalize};
+
+mod carrier_move;
 
 fn save_business_change(ctx: &mut GameContext) {
     ctx.mark_meaningful_play(MeaningfulPlayReason::BusinessChanged);
@@ -42,6 +47,9 @@ pub struct BusinessStatusState {
     /// "Go back to company driving" was pressed once; the next press on it
     /// does it. Hands back every tractor, so it is never a single Enter.
     return_armed: bool,
+    /// The carrier a "Move to" row was pressed for once; the next press on
+    /// the same row moves. There is no moving back to the training fleet.
+    move_armed: Option<&'static str>,
 }
 
 impl Default for BusinessStatusState {
@@ -58,6 +66,7 @@ impl BusinessStatusState {
                  terminal.",
             ),
             return_armed: false,
+            move_armed: None,
         }
     }
 
@@ -97,11 +106,7 @@ impl BusinessStatusState {
             p.dispatch_board_cache = None;
         }
         save_business_change(ctx);
-        let carrier = ff_core::models::career::carrier_name_of(profile(ctx));
-        ctx.say(&format!(
-            "Staying a company driver with {carrier}. The career plan stops pointing you at \
-             the buy-in. It stays open here under Business status if you change your mind."
-        ));
+        ctx.say("Staying a company driver.");
         self.refresh(ctx, true);
     }
 
@@ -138,6 +143,9 @@ impl BusinessStatusState {
         }
         self.return_armed = false;
         let lines = apply_return_to_company_driving(profile_mut(ctx));
+        // Same choice as Stay a company driver: titles and goals follow the
+        // company ladder; the buy-in stays open under Business status.
+        profile_mut(ctx).owner_operator_declined = true;
         save_business_change(ctx);
         ctx.audio.play("ui/cash");
         ctx.say(&lines.join(" "));
@@ -174,7 +182,7 @@ impl BusinessStatusState {
         }
         let money = {
             let p = profile_mut(ctx);
-            p.money -= OWNER_OPERATOR_BUY_IN;
+            p.spend(OWNER_OPERATOR_BUY_IN);
             let assigned = p.active_truck_key();
             p.business_status = LEASED_OWNER_OPERATOR.to_string();
             p.owner_operator_declined = false;
@@ -189,15 +197,13 @@ impl BusinessStatusState {
             }
             p.truck = assigned;
             p.dispatch_board_cache = None;
-            p.money
+            p.money()
         };
         save_business_change(ctx);
         ctx.audio.play("ui/cash");
         ctx.say(&format!(
             "Leased-on owner-operator status unlocked. Paid {} dollars toward your first \
-             tractor, {} dollars working capital left. Loads pay higher gross, and your \
-             business pays fuel, repairs, maintenance reserve, insurance, trailer program, \
-             truck payment reserve, and settlement fees.",
+             tractor, {} dollars working capital left.",
             fmt_grouped(OWNER_OPERATOR_BUY_IN, 0),
             fmt_grouped(money, 0)
         ));
@@ -215,10 +221,10 @@ impl BusinessStatusState {
         }
         let money = {
             let p = profile_mut(ctx);
-            p.money -= AUTHORITY_READY_RESERVE;
+            p.spend(AUTHORITY_READY_RESERVE);
             p.authority_readiness = true;
             p.dispatch_board_cache = None;
-            p.money
+            p.money()
         };
         save_business_change(ctx);
         ctx.audio.play("ui/cash");
@@ -245,16 +251,14 @@ impl BusinessStatusState {
         }
         let money = {
             let p = profile_mut(ctx);
-            p.money -= WEIGH_STATION_TRANSPONDER_SIGNUP_FEE;
+            p.spend(WEIGH_STATION_TRANSPONDER_SIGNUP_FEE);
             p.weigh_station_transponder = true;
-            p.money
+            p.money()
         };
         save_business_change(ctx);
         ctx.audio.play("ui/cash");
         ctx.say(&format!(
-            "Weigh station transponder active. Paid {} dollars, {} dollars left. A clean \
-             truck gets a weigh-in-motion check at most open scales instead of pulling in, \
-             for a small per-mile settlement reserve.",
+            "Weigh station transponder active. Paid {} dollars, {} dollars left.",
             fmt_grouped(WEIGH_STATION_TRANSPONDER_SIGNUP_FEE, 0),
             fmt_grouped(money, 0)
         ));
@@ -271,10 +275,10 @@ impl BusinessStatusState {
         }
         let money = {
             let p = profile_mut(ctx);
-            p.money -= AUTHORITY_ACTIVATION_COST;
+            p.spend(AUTHORITY_ACTIVATION_COST);
             p.business_status = INDEPENDENT_AUTHORITY.to_string();
             p.dispatch_board_cache = None;
-            p.money
+            p.money()
         };
         save_business_change(ctx);
         ctx.audio.play("ui/cash");
@@ -361,6 +365,7 @@ impl Menu for BusinessStatusState {
                     .help("The remaining requirements."),
                 );
             }
+            items.extend(self.carrier_move_items(ctx));
         } else {
             items.push(
                 MenuItem::new(
@@ -515,7 +520,9 @@ impl UpgradeShopState {
 
     fn locked(&mut self, ctx: &mut GameContext) {
         ctx.audio.play("ui/error");
-        ctx.say("Upgrades unlock after the leased-on owner-operator buy-in.");
+        ctx.say(
+            "Upgrades unlock with the owner-operator buy-in, from level 18 under Business status.",
+        );
     }
 
     fn label(ctx: &GameContext, upgrade: &Upgrade) -> String {
@@ -550,7 +557,7 @@ impl UpgradeShopState {
     fn buy(&mut self, ctx: &mut GameContext, upgrade: &'static Upgrade) {
         if !is_owner_operator(&profile(ctx).business_status) {
             ctx.audio.play("ui/error");
-            ctx.say("Upgrades unlock after the leased-on owner-operator buy-in.");
+            ctx.say("Upgrades unlock with the owner-operator buy-in, from level 18 under Business status.");
             return;
         }
         let owned = profile(ctx).upgrades.get(upgrade.key).copied().unwrap_or(0);
@@ -559,25 +566,25 @@ impl UpgradeShopState {
             return;
         }
         let price = upgrade.prices[owned.max(0) as usize];
-        if profile(ctx).money < price {
+        if profile(ctx).money() < price {
             ctx.audio.play("ui/error");
             ctx.say(&format!(
                 "Not enough money. {} costs {} dollars \
                  and you have {}.",
                 upgrade.label,
                 fmt_grouped(price, 0),
-                fmt_grouped(profile(ctx).money, 0)
+                fmt_grouped(profile(ctx).money(), 0)
             ));
             return;
         }
         let (money, all_owned) = {
             let p = profile_mut(ctx);
-            p.money -= price;
+            p.spend(price);
             p.upgrades.insert(upgrade.key.to_string(), owned + 1);
             let all_owned = UPGRADE_CATALOG
                 .iter()
                 .all(|item| p.upgrades.get(item.key).copied().unwrap_or(0) >= item.max_tier());
-            (p.money, all_owned)
+            (p.money(), all_owned)
         };
         save_equipment_change(ctx);
         ctx.audio.play("ui/cash");
@@ -614,7 +621,7 @@ impl Menu for UpgradeShopState {
     fn announce_entry(&mut self, ctx: &mut GameContext) {
         let (money, owner) = {
             let p = profile(ctx);
-            (p.money, is_owner_operator(&p.business_status))
+            (p.money(), is_owner_operator(&p.business_status))
         };
         let current = self.current_text(ctx);
         if owner {
@@ -637,7 +644,7 @@ impl Menu for UpgradeShopState {
                     "Upgrades locked: carrier-assigned tractor",
                     |s: &mut Self, ctx| s.locked(ctx),
                 )
-                .help("Upgrades unlock after the leased-on owner-operator buy-in."),
+                .help("Upgrades unlock with the owner-operator buy-in, from level 18 under Business status."),
                 MenuItem::new("Back", |s: &mut Self, ctx| s.go_back(ctx)),
             ];
         }
@@ -683,7 +690,7 @@ impl TruckShopState {
 
     fn locked(&mut self, ctx: &mut GameContext) {
         ctx.audio.play("ui/error");
-        ctx.say("Truck ownership unlocks after the leased-on owner-operator buy-in.");
+        ctx.say("Company drivers use the carrier's trucks. Buying trucks unlocks with the owner-operator buy-in, from level 18 under Business status.");
     }
 
     fn label(ctx: &GameContext, model: &TruckModel) -> String {
@@ -715,24 +722,24 @@ impl TruckShopState {
         }
         if !is_owner_operator(&profile(ctx).business_status) {
             ctx.audio.play("ui/error");
-            ctx.say("Truck purchases unlock after the leased-on owner-operator buy-in.");
+            ctx.say("Company drivers use the carrier's trucks. Buying trucks unlocks with the owner-operator buy-in, from level 18 under Business status.");
             return;
         }
         if !profile(ctx).owned_trucks.iter().any(|k| k == model.key) {
-            if profile(ctx).money < model.price {
+            if profile(ctx).money() < model.price {
                 ctx.audio.play("ui/error");
                 ctx.say(&format!(
                     "Not enough money. The {} costs \
                      {} dollars and you have {}.",
                     model.label,
                     fmt_grouped(model.price, 0),
-                    fmt_grouped(profile(ctx).money, 0)
+                    fmt_grouped(profile(ctx).money(), 0)
                 ));
                 return;
             }
             let owned_count = {
                 let p = profile_mut(ctx);
-                p.money -= model.price;
+                p.spend(model.price);
                 p.owned_trucks.push(model.key.to_string());
                 // A truck off the dealer lot is its own rig: fresh wear, full tank.
                 p.provision_truck_condition(model.key, Some(model.specs.fuel_tank_gal));
@@ -740,7 +747,7 @@ impl TruckShopState {
             };
             ctx.audio.play("ui/cash");
             self.switch_to(ctx, model);
-            let money = profile(ctx).money;
+            let money = profile(ctx).money();
             ctx.say(&format!(
                 "You bought the {} for {} dollars, now your tractor. You have {} dollars left.",
                 model.label,
@@ -793,7 +800,7 @@ impl Menu for TruckShopState {
                 }
             }
         }
-        let money = profile(ctx).money;
+        let money = profile(ctx).money();
         let current = self.current_text(ctx);
         ctx.say(&format!(
             "{dealer}Trucks. You have {} dollars. {current}",
@@ -808,7 +815,9 @@ impl Menu for TruckShopState {
                     "Truck ownership locked: carrier-assigned tractor",
                     |s: &mut Self, ctx| s.locked(ctx),
                 )
-                .help("Unlocks after the leased-on owner-operator buy-in."),
+                .help(
+                    "Unlocks with the owner-operator buy-in, from level 18 under Business status.",
+                ),
                 MenuItem::new("Back", |s: &mut Self, ctx| s.go_back(ctx)),
             ];
         }
@@ -854,8 +863,8 @@ impl TrailerProgramState {
     fn locked(&mut self, ctx: &mut GameContext) {
         ctx.audio.play("ui/error");
         ctx.say(
-            "Trailer programs unlock after the leased-on owner-operator buy-in. The carrier \
-             provides trailers.",
+            "Trailer programs unlock with the owner-operator buy-in, from level 18 under \
+             Business status. The carrier provides trailers.",
         );
     }
 
@@ -897,7 +906,7 @@ impl TrailerProgramState {
     fn lease(&mut self, ctx: &mut GameContext, trailer: &TrailerType) {
         if !is_owner_operator(&profile(ctx).business_status) {
             ctx.audio.play("ui/error");
-            ctx.say("Trailer programs unlock after the leased-on owner-operator buy-in.");
+            ctx.say("Trailer programs unlock with the owner-operator buy-in, from level 18 under Business status.");
             return;
         }
         if profile(ctx)
@@ -911,7 +920,7 @@ impl TrailerProgramState {
             ));
             return;
         }
-        if profile(ctx).money < trailer.lease_deposit {
+        if profile(ctx).money() < trailer.lease_deposit {
             ctx.audio.play("ui/error");
             ctx.say(&format!(
                 "Not enough money. {} trailer program costs \
@@ -919,24 +928,23 @@ impl TrailerProgramState {
                  {}.",
                 trailer.label,
                 fmt_grouped(trailer.lease_deposit, 0),
-                fmt_grouped(profile(ctx).money, 0)
+                fmt_grouped(profile(ctx).money(), 0)
             ));
             return;
         }
         let money = {
             let p = profile_mut(ctx);
-            p.money -= trailer.lease_deposit;
+            p.spend(trailer.lease_deposit);
             let mut programs = p.active_trailer_programs();
             programs.push(trailer.key.to_string());
             p.trailer_programs = programs;
             p.dispatch_board_cache = None;
-            p.money
+            p.money()
         };
         save_equipment_change(ctx);
         ctx.audio.play("ui/cash");
         ctx.say(&format!(
-            "{} trailer program active for {} dollars. You have {} dollars left. Matching \
-             cargo now appears on the dispatch board.",
+            "{} trailer program active for {} dollars. You have {} dollars left.",
             trailer.label,
             fmt_grouped(trailer.lease_deposit, 0),
             fmt_grouped(money, 0)
@@ -958,7 +966,7 @@ impl TrailerProgramState {
             ctx.say(&format!("You already own a {} trailer.", trailer.label));
             return;
         }
-        if profile(ctx).money < trailer.purchase_price {
+        if profile(ctx).money() < trailer.purchase_price {
             ctx.audio.play("ui/error");
             ctx.say(&format!(
                 "Not enough money. The {} trailer costs \
@@ -966,18 +974,18 @@ impl TrailerProgramState {
                  {}.",
                 trailer.label,
                 fmt_grouped(trailer.purchase_price, 0),
-                fmt_grouped(profile(ctx).money, 0)
+                fmt_grouped(profile(ctx).money(), 0)
             ));
             return;
         }
         let money = {
             let p = profile_mut(ctx);
-            p.money -= trailer.purchase_price;
+            p.spend(trailer.purchase_price);
             let mut owned = p.visible_owned_trailers();
             owned.push(trailer.key.to_string());
             p.owned_trailers = owned;
             p.dispatch_board_cache = None;
-            p.money
+            p.money()
         };
         save_equipment_change(ctx);
         ctx.audio.play("ui/cash");
@@ -1004,7 +1012,7 @@ impl Menu for TrailerProgramState {
     }
 
     fn announce_entry(&mut self, ctx: &mut GameContext) {
-        let money = profile(ctx).money;
+        let money = profile(ctx).money();
         let current = self.current_text(ctx);
         ctx.say(&format!(
             "Trailers. You have {} dollars. {current}",
@@ -1097,13 +1105,13 @@ impl EndorsementCourseState {
             ctx.say(&reasons.join(" "));
             return;
         }
-        if profile(ctx).money < cred.course_cost {
+        if profile(ctx).money() < cred.course_cost {
             ctx.audio.play("ui/error");
             ctx.say(&format!(
                 "The {} course costs {} dollars and you have {}.",
                 cred.label,
                 fmt_grouped(cred.course_cost, 0),
-                fmt_grouped(profile(ctx).money, 0)
+                fmt_grouped(profile(ctx).money(), 0)
             ));
             return;
         }
@@ -1111,20 +1119,34 @@ impl EndorsementCourseState {
         // terminal-sleep shape: clock, duty log, market day, then speech.
         let (start, end) = {
             let p = profile_mut(ctx);
-            p.money -= cred.course_cost;
+            p.spend(cred.course_cost);
             let start = p.game_hours;
             p.game_hours += cred.course_hours;
             (start, p.game_hours)
         };
         crate::states::city::record_city_duty(ctx, "off_duty", start, end, "credential course");
         let mut announcements: Vec<String> = Vec::new();
+        // Day and night follow the school's own clock, the one the city
+        // menu reads out, not the Eastern reference clock.
+        let start_local = to_local(start, city_local_zone(ctx));
+        let fatigue_mode_rate = tuning_for_time_scale(ctx.settings.time_scale).fatigue_rate;
         let money = {
             let p = profile_mut(ctx);
-            // A day-long course covers a full rest; a morning one does not.
-            if cred.course_hours >= 10.0 {
-                p.hos.sleep();
-                p.fatigue = 0.0;
-            }
+            // Off duty on the hours clock: a stretch of 10+ hours still resets
+            // HOS the way consecutive off duty does. Fatigue accrues at the
+            // classroom rate -- sitting in class is not sleep (GitHub #314) --
+            // and a multi-day course counts only its last class day, scored
+            // 8 AM to 4 PM local. Training a carrier requires is on duty (49
+            // CFR 395.2), and the clock still advances a flat course_hours:
+            // both ROADMAP debt.
+            p.hos.off_duty(cred.course_hours * 60.0);
+            let fatigue = {
+                let p = &*p;
+                hos::course_fatigue(p.fatigue, start_local, cred.course_hours * 60.0, |h| {
+                    fatigue_mode_rate * p.fatigue_buff_rate(start + h)
+                })
+            };
+            p.fatigue = fatigue;
             let day = p.market_day();
             p.market.advance_to(day);
             if cred.wait_days > 0.0 {
@@ -1147,32 +1169,51 @@ impl EndorsementCourseState {
                 }
             }
             p.dispatch_board_cache = None;
-            p.money
+            p.money()
         };
         ctx.save_profile();
         ctx.audio.play("ui/cash");
-        if cred.wait_days > 0.0 {
-            ctx.say(&format!(
+        let mut complete = if cred.wait_days > 0.0 {
+            format!(
                 "Course complete, application submitted: {} dollars. The background check \
                  takes about {} days and clears while you drive. You have {} dollars left.",
                 fmt_grouped(cred.course_cost, 0),
                 cred.wait_days as i64,
                 fmt_grouped(money, 0)
-            ));
+            )
         } else {
-            ctx.say(&format!(
+            format!(
                 "Course complete: {} dollars, and you earned the {}. Matching freight is \
                  unlocked. You have {} dollars left.",
                 fmt_grouped(cred.course_cost, 0),
                 cred.gate_label,
                 fmt_grouped(money, 0)
-            ));
+            )
+        };
+        if let Some(cue) = course_fatigue_cue(profile(ctx).fatigue) {
+            complete.push(' ');
+            complete.push_str(cue);
         }
+        ctx.say(&complete);
         for line in announcements {
             ctx.say_with(line, crate::app::Say::queued());
         }
         ctx.award_achievement("self_paid_course");
         self.refresh(ctx, true);
+    }
+}
+
+/// The warning a course ends with when it leaves the driver drowsy or worse,
+/// on the same thresholds the road's yawn and rumble-strip cues use. It has
+/// no speech category of its own: it is appended to the course completion
+/// line, so it is heard wherever that line is.
+pub fn course_fatigue_cue(fatigue: f64) -> Option<&'static str> {
+    if fatigue >= hos::FATIGUE_SEVERE {
+        Some("You're dangerously drowsy after the course. Sleep before you drive.")
+    } else if fatigue >= hos::FATIGUE_DROWSY {
+        Some("You're drowsy after the course. Sleep before you drive.")
+    } else {
+        None
     }
 }
 
@@ -1186,13 +1227,10 @@ impl Menu for EndorsementCourseState {
     }
 
     fn announce_entry(&mut self, ctx: &mut GameContext) {
-        let money = profile(ctx).money;
+        let money = profile(ctx).money();
         let current = self.current_text(ctx);
         ctx.say(&format!(
-            "Licenses and training. Certificates are carrier training, free at their listed \
-             levels or paid early. Endorsements and cards take a written test, a course fee, \
-             and for hazmat and the port card a background check wait. You have {} dollars. \
-             {current}",
+            "Licenses and training. You have {} dollars. {current}",
             fmt_grouped(money, 0)
         ));
     }
@@ -1219,7 +1257,10 @@ impl Menu for EndorsementCourseState {
                             ctx.say(&format!("You already hold the {}.", cred.gate_label))
                         },
                     )
-                    .help("This credential is already on your license."),
+                    .help(format!(
+                        "Already on your license. It unlocks {}.",
+                        cred.unlocks
+                    )),
                 );
                 continue;
             }
@@ -1241,10 +1282,11 @@ impl Menu for EndorsementCourseState {
                             ))
                         },
                     )
-                    .help(
+                    .help(format!(
                         "Course done, paperwork filed. The credential activates when the \
-                         check clears.",
-                    ),
+                         check clears, and unlocks {}.",
+                        cred.unlocks
+                    )),
                 );
                 continue;
             }
@@ -1257,10 +1299,7 @@ impl Menu for EndorsementCourseState {
                     ),
                     move |s: &mut Self, ctx| s.buy(ctx, key),
                 )
-                .help(format!(
-                    "Books the {} course, or says why you do not qualify.",
-                    cred.label
-                )),
+                .help(course_help_text(cred)),
             );
         }
         items.push(

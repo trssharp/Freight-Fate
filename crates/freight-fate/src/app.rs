@@ -10,7 +10,7 @@
 //! * `app::logging` -- session log configuration.
 //! * `app::testing` -- the headless test rig later state ports reuse.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use ff_core::assets_pack::prefetch_default as prefetch_sound_pack;
@@ -26,25 +26,36 @@ use crate::cloud_saves::{BackupAnnouncements, CloudSaves, CloudSavesOptions};
 use crate::controller::ControllerManager;
 use crate::discord_presence::{DiscordPresence, DiscordPresenceOptions};
 use crate::duty_watch::{DutyWatch, DutyWatchOptions};
+use crate::jaws_script::JawsScript;
 use crate::online_journal::JournalOutbox;
 use crate::online_presence::{IdentityStore, OnlinePresence, OnlinePresenceOptions};
 use crate::speech::{NullSpeech, SpeechSink};
 use crate::states::base::{InputEvent, Key, Mods, State};
 use crate::states::driving::DrivingState;
-use crate::states::main_menu::ConfirmQuitState;
+use crate::states::main_menu::{
+    opens_input_practice, opens_input_practice_pad, ConfirmQuitState, InputPracticeState,
+    TouchPracticeState,
+};
+use crate::touch::Gesture;
 
 pub mod boot_timing;
 pub mod context;
 pub mod held_keys;
+pub mod key_probe;
+pub mod language;
 pub mod logging;
 pub mod sdl_shell;
 pub mod speech_delivery;
+pub mod synth_music;
 pub mod testing;
+#[cfg(any(windows, test))]
+mod win_keys;
 
 pub use context::{
     share, Clipboard, ContextParts, GameContext, MemoryClipboard, Services, SharedState,
 };
 pub use held_keys::HeldKeys;
+use key_probe::KeyProbe;
 pub use logging::{active_log_path, configure_logging};
 pub use speech_delivery::{IntoSpoken, Say, SayEvent, Spoken, TRANSCRIPT_TARGET};
 
@@ -114,7 +125,12 @@ impl FrameClock {
 /// the headless loop have a screen to stand on.
 pub type InitialState = Box<dyn FnOnce(&mut GameContext) -> SharedState>;
 
-fn placeholder_main_menu(_ctx: &mut GameContext) -> SharedState {
+fn placeholder_main_menu(ctx: &mut GameContext) -> SharedState {
+    use crate::states::assist_picker::AssistPickerState;
+    // The one-time Driving assistance picker goes first until it is answered.
+    if AssistPickerState::is_owed(ctx) {
+        return share(AssistPickerState::new());
+    }
     share(crate::states::main_menu::MainMenuState::new())
 }
 
@@ -133,6 +149,15 @@ pub struct App {
     /// (2026-09-01); the agent's own keys come in through
     /// `queue_player_input`, which this never touches.
     operator_keys_ignored: bool,
+    /// Set by an input policy for one frame: the frame runs with no time
+    /// passing. The agent server's lockstep uses it so the road waits while
+    /// the agent decides.
+    world_held: bool,
+    /// The key probe, while one is running (see `app::key_probe`).
+    key_probe: Option<KeyProbe>,
+    /// A two- or three-finger touch hold resolved through the live keyboard
+    /// bindings. Pedal holds live in `TouchInput`; these actions can be rebound.
+    touch_bound_hold: Option<crate::bindings::Chord>,
 }
 
 /// Read-only driving facts available to a normal-input policy.
@@ -183,12 +208,72 @@ impl PlayerInputFrame<'_> {
         self.app.driving_observation()
     }
 
+    /// The player's own shortcut table, for a tool call that names a
+    /// control rather than a key.
+    pub fn bindings(&self) -> &crate::bindings::KeyBindings {
+        &self.app.ctx.bindings
+    }
+
     pub fn queue_player_input(&mut self, event: InputEvent) {
         self.app.queue_player_input(event);
     }
 
     pub fn event_speech_busy(&mut self) -> bool {
         self.app.ctx.event_voice_busy()
+    }
+
+    /// Run this frame with no time passing: events still pump and queued
+    /// input still lands, but nothing in the world moves.
+    pub fn hold_world(&mut self) {
+        self.app.world_held = true;
+    }
+
+    /// The agent server's `key_probe` tool: start recording what the
+    /// keyboard delivers, or stop and report it (see `app::key_probe`).
+    pub fn key_probe(&mut self, start: bool) -> String {
+        if start {
+            self.app.start_key_probe();
+            let shut_out = self.app.operator_keys_ignored;
+            return format!(
+                "Key probe recording.{} Have the operator hold the arrow keys for several \
+                 seconds, then call key_probe with action report. Do not press keys \
+                 yourself meanwhile: they would be measured too.",
+                if shut_out {
+                    " The operator's keyboard is shut out, so call operator_keys live true first."
+                } else {
+                    ""
+                }
+            );
+        }
+        match self.app.stop_key_probe() {
+            Some(report) => report.text(),
+            None => "No key probe is running. Call key_probe with action start.".to_string(),
+        }
+    }
+
+    /// Whether this frame will run with no time passing.
+    pub fn world_is_held(&self) -> bool {
+        self.app.world_held
+    }
+
+    /// Hand the keyboard to the operator (`live`) or take it back: the
+    /// window is restored and raised so their keys land, or minimized and
+    /// the keys dropped at the door again. Used by the agent server's
+    /// `operator_keys` tool, at the owner's request only.
+    pub fn set_operator_keys(&mut self, live: bool) -> String {
+        if live {
+            self.app.allow_operator_keys();
+            self.app.restore_window();
+            "Operator keys are live: the game window is up and the keyboard reaches the \
+             game. Anything typed elsewhere while it has focus is truck input."
+                .to_string()
+        } else {
+            self.app.ignore_operator_keys();
+            self.app.minimize_window();
+            "Operator keys are off: the window is minimized and the keyboard is dropped \
+             at the door."
+                .to_string()
+        }
     }
 
     /// The rows of the menu on screen and which has focus, read the same
@@ -223,6 +308,55 @@ impl PlayerInputFrame<'_> {
         Ok(staged_road_handoff(&description, start_mi))
     }
 
+    /// Put the sandbox career in the situation asked for and reopen the
+    /// terminal on it, whatever screen was up. Scenario staging like
+    /// `stage_road_hit`: it swaps the whole screen stack for a fresh
+    /// terminal, so the board, garage and clock read the new career.
+    pub fn stage_scenario(
+        &mut self,
+        scenario: &crate::playtest::scenario::Scenario,
+    ) -> Result<String, String> {
+        use crate::states::city::CityMenuState;
+        let notes = crate::playtest::scenario::apply(&mut self.app.ctx, scenario)?;
+        // Down to the title screen, never past it: an empty stack is how the
+        // loop knows the game is over, and the first live scenario quit the
+        // game on the frame it was staged (2026-09-12). The terminal then
+        // sits on the title screen exactly as a normal continue leaves it.
+        while self.app.ctx.stack_len() > 1 {
+            self.app.ctx.pop_state();
+            self.app.ctx.run_deferred();
+        }
+        let city = CityMenuState::new(&self.app.ctx, true);
+        self.app.push_state(city);
+        self.app.ctx.run_deferred();
+        let profile = self
+            .app
+            .ctx
+            .profile
+            .as_ref()
+            .expect("apply ensured a career");
+        let where_now = self
+            .app
+            .ctx
+            .world
+            .spoken_city(&profile.current_city, Some(true));
+        let mut text = format!(
+            "Scenario staged: {} at {} terminal, level {}, {} deliveries, {} dollars, {}.",
+            profile.name,
+            ff_core::speech_text::the_city(&where_now),
+            profile.career.level(),
+            profile.career.deliveries,
+            ff_core::pyfmt::fmt_grouped(profile.money(), 0),
+            profile.business_status,
+        );
+        if !notes.is_empty() {
+            text.push(' ');
+            text.push_str(&notes.join(" "));
+        }
+        text.push_str(" The terminal menu is open; listen for it.");
+        Ok(text)
+    }
+
     /// Keep a policy-held key held, without re-dispatching a key event.
     ///
     /// The focus-lost handler wipes the held-key store as a safety measure
@@ -242,6 +376,14 @@ impl PlayerInputFrame<'_> {
     /// for the agent server's tests, not a control.
     pub fn key_reads_pressed(&self, key: Key) -> bool {
         self.app.ctx.input.is_pressed(key)
+    }
+
+    /// How many screens are stacked, and whether the game still means to
+    /// run. An inspector for the agent server's tests: staging must leave
+    /// the title screen under the terminal, or the loop reads the empty
+    /// stack as the game being over.
+    pub fn screen_depth(&self) -> (usize, bool) {
+        (self.app.ctx.stack_len(), self.app.ctx.running)
     }
 }
 
@@ -298,8 +440,20 @@ impl App {
     }
 
     fn build(shell: Option<SdlShell>, speech: Box<dyn SpeechSink>, audio: Box<dyn Audio>) -> App {
+        // The restored 1.5 classics: compiled in, so they must exist before
+        // the title screen's first menu theme, not just before a drive.
+        // Every GameContext is built here, so this one call covers drives too.
+        crate::audio::classic_music::register();
         let settings = Settings::load();
+        sdl_shell::set_touch_haptics(settings.touch_haptics);
+        sdl_shell::set_touch_tuning(&settings);
         boot_timing::mark("settings");
+        // Stations players suggested and the owner accepted; the first drive
+        // reads whatever copy is saved, so this never holds up launch. A
+        // windowless run (the smoke check, the tools) has no dial to fill.
+        if shell.is_some() {
+            crate::community_stations::refresh_in_background(&settings);
+        }
         let message_log = MessageLog::new();
         let world = get_world();
         boot_timing::mark("world");
@@ -308,6 +462,7 @@ impl App {
             enabled: settings.discord_presence,
             ..Default::default()
         });
+        boot_timing::mark("discord presence");
         // identity is loaded unconditionally, not gated on whether any
         // online setting is currently on: OnlinePresence/CloudSaves.
         // set_enabled() both refuse to turn on without an identity already
@@ -325,7 +480,10 @@ impl App {
         if let Err(error) = account_achievements.migrate_local_profiles() {
             log::error!("Could not migrate local account achievements: {error}");
         }
+        boot_timing::mark("account achievements");
         let store = IdentityStore::platform(&data_dir);
+        // May wait up to a few seconds on the Mac keychain; a hung ACL
+        // prompt must not freeze launch with no further log (issue 266).
         let identity = store.load();
         boot_timing::mark("driver identity");
         let online = OnlinePresence::new(OnlinePresenceOptions {
@@ -346,18 +504,9 @@ impl App {
             ..Default::default()
         });
         let journal = JournalOutbox::new(
-            identity.clone(),
+            identity,
             settings.online_presence,
             &store.path().with_file_name("online-outbox.json"),
-        );
-        // Mastodon shares ride the same durable-outbox machinery but keep
-        // their own file and enabled flag: posting to the player's own
-        // Mastodon account is a separate consent from public Profile
-        // sharing.
-        let mastodon = JournalOutbox::new(
-            identity,
-            settings.mastodon_sharing,
-            &store.path().with_file_name("online-mastodon-outbox.json"),
         );
         // Every profile save, wherever it happens, queues a cloud backup.
         let backup = cloud.clone();
@@ -398,11 +547,18 @@ impl App {
                 presence,
                 online,
                 duty,
+                jaws_script: JawsScript::new(),
                 cloud,
                 journal,
-                mastodon,
             },
         });
+        // The windowed game speaks the player's language. Headless runs (the
+        // tests, the harness, the tools) stay English unless a language is
+        // forced for the run, so a developer's own locale never changes a
+        // transcript a test reads.
+        if shell.is_some() || std::env::var_os(language::LANG_ENV).is_some() {
+            ctx.apply_language();
+        }
         ctx.apply_volumes();
         ctx.apply_speech();
         boot_timing::mark("volumes and voice");
@@ -413,7 +569,40 @@ impl App {
             initial_state: None,
             queued_player_input: Vec::new(),
             operator_keys_ignored: false,
+            world_held: false,
+            key_probe: None,
+            touch_bound_hold: None,
         }
+    }
+
+    /// Start recording what the keyboard delivers (see `app::key_probe`).
+    pub fn start_key_probe(&mut self) {
+        self.key_probe = Some(KeyProbe::new(&self.ctx.input));
+    }
+
+    /// Stop the probe and hand back its report, if one was running.
+    pub fn stop_key_probe(&mut self) -> Option<key_probe::Report> {
+        self.key_probe.take().map(|probe| probe.report())
+    }
+
+    /// `freightfate --key-probe`: an inert screen, the probe on it, for
+    /// `seconds` or until Escape. No services start, no career is touched.
+    pub fn run_key_probe(&mut self, seconds: u64) -> key_probe::Report {
+        self.ctx.running = true;
+        self.push_shared(share(key_probe::KeyProbeState::new(seconds)));
+        self.start_key_probe();
+        while self.ctx.running {
+            let dt = self.clock.tick(FPS);
+            self.frame(dt);
+            let done = self.key_probe.as_ref().is_none_or(|probe| {
+                probe.escape_seen() || probe.elapsed_ms(&self.ctx.input) >= seconds * 1000
+            });
+            if done {
+                break;
+            }
+        }
+        self.stop_key_probe()
+            .unwrap_or_else(|| KeyProbe::new(&self.ctx.input).report())
     }
 
     /// Choose the screen `run` starts on (the main menu, once ported).
@@ -444,6 +633,14 @@ impl App {
         }
     }
 
+    /// Undo [`App::minimize_window`]: the window comes back and asks for
+    /// focus; a no-op when headless.
+    pub fn restore_window(&mut self) {
+        if let Some(shell) = self.shell.as_mut() {
+            shell.restore();
+        }
+    }
+
     pub fn running(&self) -> bool {
         self.ctx.running
     }
@@ -461,6 +658,12 @@ impl App {
     /// quit events still pass.
     pub fn ignore_operator_keys(&mut self) {
         self.operator_keys_ignored = true;
+    }
+
+    /// Undo [`App::ignore_operator_keys`]: the operating system's keys count
+    /// again, so a human can take the wheel alongside an agent.
+    pub fn allow_operator_keys(&mut self) {
+        self.operator_keys_ignored = false;
     }
 
     fn driving_observation(&self) -> Option<DrivingObservation> {
@@ -556,7 +759,27 @@ impl App {
     pub fn dispatch_controller(&mut self, event: &InputEvent) {
         let forward = self.ctx.controller.process_event(event);
         if forward && self.ctx.controller.active() {
+            // Back plus Start opens key and button practice over any screen;
+            // inside practice it is one more chord to name.
+            if let InputEvent::ControllerButtonDown { button, .. } = event {
+                let practising = self
+                    .ctx
+                    .state()
+                    .is_some_and(|state| state.borrow().as_any().is::<InputPracticeState>());
+                if !practising && opens_input_practice_pad(&self.ctx, *button) {
+                    self.ctx.push_state(InputPracticeState::new());
+                    self.ctx.run_deferred();
+                    return;
+                }
+            }
             if let Some(state) = self.ctx.state() {
+                state.borrow_mut().handle_controller(&mut self.ctx, event);
+                self.ctx.run_deferred();
+            }
+        }
+        let generated = self.ctx.controller.take_generated_events();
+        if let Some(state) = self.ctx.state() {
+            for event in &generated {
                 state.borrow_mut().handle_controller(&mut self.ctx, event);
                 self.ctx.run_deferred();
             }
@@ -573,8 +796,18 @@ impl App {
         let Some(state) = self.ctx.state() else {
             return;
         };
-        if event.key_down().is_some() {
+        if let Some((key, mods, _)) = event.key_down() {
             self.ctx.controller.note_keyboard();
+            // Shift F1 opens key and button practice over any screen; inside
+            // practice it is one more key to name.
+            if opens_input_practice(key, mods)
+                && !event.key_repeat()
+                && !state.borrow().as_any().is::<InputPracticeState>()
+            {
+                self.ctx.push_state(InputPracticeState::new());
+                self.ctx.run_deferred();
+                return;
+            }
             let consumed = state
                 .borrow_mut()
                 .handle_message_review(&mut self.ctx, event);
@@ -585,6 +818,112 @@ impl App {
         }
         state.borrow_mut().handle_event(&mut self.ctx, event);
         self.ctx.run_deferred();
+    }
+
+    /// Hand a touch gesture to the active state, or press its key when the
+    /// state leaves it to the keyboard table.
+    ///
+    /// Spoken hints follow: from here on they name gestures, until a key or
+    /// a controller button is pressed.
+    pub fn dispatch_gesture(&mut self, gesture: Gesture) {
+        if matches!(
+            gesture,
+            Gesture::KeyboardConnected | Gesture::KeyboardDisconnected
+        ) {
+            self.ctx.controller.hardware_keyboard = gesture == Gesture::KeyboardConnected;
+            return;
+        }
+        self.ctx.controller.note_touch();
+        if self
+            .ctx
+            .state()
+            .is_some_and(|state| state.borrow().as_any().is::<TouchPracticeState>())
+        {
+            let state = self
+                .ctx
+                .state()
+                .expect("the touch practice state is still on top");
+            let taken = state.borrow_mut().handle_gesture(&mut self.ctx, gesture);
+            self.ctx.run_deferred();
+            if taken {
+                return;
+            }
+        }
+        let driving = self
+            .ctx
+            .state()
+            .is_some_and(|state| state.borrow().as_any().is::<DrivingState>());
+        // Gas may release the parking brake first, and a deep swipe at a stop
+        // is the parking brake: the drive answers those before any key.
+        if driving
+            && matches!(
+                gesture,
+                Gesture::HoldUpperBegan | Gesture::DeepSwipeDownBegan
+            )
+        {
+            let state = self.ctx.state().expect("the drive is still on top");
+            let taken = state.borrow_mut().handle_gesture(&mut self.ctx, gesture);
+            self.ctx.run_deferred();
+            if taken {
+                return;
+            }
+        }
+        // Full lane keeping leaves the lanes to the flicks alone.
+        if driving && gesture.steers() && self.ctx.settings.lane_is_automated() {
+            self.ctx
+                .say("Lane keeping is on full. Flick left or right to change lanes.");
+            return;
+        }
+        if let Some(action) = match gesture {
+            Gesture::EmergencyBrakeHoldBegan => Some(crate::bindings::Action::EmergencyBrake),
+            Gesture::DeepSwipeDownBegan if driving => Some(crate::bindings::Action::EmergencyBrake),
+            Gesture::HornHoldBegan => Some(crate::bindings::Action::Horn),
+            Gesture::StillHoldBegan if driving => Some(crate::bindings::Action::Straighten),
+            _ => None,
+        } {
+            if let Some(previous) = self.touch_bound_hold.take() {
+                self.handle_event(&InputEvent::KeyUp {
+                    key: previous.key,
+                    mods: previous.mods,
+                });
+            }
+            if let Some(chord) = self.ctx.bindings.chords(action).into_iter().next() {
+                self.touch_bound_hold = Some(chord);
+                self.handle_event(&InputEvent::KeyDown {
+                    key: chord.key,
+                    mods: chord.mods,
+                    text: None,
+                    repeat: false,
+                });
+            }
+            return;
+        }
+        if gesture == Gesture::HoldEnded {
+            if let Some(chord) = self.touch_bound_hold.take() {
+                self.handle_event(&InputEvent::KeyUp {
+                    key: chord.key,
+                    mods: chord.mods,
+                });
+                return;
+            }
+        }
+        let events = if gesture.held_key().is_some() {
+            gesture.hold_events()
+        } else {
+            if let Some(state) = self.ctx.state() {
+                let taken = state.borrow_mut().handle_gesture(&mut self.ctx, gesture);
+                self.ctx.run_deferred();
+                if taken {
+                    return;
+                }
+            }
+            gesture.key_events()
+        };
+        self.ctx.controller.touch_keys = true;
+        for event in events {
+            self.handle_event(&event);
+        }
+        self.ctx.controller.touch_keys = false;
     }
 
     /// Alt+F4 and the window's close button ask, they do not just go.
@@ -636,8 +975,8 @@ impl App {
                 // with its own `if`, not the `elif` chain, so the event
                 // carries on to the state; a `match` arm here quietly ate
                 // it, and with it the two screens that wait for the player
-                // to come back from a browser (online setup, the Mastodon
-                // link) -- both sat silent on return.
+                // to come back from a browser (online setup) -- it sat silent
+                // on return.
                 self.dispatch_to_state(event);
             }
             InputEvent::WindowFocusLost => {
@@ -645,6 +984,7 @@ impl App {
                 self.dispatch_to_state(event);
             }
             InputEvent::Quit => self.handle_close_request(),
+            InputEvent::Gesture(gesture) => self.dispatch_gesture(*gesture),
             InputEvent::KeyDown { key, mods, .. } => {
                 self.ctx.input.press(*key, *mods);
                 self.dispatch_to_state(event);
@@ -673,10 +1013,34 @@ impl App {
                     state.borrow_mut().handle_controller(&mut self.ctx, event);
                     self.ctx.run_deferred();
                 }
+            } else {
+                for event in repeats.iter().filter(|event| {
+                    matches!(
+                        event,
+                        InputEvent::ControllerButtonDown {
+                            button: crate::controller::ControllerButton::RightStickUp
+                                | crate::controller::ControllerButton::RightStickDown,
+                            ..
+                        }
+                    )
+                }) {
+                    state.borrow_mut().handle_controller(&mut self.ctx, event);
+                    self.ctx.run_deferred();
+                }
             }
         }
         // Reconnect speech if the player's screen reader changed.
         self.ctx.speech.poll(dt);
+        if let Some(name) = self.ctx.controller.take_connect() {
+            // SDL can leave a pad unnamed; the manager then calls it
+            // "controller", which would only repeat the opening word.
+            let line = if name == "controller" {
+                "Controller connected.".to_string()
+            } else {
+                format!("Controller connected: {name}.")
+            };
+            self.ctx.say(&line);
+        }
         if self.ctx.controller.take_disconnect() {
             self.ctx.say(
                 "Controller disconnected. You can keep playing with the \
@@ -695,20 +1059,54 @@ impl App {
         for line in self.ctx.services.cloud.take_announcements() {
             self.ctx.say_with(line, Say::queued());
         }
+        // A reviewed career the server accepted: clear its mark silently so
+        // the next backup goes up unmarked. A career that is not loaded
+        // clears the next time it is accepted.
+        for name in self.ctx.services.cloud.take_absolved() {
+            if let Some(profile) = self
+                .ctx
+                .profile
+                .as_mut()
+                .filter(|p| crate::cloud_saves::save_slot_name(&p.name) == name)
+            {
+                profile.absolve();
+                self.ctx.save_profile();
+            }
+        }
         // Another driver setting off or signing off, when the player asked
         // to hear it: same channel, same reason.
         for line in self.ctx.services.duty.take_announcements() {
             self.ctx.say_with(line, Say::queued());
         }
+        // The JAWS arrow-key script finishing on its own thread.
+        for line in self.ctx.services.jaws_script.take_announcements() {
+            self.ctx.say_with(line, Say::queued());
+        }
         self.ctx.audio.update(dt); // advance time-based audio fades
         self.ctx.update_speech_duck(); // restore the mix after speech
+
+        // Which calendar the player hears, for every date the career speaks.
+        let live_calendar =
+            self.ctx.settings.real_weather && self.ctx.settings.live_weather_controls_calendar;
+        if let Some(profile) = self.ctx.profile.as_mut() {
+            profile.live_calendar = live_calendar;
+        }
         if let Some(state) = self.ctx.state() {
             state.borrow_mut().update(&mut self.ctx, dt);
             self.ctx.run_deferred();
-            let (presence, online) = {
-                let s = state.borrow();
-                (s.presence(&self.ctx), s.online_presence(&self.ctx))
-            };
+            // A screen with no presence of its own (Settings, help, the
+            // drivers list over the pause menu) is still wherever the state
+            // under it is. Reading the top alone signed a paused driver off
+            // the duty board 20 seconds into a sub-screen (2026-09-28).
+            let states = self.ctx.states();
+            let presence = states
+                .iter()
+                .rev()
+                .find_map(|s| s.try_borrow().ok()?.presence(&self.ctx));
+            let online = states
+                .iter()
+                .rev()
+                .find_map(|s| s.try_borrow().ok()?.online_presence(&self.ctx));
             self.ctx.services.presence.update(presence);
             self.ctx.services.online.update(online);
         }
@@ -773,11 +1171,37 @@ impl App {
         // reader's re-injected press-and-release pairs are told apart from a
         // finger by which frame they land in (see `app::held_keys`).
         self.ctx.input.begin_frame(dt);
+        self.ctx
+            .input
+            .set_bridge(self.ctx.speech.backend_name().eq_ignore_ascii_case("jaws"));
+        if let Some(probe) = self.key_probe.as_mut() {
+            probe.begin_frame(&self.ctx.input);
+        }
         for event in &events {
             self.handle_event(event);
+            if let Some(probe) = self.key_probe.as_mut() {
+                probe.note(&self.ctx.input, event);
+            }
+        }
+        if let Some(probe) = self.key_probe.as_mut() {
+            probe.end_frame(&self.ctx.input);
         }
         self.tick(dt);
+        self.sync_text_field();
         self.render();
+    }
+
+    /// Tell the shell whether the active screen takes typed text.
+    fn sync_text_field(&mut self) {
+        let Some(shell) = self.shell.as_mut() else {
+            return;
+        };
+        let open = self.ctx.state().is_some_and(|state| {
+            state
+                .try_borrow()
+                .is_ok_and(|state| state.captures_text_input())
+        });
+        shell.set_text_field(open);
     }
 
     /// Main loop. `max_frames` runs that many frames then exits cleanly;
@@ -818,6 +1242,11 @@ impl App {
                 self.ctx.running = false;
                 break;
             }
+            let dt = if std::mem::take(&mut self.world_held) {
+                0.0
+            } else {
+                dt
+            };
             self.frame(dt);
             frames += 1;
             if frames == 1 {
@@ -846,25 +1275,107 @@ impl App {
             log::warn!("Could not save settings: {e}");
         }
         boot_timing::mark("quit: saved");
-        self.ctx.services.presence.shutdown();
-        boot_timing::mark("quit: rich presence");
-        self.ctx.services.online.shutdown();
-        boot_timing::mark("quit: drivers board");
-        self.ctx.services.duty.shutdown();
-        boot_timing::mark("quit: duty watch");
-        self.ctx.services.cloud.shutdown(); // flushes the final save's backup, bounded
-        boot_timing::mark("quit: cloud backup");
+        // Pump SDL events through every bounded wait below: the window
+        // stays up through quit so the screen reader keeps focus for
+        // "Installing the update...", and macOS can report an unpumped
+        // window as not responding (issue 266). Captures only `self.shell`, so the services borrow
+        // freely beside it.
+        let shell = &mut self.shell;
+        let mut pumps = 0u32;
+        let mut longest_gap = Duration::ZERO;
+        let mut last_pump = Instant::now();
+        let mut pump = || {
+            let now = Instant::now();
+            longest_gap = longest_gap.max(now - last_pump);
+            last_pump = now;
+            pumps += 1;
+            if let Some(shell) = shell.as_mut() {
+                shell.pump_during_quit();
+            }
+        };
+        let presence = self.ctx.services.presence.clone();
+        let online = self.ctx.services.online.clone();
+        let duty = self.ctx.services.duty.clone();
+        let cloud = self.ctx.services.cloud.clone();
+        run_while_pumping(
+            move || {
+                let started = Instant::now();
+                presence.shutdown();
+                log::info!(
+                    "quit: rich presence in {} ms",
+                    started.elapsed().as_millis()
+                );
+                let started = Instant::now();
+                online.shutdown();
+                log::info!(
+                    "quit: drivers board in {} ms",
+                    started.elapsed().as_millis()
+                );
+                let started = Instant::now();
+                duty.shutdown();
+                log::info!("quit: duty watch in {} ms", started.elapsed().as_millis());
+                let started = Instant::now();
+                cloud.shutdown(); // flushes the final save's backup, bounded
+                log::info!("quit: cloud backup in {} ms", started.elapsed().as_millis());
+            },
+            &mut pump,
+        );
+        boot_timing::mark("quit: online services");
+        self.ctx
+            .synth_worker
+            .shutdown_pumping(Duration::from_millis(2500), &mut pump);
+        boot_timing::mark("quit: synthesized music");
         profile_module::set_save_listener(None);
         self.ctx.controller.shutdown();
         boot_timing::mark("quit: controller");
         self.ctx.audio.shutdown();
         boot_timing::mark("quit: audio");
-        self.ctx.speech.shutdown();
+        self.ctx.speech.shutdown_pumping(&mut pump);
         boot_timing::mark("quit: speech");
         if let Some(shell) = self.shell.take() {
             shell.shutdown_for_process_exit();
         }
         boot_timing::mark("quit: window");
+        log::info!(
+            "quit: pumped events {pumps} times, longest gap {} ms",
+            longest_gap.as_millis()
+        );
+    }
+}
+
+/// Run `work` off the calling thread while `pump` runs on it until the
+/// work finishes: each service shutdown keeps its own bound, but the
+/// window keeps answering the OS through the total (issue 266). Runs
+/// `work` inline when the helper thread cannot be spawned.
+fn run_while_pumping(work: impl FnOnce() + Send + 'static, pump: &mut dyn FnMut()) {
+    // `Builder::spawn` consumes the closure even when it fails, so hold it
+    // in a slot the spawned thread takes; a failed spawn leaves it for
+    // the inline fallback.
+    let slot = Arc::new(Mutex::new(Some(work)));
+    let in_thread = Arc::clone(&slot);
+    let handle = std::thread::Builder::new()
+        .name("quit-services".into())
+        .spawn(move || {
+            if let Some(work) = in_thread.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                work();
+            }
+        });
+    match handle {
+        Ok(handle) => {
+            while !handle.is_finished() {
+                pump();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if handle.join().is_err() {
+                log::warn!("quit: the services thread panicked");
+            }
+        }
+        Err(e) => {
+            log::warn!("quit: the services thread did not start ({e}); shutting down inline");
+            if let Some(work) = slot.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                work();
+            }
+        }
     }
 }
 
@@ -1002,7 +1513,39 @@ fn run_game(options: &CliOptions) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::staged_road_handoff;
+    use super::{run_while_pumping, staged_road_handoff};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn run_while_pumping_pumps_until_the_work_finishes() {
+        // The work finishes only after it has seen three pumps, so the test
+        // pins "keeps pumping while the work runs" without betting on how
+        // many 10 ms sleeps a busy CI runner fits into a fixed window. The
+        // deadline only stops a broken pump loop from hanging the run.
+        let pumps = Arc::new(AtomicU32::new(0));
+        let seen = Arc::clone(&pumps);
+        let saw_pumps = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&saw_pumps);
+        run_while_pumping(
+            move || {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while seen.load(Ordering::SeqCst) < 3 && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                flag.store(seen.load(Ordering::SeqCst) >= 3, Ordering::SeqCst);
+            },
+            &mut || {
+                pumps.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        assert!(
+            saw_pumps.load(Ordering::SeqCst),
+            "the work finished without the loop pumping, got {} pumps",
+            pumps.load(Ordering::SeqCst)
+        );
+    }
 
     #[test]
     fn staged_handoff_does_not_invent_truck_state() {
@@ -1037,6 +1580,7 @@ mod operator_keys_tests {
                 key: Key::Space,
                 mods: Mods::NONE,
                 text: Some(' '),
+                repeat: false,
             },
             InputEvent::KeyUp {
                 key: Key::Space,

@@ -10,8 +10,11 @@
 use std::{env, fs, path::PathBuf};
 
 fn main() {
+    link_prism_system_libraries();
+    build_ios_bridge();
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let root = manifest.ancestors().nth(2).unwrap().to_path_buf();
+    write_catalog_list(&root);
     let os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let dir = root
@@ -23,7 +26,7 @@ fn main() {
         // macOS and Linux are not vendored on purpose: SDL2 is compiled in
         // statically there (see Cargo.toml), so there is nothing missing and
         // nothing to warn about.
-        if os != "macos" && os != "linux" {
+        if os != "macos" && os != "linux" && os != "ios" {
             println!("cargo:warning=freight-fate: no vendored SDL2 for {os}-{arch} under vendor/sdl2; expecting a system SDL2");
         }
         return;
@@ -39,4 +42,183 @@ fn main() {
             }
         }
     }
+}
+
+/// Link what Prism's macOS and Linux backends import.
+///
+/// prism-sys names these for Windows only, and a static library leaves them
+/// to the final link. macOS: the frameworks its CMake links (AVSpeech,
+/// VoiceOver, power management). Linux: glibmm and giomm (Orca) when
+/// pkg-config finds them -- the same test Prism's CMake uses to decide
+/// whether to build that backend. Speech Dispatcher is not linked: Prism
+/// opens it at run time, so a machine without it still starts.
+fn link_prism_system_libraries() {
+    match env::var("CARGO_CFG_TARGET_OS").as_deref() {
+        Ok("macos") => {
+            for framework in [
+                "Foundation",
+                "AVFoundation",
+                "AppKit",
+                "IOKit",
+                "CoreFoundation",
+            ] {
+                println!("cargo:rustc-link-lib=framework={framework}");
+            }
+            println!("cargo:rustc-link-lib=objc");
+        }
+        Ok("ios") => {
+            // Prism (VoiceOver announcements, AVSpeech) and the SDL2 UIKit
+            // backend compiled in by sdl2-sys, whose static link names only
+            // the macOS frameworks.
+            for framework in [
+                "Foundation",
+                "UIKit",
+                "AVFoundation",
+                "AudioToolbox",
+                "CoreAudio",
+                "CoreBluetooth",
+                "CoreFoundation",
+                "CoreGraphics",
+                "CoreHaptics",
+                "CoreMotion",
+                "GameController",
+                "Metal",
+                "OpenGLES",
+                "QuartzCore",
+                "Security",
+            ] {
+                println!("cargo:rustc-link-lib=framework={framework}");
+            }
+            println!("cargo:rustc-link-lib=objc");
+            println!("cargo:rustc-link-lib=iconv");
+            println!("cargo:rustc-link-lib=c++");
+            // BASS and its add-ons ship as embedded frameworks in the app's
+            // own Frameworks folder.
+            println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/Frameworks");
+            link_clang_runtime();
+        }
+        Ok("linux") => {
+            link_libstdcxx_statically();
+            for module in ["glibmm-2.68", "giomm-2.68"] {
+                let Ok(out) = std::process::Command::new("pkg-config")
+                    .args(["--libs", module])
+                    .output()
+                else {
+                    continue;
+                };
+                if !out.status.success() {
+                    continue;
+                }
+                for flag in String::from_utf8_lossy(&out.stdout).split_whitespace() {
+                    if let Some(dir) = flag.strip_prefix("-L") {
+                        println!("cargo:rustc-link-search=native={dir}");
+                    } else if let Some(lib) = flag.strip_prefix("-l") {
+                        println!("cargo:rustc-link-lib={lib}");
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Make prism-sys's `-lstdc++` resolve to the compiler's static archive.
+///
+/// Prism needs a newer libstdc++ than the oldest distribution the Linux
+/// build supports ships, so it is linked in rather than required of the
+/// player's system. prism-sys asks for plain `stdc++`; the linker takes the
+/// first search directory holding any libstdc++, and this one holds only the
+/// archive.
+fn link_libstdcxx_statically() {
+    println!("cargo:rerun-if-env-changed=CXX");
+    let cxx = env::var("CXX").unwrap_or_else(|_| "c++".to_string());
+    let Ok(out) = std::process::Command::new(&cxx)
+        .arg("-print-file-name=libstdc++.a")
+        .output()
+    else {
+        return;
+    };
+    // gcc echoes the bare name back when it has no such file.
+    let archive = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    if !archive.is_absolute() {
+        println!(
+            "cargo:warning=freight-fate: {cxx} has no libstdc++.a; linking libstdc++ dynamically"
+        );
+        return;
+    }
+    let dir = PathBuf::from(env::var("OUT_DIR").unwrap()).join("static-libstdcxx");
+    if fs::create_dir_all(&dir).is_ok() && fs::copy(&archive, dir.join("libstdc++.a")).is_ok() {
+        println!("cargo:rustc-link-search=native={}", dir.display());
+    }
+}
+
+/// Compile the UIKit gesture and VoiceOver bridge (`ios/ff_touch.m`).
+///
+/// It is the one piece of the iOS port that has to be Objective-C: a view
+/// over SDL's own, carrying the gesture recognizers and the accessibility
+/// element VoiceOver focuses. Everything it sees is queued as a plain gesture
+/// code that `touch` turns into the same key events the desktop game reads.
+fn build_ios_bridge() {
+    let source = "ios/ff_touch.m";
+    println!("cargo:rerun-if-changed={source}");
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("ios") {
+        return;
+    }
+    cc::Build::new()
+        .file(source)
+        .flag("-fobjc-arc")
+        .flag("-fmodules")
+        .compile("ff_touch");
+}
+
+/// Link clang's own runtime for iOS. SDL2's and Prism's `@available` checks
+/// compile to `__isPlatformVersionAtLeast`, which lives there, and rustc links
+/// with `-nodefaultlibs`, so clang does not add it by itself.
+fn link_clang_runtime() {
+    let simulator = env::var("CARGO_CFG_TARGET_ABI").as_deref() == Ok("sim");
+    let Ok(output) = std::process::Command::new("xcrun")
+        .args(["clang", "-print-resource-dir"])
+        .output()
+    else {
+        println!("cargo:warning=freight-fate: xcrun clang not found; not linking clang_rt");
+        return;
+    };
+    let resource_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // A fat archive, which rustc cannot bundle into the rlib, so it goes to
+    // the final link directly.
+    println!(
+        "cargo:rustc-link-arg={resource_dir}/lib/darwin/libclang_rt.{}.a",
+        if simulator { "iossim" } else { "ios" }
+    );
+}
+
+/// Compile every `lang/*.po` into the game, so a translator's new language
+/// needs its file and nothing else: `$OUT_DIR/catalogs.rs` is the
+/// `(code, text)` list `app::language` includes.
+fn write_catalog_list(root: &std::path::Path) {
+    let lang = root.join("lang");
+    println!("cargo:rerun-if-changed={}", lang.display());
+    let mut codes: Vec<(String, PathBuf)> = fs::read_dir(&lang)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("po"))
+        .filter_map(|path| {
+            let code = path.file_stem()?.to_str()?.to_string();
+            Some((code, path))
+        })
+        .collect();
+    codes.sort();
+    let mut out = String::from("&[\n");
+    for (code, path) in &codes {
+        println!("cargo:rerun-if-changed={}", path.display());
+        out.push_str(&format!(
+            "    ({code:?}, include_str!({:?})),\n",
+            path.display().to_string()
+        ));
+    }
+    out.push(']');
+    let dest = PathBuf::from(env::var("OUT_DIR").unwrap()).join("catalogs.rs");
+    fs::write(dest, out).expect("catalog list written");
 }

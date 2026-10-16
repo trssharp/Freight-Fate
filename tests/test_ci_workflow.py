@@ -1,13 +1,12 @@
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
-BUILD_WORKFLOW = ROOT / ".github" / "workflows" / "build.yml"
+# The packaging workflow, which is where an LFS fetch would do the damage.
+# This was build.yml until the 1.9 cutover deleted it with the 1.8 line.
+BUILD_WORKFLOW = ROOT / ".github" / "workflows" / "build-career-1.9.yml"
 GITATTRIBUTES = ROOT / ".gitattributes"
 
 
@@ -66,45 +65,73 @@ def test_the_test_job_gets_the_sound_pack_from_a_plain_checkout() -> None:
     )
 
 
-def test_nightly_recovery_is_not_a_pull_request_check() -> None:
+def test_ci_does_not_dispatch_the_retired_build_workflow() -> None:
+    """build.yml went with the 1.8 line, so a CI job dispatching `Build`
+    can only fail, and it failed every push to dev. Nightly recovery is
+    retry-failed-nightly.yml's job, against the Career 1.9 snapshot."""
     workflow = _load_ci_workflow()
 
-    assert "recover-nightly" not in workflow["jobs"]
-    build = workflow["jobs"]["build"]
-    assert build["needs"] == ["test", "changelog"]
-    assert "needs.test.result == 'success'" in build["if"]
+    assert "build" not in workflow["jobs"]
+    assert "--workflow Build" not in CI_WORKFLOW.read_text(encoding="utf-8")
 
 
-def test_build_keeps_dev_push_nightly_recovery() -> None:
-    workflow = _load_ci_workflow()
-    steps = workflow["jobs"]["build"]["steps"]
-    recovery = next(step for step in steps if step.get("name") == "Retry today's failed snapshot")
-
-    condition = recovery["if"]
-    assert "github.event_name == 'push'" in condition
-    assert "github.ref == 'refs/heads/dev'" in condition
-    assert "needs.changelog.result == 'success'" in condition
-    assert "!cancelled()" in condition
-
-    script = recovery["run"]
-    assert 'gh run list --repo "$GITHUB_REPOSITORY"' in script
-    assert "--workflow Build --event schedule" in script
-    assert '"$CONCLUSION" != "failure"' in script
-    assert 'gh workflow run Build --repo "$GITHUB_REPOSITORY" --ref dev -f dry_run=false' in script
+WORKFLOWS = ROOT / ".github" / "workflows"
+RUST_WORKFLOW = WORKFLOWS / "rust.yml"
+CHANGELOG_WORKFLOW = WORKFLOWS / "changelog.yml"
 
 
-def test_secret_store_probe_can_import_release_flags_with_its_job_environment() -> None:
-    job = _load_ci_workflow()["jobs"]["secret-store-packaging"]
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from tools.build_release import KEYRING_NUITKA_ARGS; assert KEYRING_NUITKA_ARGS",
-        ],
-        cwd=ROOT,
-        env={**os.environ, **job.get("env", {})},
-        capture_output=True,
-        text=True,
-        check=False,
+def _load(path: Path) -> dict:
+    return yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+
+
+def test_all_fork_workflows_are_manual_only() -> None:
+    """Upstream merges must not enable automatic Actions on this fork."""
+    for path in WORKFLOWS.glob("*.yml"):
+        assert set(_load(path)["on"]) == {"workflow_dispatch"}, path.name
+
+
+def test_python_manual_run_keeps_all_checks_enabled() -> None:
+    """Manual dispatch must run the tooling checks regardless of path changes."""
+    workflow = _load(CI_WORKFLOW)
+    assert set(workflow["on"]) == {"workflow_dispatch"}
+    assert (
+        "github.event_name == 'workflow_dispatch'"
+        in workflow["jobs"]["changes"]["outputs"]["python"]
     )
-    assert result.returncode == 0, result.stderr
+
+    changes = workflow["jobs"]["changes"]
+    filter_step = next(
+        step for step in changes["steps"] if step.get("uses", "").startswith("dorny/paths-filter@")
+    )
+    python_inputs = yaml.safe_load(filter_step["with"]["filters"])["python"]
+    for needed in ("tools/**", "tests/**", "pyproject.toml", "uv.lock", ".github/workflows/**"):
+        assert needed in python_inputs, needed
+
+    test_job = workflow["jobs"]["test"]
+    assert test_job["needs"] == "changes"
+    gated = [step for step in test_job["steps"] if "skipping" not in step.get("name", "")]
+    assert gated
+    for step in gated:
+        assert step.get("if") == "needs.changes.outputs.python != 'false'", step
+
+
+def test_ci_cancels_superseded_runs() -> None:
+    concurrency = _load(CI_WORKFLOW)["concurrency"]
+    assert "github.ref" in concurrency["group"]
+    assert concurrency["cancel-in-progress"] == "true"
+
+
+def test_one_manual_changelog_gate_has_a_usable_base() -> None:
+    """The fork retains one changelog gate with an explicit manual base."""
+    for path in (CI_WORKFLOW, RUST_WORKFLOW):
+        assert "changelog" not in _load(path)["jobs"], path.name
+
+    workflow = _load(CHANGELOG_WORKFLOW)
+    triggers = workflow["on"]
+    assert set(triggers) == {"workflow_dispatch"}
+    assert triggers["workflow_dispatch"]["inputs"]["base"]["default"] == "HEAD^"
+    check = next(step for step in workflow["jobs"]["changelog"]["steps"] if "env" in step)
+    assert check["env"]["BASE"] == "${{ inputs.base || 'HEAD^' }}"
+
+    run = "\n".join(step.get("run", "") for step in workflow["jobs"]["changelog"]["steps"])
+    assert "tools/release_notes.py check" in run

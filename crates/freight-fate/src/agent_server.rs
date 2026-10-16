@@ -41,28 +41,23 @@
 //! `ping` are answered from the serve thread alone; the sandbox, the lock,
 //! the window, audio and speech all wait for the first play request, and a
 //! client that hangs up takes the game down with it.
+//!
+//! "Hangs up" is wider than stdin closing. On Windows the client's pipe can
+//! stay open after the client is gone, and orphaned servers with a game up
+//! held the lock against the next session until they were ended by hand
+//! (owner, 2026-10-08). So the server also ends when stdout stops taking
+//! replies and when the process that started it exits (`lifeline`), even in
+//! the middle of a `wait`; and a new server refused the lock reads who holds
+//! it (`holder`) and names that process rather than a bare "already running".
 
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::io::{BufRead, Write};
-use std::rc::Rc;
 use std::sync::mpsc;
 
-use serde_json::{json, Map, Value};
-
 use crate::app::{App, PlayerInputFrame};
-use crate::audio::{Audio, AudioError, SustainLoopSpec, VolumeUpdate};
-use crate::speech::SpeechSink;
+use crate::bindings::{key_saved_name, Action, KeyBindings};
 use crate::states::base::{InputEvent, Key, Mods};
 
-const SERVER_NAME: &str = "freight-fate-agent";
-const PROTOCOL_VERSION: &str = "2025-06-18";
 /// One `wait` may hold the wheel for at most this much real time.
 const MAX_WAIT_SECONDS: f64 = 300.0;
-/// Sound lines per `listen` before the rest are summarized.
-const MAX_SOUND_LINES: usize = 150;
-/// A tool call must be answered by the game loop within this budget.
-const REPLY_TIMEOUT_SECONDS: u64 = 330;
 /// A `pedal` hold may last at most this long: a pedal is a gesture, and a
 /// held throttle for a minute is what `hold` is for.
 const MAX_PEDAL_SECONDS: f64 = 30.0;
@@ -80,459 +75,68 @@ const CRUISE_REPLY_FRAMES: u32 = 30;
 /// minus); no target is ever this far from what K captured.
 const MAX_CRUISE_TAPS: i64 = 60;
 
-// -- ears -----------------------------------------------------------------------------
+mod ears;
+mod holder;
+mod lifeline;
+mod protocol;
 
-/// Everything audible, formatted at record time, drained by `listen`.
-#[derive(Default)]
-pub struct Ears {
-    lines: Vec<String>,
-    /// Engine pitch is set every frame; an ear notices where it went, not
-    /// sixty samples a second of it. Cleared at each listen.
-    engine_rpm: Vec<f64>,
-    road_noise_mps: Option<f64>,
-    /// The alert currently held, so a per-frame re-assert is heard once.
-    held_alert: Option<String>,
-}
+pub use ears::{install_ears, Ears, SharedEars};
+pub use holder::{judge, HolderRecord, HolderVerdict};
+pub use lifeline::{
+    parent_alive_check, pid_alive, spawn_watch, spawn_watch_with, Lifeline, ParentWatch,
+};
+pub use protocol::{build_command, serve_lines, serve_lines_with_lifeline};
 
-pub type SharedEars = Rc<RefCell<Ears>>;
-
-impl Ears {
-    pub fn shared() -> SharedEars {
-        Rc::new(RefCell::new(Ears::default()))
-    }
-}
-
-fn pan_text(pan: f64) -> &'static str {
-    if pan < -0.15 {
-        " (left)"
-    } else if pan > 0.15 {
-        " (right)"
-    } else {
-        ""
-    }
-}
-
-// -- the speech tee -------------------------------------------------------------------
-
-/// Passes every call to the real sink (the words still reach the screen
-/// reader) while recording what was said.
-struct TeeSpeech {
-    inner: Box<dyn SpeechSink>,
-    ears: SharedEars,
-}
-
-impl SpeechSink for TeeSpeech {
-    fn say(&mut self, text: &str, interrupt: bool) {
-        let cut = if interrupt { " (interrupting)" } else { "" };
-        self.ears
-            .borrow_mut()
-            .lines
-            .push(format!("[spoken]{cut} {text}"));
-        self.inner.say(text, interrupt);
-    }
-    fn say_event(&mut self, text: &str, interrupt: bool) {
-        let cut = if interrupt { " (interrupting)" } else { "" };
-        self.ears
-            .borrow_mut()
-            .lines
-            .push(format!("[spoken:event]{cut} {text}"));
-        self.inner.say_event(text, interrupt);
-    }
-    fn stop_main(&mut self) {
-        self.inner.stop_main();
-    }
-    fn stop_event(&mut self) {
-        self.inner.stop_event();
-    }
-    fn stop(&mut self) {
-        self.inner.stop();
-    }
-    fn poll(&mut self, dt: f64) {
-        self.inner.poll(dt);
-    }
-    fn request_refresh(&mut self) {
-        self.inner.request_refresh();
-    }
-    fn available(&self) -> bool {
-        self.inner.available()
-    }
-    fn backend_name(&self) -> String {
-        self.inner.backend_name()
-    }
-    fn has_separate_event_voice(&self) -> bool {
-        self.inner.has_separate_event_voice()
-    }
-    fn event_backend_name(&self) -> String {
-        self.inner.event_backend_name()
-    }
-    fn supports_rate(&self) -> bool {
-        self.inner.supports_rate()
-    }
-    fn supports_pitch(&self) -> bool {
-        self.inner.supports_pitch()
-    }
-    fn supports_volume(&self) -> bool {
-        self.inner.supports_volume()
-    }
-    fn event_supports_rate(&self) -> bool {
-        self.inner.event_supports_rate()
-    }
-    fn event_backend_options(&self) -> Vec<String> {
-        self.inner.event_backend_options()
-    }
-    fn select_event_backend(&mut self, name: Option<&str>) {
-        self.inner.select_event_backend(name);
-    }
-    fn set_braille_only(&mut self, on: bool) {
-        self.inner.set_braille_only(on);
-    }
-    fn supports_braille(&self) -> bool {
-        self.inner.supports_braille()
-    }
-    fn voice_names(&self) -> Vec<String> {
-        self.inner.voice_names()
-    }
-    fn configure(
-        &mut self,
-        rate: Option<f64>,
-        pitch: Option<f64>,
-        volume: Option<f64>,
-        voice: Option<&str>,
-    ) {
-        self.inner.configure(rate, pitch, volume, voice);
-    }
-    fn say_adjustment_preview(&mut self, setting: &str, text: &str, interrupt: bool) -> bool {
-        self.inner.say_adjustment_preview(setting, text, interrupt)
-    }
-    fn refresh(&mut self, announce: bool) -> bool {
-        self.inner.refresh(announce)
-    }
-    fn shutdown(&mut self) {
-        self.inner.shutdown();
-    }
-}
-
-// -- the audio tee --------------------------------------------------------------------
-
-/// Passes every call to the real engine (the sounds still play) while
-/// recording the audible facts an agent's ears should carry.
-struct TeeAudio {
-    inner: Box<dyn Audio>,
-    ears: SharedEars,
-    weather_key: Option<String>,
-    ambient_key: Option<String>,
-    loop_keys: HashMap<u32, String>,
-}
-
-impl TeeAudio {
-    fn hear(&self, line: String) {
-        self.ears.borrow_mut().lines.push(line);
-    }
-}
-
-impl Audio for TeeAudio {
-    fn enabled(&self) -> bool {
-        self.inner.enabled()
-    }
-    fn backend_name(&self) -> &str {
-        self.inner.backend_name()
-    }
-    fn take_silence_notice(&mut self) -> bool {
-        self.inner.take_silence_notice()
-    }
-    fn master_volume(&self) -> f64 {
-        self.inner.master_volume()
-    }
-    fn sfx_volume(&self) -> f64 {
-        self.inner.sfx_volume()
-    }
-    fn music_volume(&self) -> f64 {
-        self.inner.music_volume()
-    }
-    fn weather_volume(&self) -> f64 {
-        self.inner.weather_volume()
-    }
-    fn engine_volume(&self) -> f64 {
-        self.inner.engine_volume()
-    }
-    fn ui_volume(&self) -> f64 {
-        self.inner.ui_volume()
-    }
-    fn engine_running(&self) -> bool {
-        self.inner.engine_running()
-    }
-    fn engine_starting(&self) -> bool {
-        self.inner.engine_starting()
-    }
-    fn voice_key(&self, key: &str) -> String {
-        self.inner.voice_key(key)
-    }
-    fn play_with(&mut self, key: &str, volume: f64, pan: f64) {
-        let soft = if volume < 0.4 { ", soft" } else { "" };
-        self.hear(format!("[sound] {key}{}{soft}", pan_text(pan)));
-        self.inner.play_with(key, volume, pan);
-    }
-    fn play_bank_with(&mut self, base: &str, fallback: &str, volume: f64, pan: f64) {
-        let soft = if volume < 0.4 { ", soft" } else { "" };
-        self.hear(format!("[sound] {base}{}{soft}", pan_text(pan)));
-        self.inner.play_bank_with(base, fallback, volume, pan);
-    }
-    fn set_engine_duck(&mut self, duck: f64) {
-        self.inner.set_engine_duck(duck);
-    }
-    fn set_speech_duck(&mut self, duck: f64) {
-        self.inner.set_speech_duck(duck);
-    }
-    fn set_engine_voice(&mut self, classic: bool) {
-        self.inner.set_engine_voice(classic);
-    }
-    fn set_jake_voice(&mut self, classic: bool) {
-        self.inner.set_jake_voice(classic);
-    }
-    fn has_asset(&mut self, key: &str) -> bool {
-        self.inner.has_asset(key)
-    }
-    fn start_loop_with(&mut self, channel: u32, key: &str, volume: f64, fade_ms: u32) {
-        if self.loop_keys.get(&channel).map(String::as_str) != Some(key) {
-            self.hear(format!("[sound bed] {key} starts"));
-            self.loop_keys.insert(channel, key.to_string());
-        }
-        self.inner.start_loop_with(channel, key, volume, fade_ms);
-    }
-    fn set_loop_volume(&mut self, channel: u32, volume: f64) {
-        self.inner.set_loop_volume(channel, volume);
-    }
-    fn set_loop_pan(&mut self, channel: u32, pan: f64) {
-        self.inner.set_loop_pan(channel, pan);
-    }
-    fn stop_loop_with(&mut self, channel: u32, fade_ms: u32) {
-        self.loop_keys.remove(&channel);
-        self.inner.stop_loop_with(channel, fade_ms);
-    }
-    fn start_sustain_loop_with(
-        &mut self,
-        channel: u32,
-        key: &str,
-        spec: SustainLoopSpec,
-        volume: f64,
-    ) {
-        if self.loop_keys.get(&channel).map(String::as_str) != Some(key) {
-            self.hear(format!("[sound bed] {key} starts"));
-            self.loop_keys.insert(channel, key.to_string());
-        }
-        self.inner
-            .start_sustain_loop_with(channel, key, spec, volume);
-    }
-    fn release_sustain_loop_with(&mut self, channel: u32, fade_ms: u32) {
-        self.loop_keys.remove(&channel);
-        self.inner.release_sustain_loop_with(channel, fade_ms);
-    }
-    fn hold_alert_with(&mut self, key: &str, volume: f64, fade_ms: u32) {
-        // Re-asserted every frame while it holds; an ear hears it start
-        // once (a ramp-end stop flooded a listen with a hundred of these).
-        let fresh = self.ears.borrow().held_alert.as_deref() != Some(key);
-        if fresh {
-            self.ears.borrow_mut().held_alert = Some(key.to_string());
-            self.hear(format!("[alert] {key} holds"));
-        }
-        self.inner.hold_alert_with(key, volume, fade_ms);
-    }
-    fn release_alert_with(&mut self, fade_ms: u32) {
-        self.ears.borrow_mut().held_alert = None;
-        self.hear("[alert] released".to_string());
-        self.inner.release_alert_with(fade_ms);
-    }
-    fn hold_cue(&mut self, name: &str) {
-        self.hear(format!("[cue] {name} holds"));
-        self.inner.hold_cue(name);
-    }
-    fn cue_held(&self, name: &str) -> bool {
-        self.inner.cue_held(name)
-    }
-    fn release_cue(&mut self, name: &str) {
-        self.hear(format!("[cue] {name} released"));
-        self.inner.release_cue(name);
-    }
-    fn engine_start_with(&mut self, play_start_sound: bool) {
-        // A silent start is the loop coming back after a menu or a resumed
-        // trip: no crank plays, so the ear must not report one -- every
-        // unpause read as an engine start (agent drive, 2026-09-01).
-        if play_start_sound {
-            self.hear("[engine] starting".to_string());
-        } else {
-            self.hear("[engine] running again, no crank".to_string());
-        }
-        self.inner.engine_start_with(play_start_sound);
-    }
-    fn engine_stop_with(&mut self, shutdown_sound: bool) {
-        self.hear("[engine] shut down".to_string());
-        self.inner.engine_stop_with(shutdown_sound);
-    }
-    fn update(&mut self, dt: f64) {
-        self.inner.update(dt);
-    }
-    fn set_engine_rpm_with(&mut self, rpm: f64, throttle: f64) {
-        self.ears.borrow_mut().engine_rpm.push(rpm);
-        self.inner.set_engine_rpm_with(rpm, throttle);
-    }
-    fn set_road_noise(&mut self, speed_mps: f64) {
-        self.ears.borrow_mut().road_noise_mps = Some(speed_mps);
-        self.inner.set_road_noise(speed_mps);
-    }
-    fn set_weather_with(&mut self, key: Option<&str>, intensity: f64) {
-        let audible_key = key.filter(|_| intensity > 0.0);
-        if audible_key != self.weather_key.as_deref() {
-            match audible_key {
-                Some(key) => self.hear(format!("[weather] {key}")),
-                None => self.hear("[weather] stopped".to_string()),
-            }
-            self.weather_key = audible_key.map(str::to_string);
-        }
-        self.inner.set_weather_with(key, intensity);
-    }
-    fn set_wind(&mut self, intensity: f64) {
-        self.inner.set_wind(intensity);
-    }
-    fn set_ambient_with(&mut self, key: Option<&str>, volume: f64) {
-        let audible_key = key.filter(|_| volume > 0.0);
-        if audible_key != self.ambient_key.as_deref() {
-            match audible_key {
-                Some(key) => self.hear(format!("[ambience] {key}")),
-                None => self.hear("[ambience] stopped".to_string()),
-            }
-            self.ambient_key = audible_key.map(str::to_string);
-        }
-        self.inner.set_ambient_with(key, volume);
-    }
-    fn horn_start(&mut self) {
-        self.hear("[horn] on".to_string());
-        self.inner.horn_start();
-    }
-    fn horn_stop(&mut self) {
-        self.hear("[horn] off".to_string());
-        self.inner.horn_stop();
-    }
-    fn reverse_start(&mut self) {
-        self.hear("[reverse beeper] on".to_string());
-        self.inner.reverse_start();
-    }
-    fn reverse_stop(&mut self) {
-        self.hear("[reverse beeper] off".to_string());
-        self.inner.reverse_stop();
-    }
-    fn stop_world(&mut self) {
-        // The engine loop drops silently with the rest of the road (a pause,
-        // an arrival) and comes back silently; say so, or the return reads
-        // as a start out of nowhere.
-        if self.inner.engine_running() {
-            self.hear("[engine] quiet while the road is paused".to_string());
-        }
-        if self.weather_key.take().is_some() {
-            self.hear("[weather] stopped".to_string());
-        }
-        if self.ambient_key.take().is_some() {
-            self.hear("[ambience] stopped".to_string());
-        }
-        self.loop_keys.clear();
-        self.inner.stop_world();
-    }
-    fn play_music_with(&mut self, track: &str, fade_ms: u32) {
-        self.hear(format!("[radio] now playing {track}"));
-        self.inner.play_music_with(track, fade_ms);
-    }
-    fn play_radio_stream_with(&mut self, url: &str, fade_ms: u32) -> Result<(), AudioError> {
-        self.hear("[radio] live stream tuning".to_string());
-        self.inner.play_radio_stream_with(url, fade_ms)
-    }
-    fn play_music_file_with(&mut self, path: &str, fade_ms: u32) -> Result<(), AudioError> {
-        self.inner.play_music_file_with(path, fade_ms)
-    }
-    fn music_playing(&self) -> bool {
-        self.inner.music_playing()
-    }
-    fn radio_now_playing(&self) -> Option<String> {
-        self.inner.radio_now_playing()
-    }
-    fn stop_music_with(&mut self, fade_ms: u32) {
-        self.inner.stop_music_with(fade_ms);
-    }
-    fn set_volumes(&mut self, volumes: &VolumeUpdate) {
-        self.inner.set_volumes(volumes);
-    }
-    fn shutdown(&mut self) {
-        self.inner.shutdown();
-    }
-}
-
-/// Wrap the app's live speech and audio in recording tees.
-pub fn install_ears(app: &mut App) -> SharedEars {
-    use crate::audio::{AudioEngine, NullBackend};
-    let ears = Ears::shared();
-    let speech = std::mem::replace(&mut app.ctx.speech, Box::new(crate::speech::NullSpeech));
-    app.ctx.speech = Box::new(TeeSpeech {
-        inner: speech,
-        ears: Rc::clone(&ears),
-    });
-    let audio = std::mem::replace(
-        &mut app.ctx.audio,
-        Box::new(AudioEngine::with_backend(Box::new(NullBackend::new()))),
-    );
-    app.ctx.audio = Box::new(TeeAudio {
-        inner: audio,
-        ears: Rc::clone(&ears),
-        weather_key: None,
-        ambient_key: None,
-        loop_keys: HashMap::new(),
-    });
-    ears
-}
-
-fn drain_ears(ears: &SharedEars) -> String {
-    let mut e = ears.borrow_mut();
-    let mut lines: Vec<String> = Vec::new();
-    let shown = e.lines.len().min(MAX_SOUND_LINES.max(64));
-    lines.extend(e.lines.drain(..).take(shown));
-    if let (Some(first), Some(last)) = (e.engine_rpm.first(), e.engine_rpm.last()) {
-        let low = e.engine_rpm.iter().cloned().fold(f64::MAX, f64::min);
-        let high = e.engine_rpm.iter().cloned().fold(0.0_f64, f64::max);
-        if (high - low).abs() > 25.0 {
-            lines.push(format!(
-                "[engine] {first:.0} rpm -> {last:.0} rpm (ranged {low:.0} to {high:.0})"
-            ));
-        }
-    }
-    e.engine_rpm.clear();
-    if let Some(mps) = e.road_noise_mps.take() {
-        if mps > 1.0 {
-            lines.push(format!(
-                "[road] rolling at about {:.0} miles per hour by ear",
-                mps * 2.236_936
-            ));
-        }
-    }
-    if lines.is_empty() {
-        "(quiet -- nothing new to hear)".to_string()
-    } else {
-        lines.join("\n")
-    }
-}
-
+use ears::{drain_ears, CAB_CUT_IN};
+use protocol::{discover, serve};
 // -- commands between the MCP thread and the game loop --------------------------------
+
+/// What a key tool was asked to press: a key by name, or a driving control
+/// by its shortcut id, resolved against the player's own table when the
+/// loop runs it (so a sandbox with moved keys is driven the way its player
+/// would drive it).
+#[derive(Clone, Debug, PartialEq)]
+pub enum KeySpec {
+    Key { key: Key, text: Option<char> },
+    Action(Action),
+}
+
+impl KeySpec {
+    /// The key, its typed character, and the modifiers the chord carries.
+    /// A control the keyboard does not have (the pad-only ones) is refused.
+    pub fn resolve(&self, bindings: &KeyBindings) -> Result<(Key, Option<char>, Mods), String> {
+        match self {
+            KeySpec::Key { key, text } => Ok((*key, *text, Mods::NONE)),
+            KeySpec::Action(action) => {
+                let chord = bindings
+                    .chords(*action)
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| format!("{} has no keyboard key", action.label()))?;
+                let text = key_saved_name(chord.key)
+                    .filter(|name| name.chars().count() == 1)
+                    .and_then(|name| name.chars().next());
+                Ok((chord.key, text, chord.mods))
+            }
+        }
+    }
+}
 
 pub enum Command {
     Press {
-        key: Key,
-        text: Option<char>,
+        key: KeySpec,
         mods: Mods,
         times: i64,
     },
     Hold {
-        key: Key,
-        text: Option<char>,
+        key: KeySpec,
     },
     Release {
-        key: Key,
+        key: KeySpec,
     },
+    /// Put the sandbox career in any situation and reopen the terminal on
+    /// it (`playtest::scenario`). Scenario staging, not play.
+    Scenario(Box<crate::playtest::scenario::Scenario>),
     Wait {
         seconds: f64,
     },
@@ -542,8 +146,7 @@ pub enum Command {
     /// throttle tap overshot the limit and every brake landed late (agent
     /// drive, 2026-09-02). Replies after the release with what was heard.
     Pedal {
-        key: Key,
-        text: Option<char>,
+        key: KeySpec,
         seconds: f64,
     },
     /// Run until a line carrying `text` is heard, or a menu opens, or the
@@ -565,6 +168,20 @@ pub enum Command {
     /// The wheel's readouts in one call: speed, limit, grade, what is ahead,
     /// the route, the clock, fuel.
     Status,
+    /// Hand the keyboard to the operator or take it back (see
+    /// [`PlayerInputFrame::set_operator_keys`]).
+    OperatorKeys {
+        live: bool,
+    },
+    /// Freeze the world between tool calls, so time passes only inside
+    /// `wait`, `pedal`, `wait_for` and the frames a call scripts.
+    Lockstep {
+        on: bool,
+    },
+    /// Start the key probe, or stop it and report (`app::key_probe`).
+    KeyProbe {
+        start: bool,
+    },
     Listen,
     Menu,
     Observe,
@@ -603,10 +220,12 @@ enum Until {
 struct Waiting {
     remaining: f64,
     until: Until,
-    /// Where in the ears the scan for `Heard` resumes.
+    /// Where in the ears the scan resumes.
     scanned: usize,
-    /// False for a plain `wait`; true for the tools whose reply should say
-    /// when the clock, not the thing waited for, ended the wait.
+    /// True for `wait_for`: it also stops when the cab cuts in, and says
+    /// when the clock, not the thing waited for, ended the wait. A blind
+    /// wait_for drove past "Exit lane opening. Steer right into it." and
+    /// missed the exit (agent drive, Dallas, 2026-09-25).
     reports_timeout: bool,
     reply: Reply,
 }
@@ -640,23 +259,45 @@ impl Request {
     pub fn answer(self, result: Result<String, String>) {
         let _ = self.reply.send(result);
     }
+
+    #[doc(hidden)]
+    pub fn for_test(command: Command, reply: Reply) -> Self {
+        Self { command, reply }
+    }
 }
 
-/// Block until the client asks for something only a running game can do,
-/// answering what needs no game on the way (a quit with nothing to quit).
-/// `None` when the client hangs up first: the handshake alone never boots a
-/// game, so a session that only asked for the tool list ends here, quietly.
+/// Block until the client asks for something only a running game can do.
+/// `None` when the client hangs up first, or quits with no game up: the
+/// handshake alone never boots a game, and an idle server still holds the
+/// release executable open, so a quit ends the process either way and the
+/// next build is not refused "access denied" (owner, 2026-09-22).
 pub fn await_play_request(requests: &mpsc::Receiver<Request>) -> Option<Request> {
-    loop {
-        let request = requests.recv().ok()?;
-        match request.command {
-            Command::Quit => request.answer(Ok(
-                "The game is not running; nothing to quit. Any other tool call boots it."
-                    .to_string(),
-            )),
-            _ => return Some(request),
-        }
+    await_play_request_for(requests, IDLE_SERVER_EXIT)
+}
+
+/// How long a server with no game waits for its first play request before
+/// it ends. Every open agent session spawns its servers at startup and keeps
+/// stdin open for as long as the session lives, so without a bound an idle
+/// session anywhere on the machine holds the release executable and the
+/// next build fails "access denied" (owner, 2026-10-08: "we always have this
+/// issue"). The client spawns a fresh server at the next tool call.
+pub const IDLE_SERVER_EXIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// [`await_play_request`] with the idle bound given: `None` as well when
+/// `idle` passes with no request at all.
+pub fn await_play_request_for(
+    requests: &mpsc::Receiver<Request>,
+    idle: std::time::Duration,
+) -> Option<Request> {
+    let request = requests.recv_timeout(idle).ok()?;
+    if matches!(request.command, Command::Quit) {
+        request.answer(Ok(
+            "No game was running; the server has ended. The next tool call starts a fresh one."
+                .to_string(),
+        ));
+        return None;
     }
+    Some(request)
 }
 
 /// The per-frame policy servicing agent commands inside the real game loop.
@@ -687,7 +328,15 @@ pub struct AgentPolicy {
     /// toggled the parking brake against the approach assist (found live,
     /// 2026-09-01). No finger taps inside a frame, so the agent must not.
     scripted: std::collections::VecDeque<Vec<InputEvent>>,
+    /// The world waits while no call is working. A client round trip is a
+    /// second or two of thinking, and with lane keeping off at highway speed
+    /// that is the truck across half a lane before the answer to a cue
+    /// lands (agent drive, 2026-09-23): every correction arrived late
+    /// whatever the guide said. Off by default, so an owner driving
+    /// alongside with operator keys keeps a live road.
+    lockstep: bool,
     quit: bool,
+    lifeline: Lifeline,
 }
 
 impl AgentPolicy {
@@ -700,8 +349,12 @@ impl AgentPolicy {
 
     /// Script a finger tap: down on one frame, up on the next.
     fn tap(&mut self, key: Key, text: Option<char>, mods: Mods) {
-        self.scripted
-            .push_back(vec![InputEvent::KeyDown { key, mods, text }]);
+        self.scripted.push_back(vec![InputEvent::KeyDown {
+            key,
+            mods,
+            text,
+            repeat: false,
+        }]);
         self.scripted
             .push_back(vec![InputEvent::KeyUp { key, mods }]);
     }
@@ -831,6 +484,35 @@ impl AgentPolicy {
         if self.quit {
             return false;
         }
+        if self.lifeline.is_cut() {
+            eprintln!(
+                "The MCP client is gone; {}.",
+                self.lifeline
+                    .reason()
+                    .unwrap_or_else(|| "the game is quitting".to_string())
+            );
+            let error = Err("The MCP client is gone; the game is quitting.".to_string());
+            if let Some(waiting) = self.waiting.take() {
+                let _ = waiting.reply.send(error.clone());
+            }
+            if let Some(plan) = self.cruise_plan.take() {
+                let _ = plan.reply.send(error);
+            }
+            for key in self.held.drain(..) {
+                input.queue_player_input(InputEvent::KeyUp {
+                    key,
+                    mods: Mods::NONE,
+                });
+            }
+            if let Some((key, _)) = self.timed_hold.take() {
+                input.queue_player_input(InputEvent::KeyUp {
+                    key,
+                    mods: Mods::NONE,
+                });
+            }
+            self.quit = true;
+            return false;
+        }
         for key in &self.held {
             input.assert_held(*key);
         }
@@ -855,26 +537,36 @@ impl AgentPolicy {
         if let Some(mut waiting) = self.waiting.take() {
             waiting.remaining -= dt;
             let out_of_time = waiting.remaining <= 0.0;
-            let released = match &waiting.until {
-                Until::Elapsed => out_of_time,
-                Until::Heard(needle) => {
-                    let ears = self.ears.borrow();
-                    let from = waiting.scanned.min(ears.lines.len());
-                    let heard = ears.lines[from..]
+            let (heard, cut_in) = {
+                let ears = self.ears.borrow();
+                let fresh = &ears.lines[waiting.scanned.min(ears.lines.len())..];
+                let heard = match &waiting.until {
+                    Until::Heard(needle) => fresh
                         .iter()
-                        .any(|line| line.to_lowercase().contains(needle.as_str()));
-                    waiting.scanned = ears.lines.len();
-                    heard || out_of_time
-                }
-                Until::Menu => input.menu_rows().is_some() || out_of_time,
+                        .any(|line| line.to_lowercase().contains(needle.as_str())),
+                    _ => false,
+                };
+                let cut_in =
+                    waiting.reports_timeout && fresh.iter().any(|l| l.starts_with(CAB_CUT_IN));
+                waiting.scanned = ears.lines.len();
+                (heard, cut_in)
             };
-            if !released {
+            let arrived = match &waiting.until {
+                Until::Elapsed => false,
+                Until::Heard(_) => heard,
+                Until::Menu => input.menu_rows().is_some(),
+            };
+            if !(arrived || cut_in || out_of_time) {
                 self.waiting = Some(waiting);
                 return true;
             }
             let mut text = drain_ears(&self.ears);
-            if out_of_time && waiting.reports_timeout && !matches!(waiting.until, Until::Elapsed) {
-                text.push_str("\n(the clock ran out before that arrived)");
+            if !arrived && waiting.reports_timeout && !matches!(waiting.until, Until::Elapsed) {
+                text.push_str(if cut_in {
+                    "\n(the cab cut in before that arrived)"
+                } else {
+                    "\n(the clock ran out before that arrived)"
+                });
             }
             let _ = waiting.reply.send(Ok(text));
         }
@@ -893,15 +585,26 @@ impl AgentPolicy {
             };
             let reply = request.reply;
             match request.command {
-                Command::Press {
-                    key,
-                    text,
-                    mods,
-                    times,
-                } => {
+                Command::Press { key, mods, times } => {
+                    let (key, text, chord_mods) = match key.resolve(input.bindings()) {
+                        Ok(resolved) => resolved,
+                        Err(text) => {
+                            let _ = reply.send(Err(text));
+                            continue;
+                        }
+                    };
+                    let mods = Mods {
+                        shift: mods.shift || chord_mods.shift,
+                        ctrl: mods.ctrl || chord_mods.ctrl,
+                        alt: mods.alt || chord_mods.alt,
+                    };
                     for _ in 0..times.clamp(1, 50) {
-                        self.scripted
-                            .push_back(vec![InputEvent::KeyDown { key, mods, text }]);
+                        self.scripted.push_back(vec![InputEvent::KeyDown {
+                            key,
+                            mods,
+                            text,
+                            repeat: false,
+                        }]);
                         self.scripted
                             .push_back(vec![InputEvent::KeyUp { key, mods }]);
                     }
@@ -911,7 +614,14 @@ impl AgentPolicy {
                             .to_string(),
                     ));
                 }
-                Command::Hold { key, text } => {
+                Command::Hold { key } => {
+                    let (key, text, _) = match key.resolve(input.bindings()) {
+                        Ok(resolved) => resolved,
+                        Err(text) => {
+                            let _ = reply.send(Err(text));
+                            continue;
+                        }
+                    };
                     if !self.held.contains(&key) {
                         self.held.push(key);
                     }
@@ -919,10 +629,18 @@ impl AgentPolicy {
                         key,
                         mods: Mods::NONE,
                         text,
+                        repeat: false,
                     });
                     let _ = reply.send(Ok("held down.".to_string()));
                 }
                 Command::Release { key } => {
+                    let (key, _, _) = match key.resolve(input.bindings()) {
+                        Ok(resolved) => resolved,
+                        Err(text) => {
+                            let _ = reply.send(Err(text));
+                            continue;
+                        }
+                    };
                     self.held.retain(|held| *held != key);
                     input.queue_player_input(InputEvent::KeyUp {
                         key,
@@ -936,7 +654,14 @@ impl AgentPolicy {
                     self.wait_until(seconds, Until::Elapsed, false, reply);
                     break;
                 }
-                Command::Pedal { key, text, seconds } => {
+                Command::Pedal { key, seconds } => {
+                    let (key, text, _) = match key.resolve(input.bindings()) {
+                        Ok(resolved) => resolved,
+                        Err(text) => {
+                            let _ = reply.send(Err(text));
+                            continue;
+                        }
+                    };
                     if self.timed_hold.is_some() {
                         let _ = reply.send(Err(
                             "A pedal is already down; its reply arrives when it lifts.".to_string(),
@@ -949,6 +674,7 @@ impl AgentPolicy {
                         key,
                         mods: Mods::NONE,
                         text,
+                        repeat: false,
                     });
                     let seconds = seconds.clamp(0.05, MAX_PEDAL_SECONDS);
                     self.timed_hold = Some((key, seconds));
@@ -1098,6 +824,23 @@ impl AgentPolicy {
                             .map(|text| format!("({found} match(es), took {picked}) {text}")),
                     );
                 }
+                Command::Scenario(scenario) => {
+                    // A new situation: whatever the agent was holding belongs
+                    // to the old screen, the same as a staged drive.
+                    self.held.clear();
+                    self.timed_hold = None;
+                    let _ = reply.send(input.stage_scenario(&scenario));
+                }
+                Command::OperatorKeys { live } => {
+                    let _ = reply.send(Ok(input.set_operator_keys(live)));
+                }
+                Command::Lockstep { on } => {
+                    self.lockstep = on;
+                    let _ = reply.send(Ok(protocol::lockstep_reply(on)));
+                }
+                Command::KeyProbe { start } => {
+                    let _ = reply.send(Ok(input.key_probe(start)));
+                }
                 Command::Quit => {
                     let _ = reply.send(Ok("Quitting the game.".to_string()));
                     self.quit = true;
@@ -1105,558 +848,15 @@ impl AgentPolicy {
                 }
             }
         }
+        let working = self.waiting.is_some()
+            || self.timed_hold.is_some()
+            || self.cruise_plan.is_some()
+            || !self.scripted.is_empty();
+        if self.lockstep && !working {
+            input.hold_world();
+        }
         true
     }
-}
-
-// -- the MCP stdio thread -------------------------------------------------------------
-
-fn respond_raw(out: &mut dyn Write, value: &Value) {
-    let _ = writeln!(out, "{value}");
-    let _ = out.flush();
-}
-
-fn tool_text(text: String) -> Value {
-    json!({"content": [{"type": "text", "text": text}]})
-}
-
-fn tool_error(text: String) -> Value {
-    json!({"content": [{"type": "text", "text": text}], "isError": true})
-}
-
-fn parse_key(name: &str) -> Option<(Key, Option<char>)> {
-    let lowered = name.to_ascii_lowercase();
-    if lowered.chars().count() == 1 {
-        let ch = lowered.chars().next().unwrap();
-        if ch.is_ascii_alphanumeric() {
-            return Some((Key::from_char(ch), Some(ch)));
-        }
-    }
-    let key = match lowered.as_str() {
-        "up" => Key::Up,
-        "down" => Key::Down,
-        "left" => Key::Left,
-        "right" => Key::Right,
-        "enter" | "return" => Key::Return,
-        "escape" | "esc" => Key::Escape,
-        "space" => Key::Space,
-        "tab" => Key::Tab,
-        "backspace" => Key::Backspace,
-        "home" => Key::Home,
-        "end" => Key::End,
-        "pageup" => Key::PageUp,
-        "pagedown" => Key::PageDown,
-        "f1" => Key::F1,
-        "f2" => Key::F2,
-        "control" | "ctrl" => Key::LCtrl,
-        "shift" => Key::LShift,
-        "+" | "plus" => return Some((Key::Plus, Some('+'))),
-        "-" | "minus" => return Some((Key::Minus, Some('-'))),
-        "comma" => Key::Comma,
-        "period" => Key::Period,
-        _ => return None,
-    };
-    Some((key, None))
-}
-
-fn tools_list() -> Value {
-    let tool = |name: &str, description: &str, properties: Value, required: &[&str]| {
-        json!({
-            "name": name,
-            "description": description,
-            "inputSchema": {"type": "object", "properties": properties, "required": required},
-        })
-    };
-    json!({"tools": [
-        tool(
-            "press",
-            "Tap a key, as a player would: letters a-z, digits, up, down, left, right, \
-             enter, escape, space, tab, backspace, home, end, pageup, pagedown, f1, f2, \
-             control, plus, minus, comma, period. Use modifiers for chords such as Alt+A, \
-             Shift+K, or Ctrl+Plus. The game \
-             starts at its real title menu; menus use arrows and enter, and the drive \
-             uses the game's own key bindings. After pressing, wait a beat and listen.",
-            json!({
-                "key": {"type": "string"},
-                "modifiers": {
-                    "type": "array",
-                    "items": {"type": "string", "enum": ["shift", "ctrl", "alt"]},
-                    "uniqueItems": true,
-                    "description": "optional modifier keys held for this tap"
-                },
-                "times": {"type": "integer", "description": "repeat count, default 1, max 50"},
-            }),
-            &["key"],
-        ),
-        tool(
-            "hold",
-            "Hold a key down (throttle, brake, steering, and the manual-transmission Shift \
-             clutch are hold keys at the wheel). Pair with release.",
-            json!({"key": {"type": "string"}}),
-            &["key"],
-        ),
-        tool(
-            "release",
-            "Release a key held with hold.",
-            json!({"key": {"type": "string"}}),
-            &["key"],
-        ),
-        tool(
-            "wait",
-            "Let the game run for this many real seconds (max 300) with the controls \
-             as they stand, then hear everything from that stretch. This is how road \
-             time passes.",
-            json!({"seconds": {"type": "number"}}),
-            &["seconds"],
-        ),
-        tool(
-            "pedal",
-            "Hold a key for a bounded number of real seconds and let the game itself \
-             lift it -- the throttle (up) or brake (down) for a measured tap. Use this \
-             instead of hold and release for pedals: the round trip between the two \
-             is a second or more, and at standard pacing that is twenty seconds of \
-             road. Replies once the key has lifted, with everything heard meanwhile.",
-            json!({
-                "key": {"type": "string", "description": "up (throttle), down (brake), or any key"},
-                "seconds": {"type": "number", "description": "real seconds down, 0.05 to 30"},
-            }),
-            &["key", "seconds"],
-        ),
-        tool(
-            "wait_for",
-            "Let the game run until something arrives: a spoken line or sound whose \
-             text contains `text` (case-insensitive), or a menu on screen when `menu` \
-             is true, or `seconds` of real time (max 300), whichever comes first. \
-             Anything heard since the last listen counts, so a line already spoken \
-             answers at once. Replies with everything heard, and says if the clock \
-             ran out. Use it to drive to the next event instead of waiting blind.",
-            json!({
-                "text": {"type": "string", "description": "text to listen for"},
-                "menu": {"type": "boolean", "description": "return as soon as a menu is on screen"},
-                "seconds": {"type": "number", "description": "give up after this many real seconds"},
-            }),
-            &["seconds"],
-        ),
-        tool(
-            "select",
-            "Choose a menu row by part of its label (case-insensitive): the same \
-             Home, Down and Enter a player presses. Errors with the rows when no row \
-             matches or no menu is up. Wait a moment, then listen.",
-            json!({"label": {"type": "string"}}),
-            &["label"],
-        ),
-        tool(
-            "cruise",
-            "Adaptive cruise, the way a player sets it: K to engage if nothing is \
-             holding speed, then the dial walked one mile per hour at a time to the \
-             target -- a number, \"limit\" for the posted limit enforcement is \
-             reading, or \"off\". Replies with what was heard once the dial settles. \
-             In a zone the speed keeper holds instead, and the reply says so.",
-            json!({"target": {"description": "a number in miles per hour, \"limit\", or \"off\""}}),
-            &["target"],
-        ),
-        tool(
-            "status",
-            "The wheel's readouts in one call -- speed, speed limit, grade, what is \
-             coming up, route status, the clock, fuel -- pressed as a player would \
-             and returned together with anything else heard meanwhile.",
-            json!({}),
-            &[],
-        ),
-        tool(
-            "listen",
-            "Everything audible since the last listen: spoken lines on both channels \
-             (exactly what the verbosity setting allowed), earcons and cues with their \
-             stereo side, sound beds, horn, radio, weather, and where the engine pitch \
-             went. This is the whole game; there is no screen.",
-            json!({}),
-            &[],
-        ),
-        tool(
-            "menu",
-            "The rows of the menu currently on screen and which has focus, as a screen \
-             reader user would arrow through them. Errors when no menu is up.",
-            json!({}),
-            &[],
-        ),
-        tool(
-            "observe",
-            "INSPECTOR, not ears: a bounded ground-truth snapshot of the drive (mile, \
-             brakes, assists, hazard, damage). For judging and diagnosis. If you \
-             needed this to drive, the spoken surface failed -- report that.",
-            json!({}),
-            &[],
-        ),
-        tool(
-            "start_at",
-            "Skip the menus: stage a drive at a discovered road feature and take the \
-             wheel right there -- the same finder --playtest-road --find uses. \
-             feature must be one of: downgrade, upgrade, zone, limit-drop, stop, \
-             scale, curve, interchange, toll, chain-law, destination, departure. \
-             Same seed, same road. pick chooses among multiple matches (1-based). \
-             Listen after staging for the truck's actual starting condition.",
-            json!({
-                "feature": {"type": "string"},
-                "origin": {"type": "string", "description": "search one corridor from this city (fast and thorough)"},
-                "destination": {"type": "string", "description": "with origin: the corridor's far end"},
-                "seed": {"type": "integer", "description": "default 7"},
-                "pick": {"type": "integer", "description": "1-based match index, default 1"},
-            }),
-            &["feature"],
-        ),
-        tool(
-            "quit_game",
-            "Quit the game and end the session (the sandboxed career saves on the way \
-             out, as a real quit does).",
-            json!({}),
-            &[],
-        ),
-    ]})
-}
-
-/// Serve MCP on stdin/stdout, forwarding tool calls into the game loop.
-/// Runs on its own thread; returns when stdin closes or the game quits.
-pub fn serve(requests: mpsc::Sender<Request>) {
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout().lock();
-    serve_lines(stdin.lock(), &mut stdout, &requests);
-}
-
-/// The MCP loop over any reader and writer: the handshake (`initialize`,
-/// `tools/list`, `ping`) is answered right here; only a `tools/call` goes
-/// through `requests` to the game loop, and the first one is what boots it.
-pub fn serve_lines<R: BufRead, W: Write>(reader: R, out: &mut W, requests: &mpsc::Sender<Request>) {
-    for line in reader.lines() {
-        let Ok(line) = line else { break };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(message) = serde_json::from_str::<Value>(&line) else {
-            respond_raw(
-                out,
-                &json!({
-                    "jsonrpc": "2.0", "id": null,
-                    "error": {"code": -32700, "message": "parse error"}
-                }),
-            );
-            continue;
-        };
-        let method = message.get("method").and_then(Value::as_str).unwrap_or("");
-        let params = message.get("params").cloned().unwrap_or(Value::Null);
-        let Some(id) = message.get("id").cloned() else {
-            continue; // notification
-        };
-        let reply = match method {
-            "initialize" => json!({
-                "protocolVersion": params
-                    .get("protocolVersion")
-                    .and_then(Value::as_str)
-                    .unwrap_or(PROTOCOL_VERSION),
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION")},
-                "instructions": "Freight Fate, played by ear. No game is running yet: the \
-                    first tool call other than quit_game boots the real game in its \
-                    playtest sandbox (a few seconds), then answers. One game at a \
-                    time, so a human already playing makes that first call fail; \
-                    try again once they quit. At the wheel, drive with pedal (a \
-                    measured tap the game itself lifts), cruise (K and the dial to \
-                    a number, the posted limit, or off) and wait_for (run until a \
-                    line is heard or a menu opens); menus take select by label. \
-                    Raw press, hold and release remain for everything else.",
-            }),
-            "ping" => json!({}),
-            "tools/list" => tools_list(),
-            "tools/call" => {
-                let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-                let args = params
-                    .get("arguments")
-                    .and_then(Value::as_object)
-                    .cloned()
-                    .unwrap_or_default();
-                match build_command(name, &args) {
-                    Err(text) => tool_error(text),
-                    Ok(command) => {
-                        let (reply_tx, reply_rx) = mpsc::channel();
-                        if requests
-                            .send(Request {
-                                command,
-                                reply: reply_tx,
-                            })
-                            .is_err()
-                        {
-                            tool_error("The game has exited.".to_string())
-                        } else {
-                            match reply_rx
-                                .recv_timeout(std::time::Duration::from_secs(REPLY_TIMEOUT_SECONDS))
-                            {
-                                Ok(Ok(text)) => tool_text(text),
-                                Ok(Err(text)) => tool_error(text),
-                                Err(_) => {
-                                    tool_error("The game loop did not answer in time.".to_string())
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {
-                respond_raw(
-                    out,
-                    &json!({
-                        "jsonrpc": "2.0", "id": id,
-                        "error": {"code": -32601, "message": format!("unknown method {method}")}
-                    }),
-                );
-                continue;
-            }
-        };
-        respond_raw(out, &json!({"jsonrpc": "2.0", "id": id, "result": reply}));
-    }
-}
-
-/// One tool call as the game loop will see it, or why it cannot be.
-pub fn build_command(name: &str, args: &Map<String, Value>) -> Result<Command, String> {
-    let key_arg = |args: &Map<String, Value>| -> Result<(Key, Option<char>), String> {
-        let name = args.get("key").and_then(Value::as_str).unwrap_or("");
-        parse_key(name).ok_or_else(|| format!("{name:?} is not a key this server knows"))
-    };
-    let modifiers = |args: &Map<String, Value>| -> Result<Mods, String> {
-        let mut mods = Mods::NONE;
-        let Some(values) = args.get("modifiers") else {
-            return Ok(mods);
-        };
-        let values = values
-            .as_array()
-            .ok_or_else(|| "modifiers must be an array".to_string())?;
-        for value in values {
-            let name = value.as_str().unwrap_or("").to_ascii_lowercase();
-            match name.as_str() {
-                "shift" => mods.shift = true,
-                "control" | "ctrl" => mods.ctrl = true,
-                "alt" => mods.alt = true,
-                _ => return Err(format!("{name:?} is not a modifier this server knows")),
-            }
-        }
-        Ok(mods)
-    };
-    match name {
-        "press" => {
-            let (key, text) = key_arg(args)?;
-            Ok(Command::Press {
-                key,
-                text,
-                mods: modifiers(args)?,
-                times: args.get("times").and_then(Value::as_i64).unwrap_or(1),
-            })
-        }
-        "hold" => {
-            let (key, text) = key_arg(args)?;
-            Ok(Command::Hold { key, text })
-        }
-        "release" => {
-            let (key, _) = key_arg(args)?;
-            Ok(Command::Release { key })
-        }
-        "wait" => {
-            let seconds = args.get("seconds").and_then(Value::as_f64).unwrap_or(0.0);
-            if seconds <= 0.0 {
-                return Err("wait needs a positive number of seconds".to_string());
-            }
-            Ok(Command::Wait { seconds })
-        }
-        "pedal" => {
-            let (key, text) = key_arg(args)?;
-            let seconds = args.get("seconds").and_then(Value::as_f64).unwrap_or(0.0);
-            if seconds <= 0.0 {
-                return Err("pedal needs a positive number of seconds".to_string());
-            }
-            Ok(Command::Pedal { key, text, seconds })
-        }
-        "wait_for" => {
-            let seconds = args.get("seconds").and_then(Value::as_f64).unwrap_or(0.0);
-            if seconds <= 0.0 {
-                return Err("wait_for needs a positive number of seconds".to_string());
-            }
-            let text = args
-                .get("text")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-                .map(str::to_string);
-            let menu = args.get("menu").and_then(Value::as_bool).unwrap_or(false);
-            Ok(Command::WaitFor {
-                text,
-                menu,
-                seconds,
-            })
-        }
-        "select" => {
-            let label = args
-                .get("label")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .unwrap_or("");
-            if label.is_empty() {
-                return Err("select needs part of a row's label".to_string());
-            }
-            Ok(Command::Select {
-                label: label.to_string(),
-            })
-        }
-        "cruise" => {
-            let target = match args.get("target") {
-                Some(Value::Number(number)) => number
-                    .as_f64()
-                    .filter(|mph| *mph > 0.0)
-                    .map(CruiseTarget::Mph)
-                    .ok_or_else(|| "cruise needs a speed above zero".to_string())?,
-                Some(Value::String(word)) => match word.trim().to_ascii_lowercase().as_str() {
-                    "limit" | "posted" => CruiseTarget::Limit,
-                    "off" | "cancel" => CruiseTarget::Off,
-                    other => match other.parse::<f64>() {
-                        Ok(mph) if mph > 0.0 => CruiseTarget::Mph(mph),
-                        _ => {
-                            return Err(format!(
-                            "{other:?} is not a cruise target; use a number, \"limit\", or \"off\""
-                        ))
-                        }
-                    },
-                },
-                _ => {
-                    return Err("cruise needs a target: a number, \"limit\", or \"off\"".to_string())
-                }
-            };
-            Ok(Command::Cruise { target })
-        }
-        "status" => Ok(Command::Status),
-        "listen" => Ok(Command::Listen),
-        "menu" => Ok(Command::Menu),
-        "observe" => Ok(Command::Observe),
-        "start_at" => {
-            let feature = args
-                .get("feature")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let seed = args.get("seed").and_then(Value::as_i64).unwrap_or(7);
-            let pick = args.get("pick").and_then(Value::as_u64).unwrap_or(1) as usize;
-            let origin = args
-                .get("origin")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            let destination = args
-                .get("destination")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            let (hit, opts, found, picked) = discover(&feature, origin, destination, seed, pick)?;
-            Ok(Command::StageHit {
-                hit: Box::new(hit),
-                found,
-                picked,
-                opts: Box::new(opts),
-            })
-        }
-        "quit_game" => Ok(Command::Quit),
-        other => Err(format!("unknown tool {other}")),
-    }
-}
-
-/// Find one road feature, bounded so it answers in seconds. Runs against
-/// world data alone -- safe on any thread, never inside the game loop
-/// (an in-frame search froze the whole game, found live 2026-08-30).
-/// With no endpoints the sweep is sampled; with endpoints it is capped at
-/// thirty corridors, because an origin alone still fans out to every
-/// reachable city and a full fan is minutes of search (that is
-/// `--playtest-road --scan`'s job).
-fn discover(
-    feature: &str,
-    origin: Option<String>,
-    destination: Option<String>,
-    seed: i64,
-    pick: usize,
-) -> Result<
-    (
-        crate::playtest::road::Hit,
-        crate::playtest::road::RoadOptions,
-        usize,
-        usize,
-    ),
-    String,
-> {
-    use crate::playtest::road;
-    // An unknown term would "search" and find nothing every time; name the
-    // real vocabulary instead ("steep grade" cost a session to this).
-    if !road::FEATURES.contains(&feature) {
-        return Err(format!(
-            "{feature:?} is not a road feature the finder knows. The features are: {}.",
-            road::FEATURES.join(", ")
-        ));
-    }
-    let opts = road::RoadOptions {
-        feature: feature.to_string(),
-        origin: origin.clone(),
-        destination,
-        seed: Some(seed),
-        trip_seed: Some(seed),
-        pick,
-        sandbox: false, // the whole server already runs sandboxed
-        ..Default::default()
-    };
-    let world = ff_core::data::world::get_world();
-    let mut pairs = if opts.origin.is_some() || opts.destination.is_some() {
-        road::route_pairs(world, &opts)
-    } else {
-        road::sampled_world_pairs(world, 30)
-    };
-    // Nearest corridors first when an origin anchors the search: they are
-    // the likeliest to be wanted and the fastest to walk, so the cap keeps
-    // the search local instead of taking thirty alphabetical strangers.
-    if let Some(anchor) = opts
-        .origin
-        .as_deref()
-        .and_then(|name| world.cities.get(&world.resolve_city_key(name)))
-        .map(|c| (c.lat, c.lon))
-    {
-        let distance = |key: &str| -> f64 {
-            world
-                .cities
-                .get(&world.resolve_city_key(key))
-                .map_or(f64::MAX, |c| {
-                    ((c.lat - anchor.0).powi(2) + (c.lon - anchor.1).powi(2)).sqrt()
-                })
-        };
-        pairs.sort_by(|x, y| {
-            distance(&x.1)
-                .partial_cmp(&distance(&y.1))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-    }
-    pairs.truncate(30);
-    if pairs.is_empty() {
-        return Err("No routes matched those options.".to_string());
-    }
-    eprintln!(
-        "[agent-server] searching {} corridor(s) for {feature:?}...",
-        pairs.len()
-    );
-    let started = std::time::Instant::now();
-    let hits = road::find_feature_seeded(world, &pairs, feature, &opts);
-    eprintln!(
-        "[agent-server] search finished in {:.1}s: {} match(es)",
-        started.elapsed().as_secs_f64(),
-        hits.len()
-    );
-    if hits.is_empty() {
-        return Err(format!(
-            "No road feature matching {feature:?} was found in the sampled \
-             routes; try another term, another seed, or name an origin \
-             city to search a specific corridor."
-        ));
-    }
-    let index = pick.saturating_sub(1).min(hits.len() - 1);
-    let hit = hits[index].clone();
-    let found = hits.len();
-    Ok((hit, opts, found, index + 1))
 }
 
 /// A drive to boot the session straight into, skipping every menu.
@@ -1675,6 +875,16 @@ pub fn policy(
     requests: mpsc::Receiver<Request>,
     first: Option<Request>,
 ) -> AgentPolicy {
+    policy_with_lifeline(ears, requests, first, Lifeline::new())
+}
+
+/// Build a policy that stops immediately when this MCP client's lifeline is cut.
+pub fn policy_with_lifeline(
+    ears: SharedEars,
+    requests: mpsc::Receiver<Request>,
+    first: Option<Request>,
+    lifeline: Lifeline,
+) -> AgentPolicy {
     AgentPolicy {
         requests,
         pending: first,
@@ -1684,19 +894,24 @@ pub fn policy(
         timed_hold: None,
         cruise_plan: None,
         scripted: std::collections::VecDeque::new(),
+        lockstep: false,
         quit: false,
+        lifeline,
     }
 }
 
 /// The whole `--agent-server` mode: sandbox, real game, MCP on stdio.
 /// With `launch`, the session boots straight into a staged drive at the
-/// found feature -- no menu ever exists.
-pub fn run(reset: bool, launch: Option<LaunchAt>) -> i32 {
+/// found feature -- no menu ever exists. With `operator_keys`, the window
+/// stays up and the operator's keyboard reaches the game, so a human can
+/// take the wheel alongside the agent; off, the keys are dropped at the
+/// door (see [`run_with_staged`]).
+pub fn run(reset: bool, launch: Option<LaunchAt>, operator_keys: bool, staging: bool) -> i32 {
     // Discover BEFORE the window opens: pure world data, and a failed
     // search should refuse cleanly rather than boot a game.
     let staged = match launch {
         None => None,
-        Some(at) => match discover(&at.feature, at.origin, at.destination, at.seed, 1) {
+        Some(at) => match discover(&at.feature, at.origin, at.destination, at.seed, 1, None) {
             Ok((hit, opts, found, _)) => {
                 eprintln!("Launching at ({found} match(es)): {}", hit.describe());
                 Some((hit, opts))
@@ -1707,7 +922,7 @@ pub fn run(reset: bool, launch: Option<LaunchAt>) -> i32 {
             }
         },
     };
-    run_with_staged(reset, staged)
+    run_with_staged(reset, staged, operator_keys, staging)
 }
 
 fn run_with_staged(
@@ -1716,25 +931,43 @@ fn run_with_staged(
         crate::playtest::road::Hit,
         crate::playtest::road::RoadOptions,
     )>,
+    operator_keys: bool,
+    staging: bool,
 ) -> i32 {
     use crate::playtest::sandbox;
     let (requests, rx) = mpsc::channel();
-    std::thread::spawn(move || serve(requests));
+    let lifeline = Lifeline::new();
+    let serve_lifeline = lifeline.clone();
+    let serve_requests = requests.clone();
+    let server = std::thread::spawn(move || serve(serve_requests, serve_lifeline));
+    let _watch = spawn_watch(
+        lifeline.clone(),
+        requests.clone(),
+        parent_alive_check(),
+        std::time::Duration::from_secs(1),
+    );
+    drop(requests);
     eprintln!("MCP serving on stdio; the game boots at the first play request.");
     let mut staged = staged;
     loop {
         // Only a play request boots anything. A client that asked for the
         // tool list and hung up gets its answers and never a game window.
         let Some(first) = await_play_request(&rx) else {
+            lifeline.cut("the server is ending without a game");
+            finish_serving(&server);
             return 0;
         };
-        let (mut app, mut guard) = match boot(reset) {
+        let (mut app, mut guard) = match boot(reset, staging) {
             Ok(booted) => booted,
             Err(text) => {
                 // Answered, not fatal: "already running" clears when the
                 // human quits, and the next call tries again.
                 eprintln!("{text}");
                 first.answer(Err(text));
+                if lifeline.is_cut() {
+                    finish_serving(&server);
+                    return 0;
+                }
                 continue;
             }
         };
@@ -1742,9 +975,19 @@ fn run_with_staged(
         // game window turns their typing elsewhere into truck inputs -- and
         // minimizing alone did not hold (the owner's typing in the next
         // window arrived as readouts mid-run, 2026-09-01), so the keys are
-        // dropped at the door as well.
-        app.minimize_window();
-        app.ignore_operator_keys();
+        // dropped at the door as well. `--operator-keys` is the owner's
+        // opt-in to play alongside the agent (asked for 2026-09-11): the
+        // window stays up and every key counts, so the keyboard belongs to
+        // the game for the whole session. Restoring shows a window the
+        // launcher's STARTUPINFO kept hidden (the desktop app spawns MCP
+        // servers that way) and gives it focus.
+        if operator_keys {
+            app.restore_window();
+            eprintln!("Operator keys are live: the keyboard reaches the game.");
+        } else {
+            app.minimize_window();
+            app.ignore_operator_keys();
+        }
         if let Some((hit, opts)) = staged.take() {
             // The staged drive IS the first screen, exactly as the road
             // launcher does it; quitting reaches the real main menu.
@@ -1754,26 +997,62 @@ fn run_with_staged(
             }));
         }
         let ears = install_ears(&mut app);
-        let mut policy = policy(ears, rx, Some(first));
+        let mut policy = policy_with_lifeline(ears, rx, Some(first), lifeline.clone());
         eprintln!("Game up; it speaks aloud while the agent plays.");
         app.run_with_player_input(None, |input, dt| policy.step(input, dt));
+        lifeline.cut("the game has ended");
         guard.release();
         sandbox::close_session();
+        holder::remove_if_ours(&holder::path(), std::process::id());
+        finish_serving(&server);
         return 0;
     }
+}
+
+/// Give the stdio thread a bounded moment to write the last reply (the
+/// quit's own answer) before the process exits under it. It returns by
+/// itself after a quit or when stdin closes; a human quitting from the menu
+/// leaves it blocked on stdin, which the bound covers.
+fn finish_serving(server: &std::thread::JoinHandle<()>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !server.is_finished() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    eprintln!("MCP server exiting.");
 }
 
 /// Everything a running game needs, in the order it can be refused:
 /// the sandbox prepared and audited, the one-game-at-a-time lock, the
 /// session file for the watcher, then the real window, audio and speech.
 /// An error leaves nothing held, so the next play request can try again.
-fn boot(reset: bool) -> Result<(App, crate::single_instance::SingleInstanceGuard), String> {
+fn boot(
+    reset: bool,
+    staging: bool,
+) -> Result<(App, crate::single_instance::SingleInstanceGuard), String> {
     use crate::playtest::sandbox;
-    let dir = sandbox::default_sandbox();
     let source = sandbox::real_saves();
-    sandbox::prepare(&dir, reset, true, &source)
-        .map_err(|e| format!("Could not prepare the agent sandbox: {e}"))?;
-    let problems = sandbox::audit(&dir);
+    let dir = if staging {
+        sandbox::staging_sandbox()
+    } else {
+        sandbox::default_sandbox()
+    };
+    if staging {
+        sandbox::prepare_staging(&dir, reset, &source)
+            .map_err(|e| format!("Could not prepare the staging agent session: {e}"))?;
+        eprintln!(
+            "STAGING: this session's own driver backs up to {}; connect it from the \
+             Online menu the first time.",
+            sandbox::STAGING_URL
+        );
+    } else {
+        sandbox::prepare(&dir, reset, true, &source)
+            .map_err(|e| format!("Could not prepare the agent sandbox: {e}"))?;
+    }
+    let problems = if staging {
+        Vec::new()
+    } else {
+        sandbox::audit(&dir)
+    };
     if !problems.is_empty() {
         return Err(format!(
             "{}\nRefusing to boot: an agent must never reach the real account. \
@@ -1784,11 +1063,47 @@ fn boot(reset: bool) -> Result<(App, crate::single_instance::SingleInstanceGuard
     eprintln!("Agent sandbox: {}", dir.display());
     let mut guard = crate::single_instance::SingleInstanceGuard::new();
     if !guard.acquire() {
-        return Err(
-            "Freight Fate is already running; one game at a time, agent or human. \
-             Call again once it has quit."
-                .to_string(),
-        );
+        match holder::judge(holder::read(&holder::path()), pid_alive, std::process::id()) {
+            HolderVerdict::DeadRecord { .. } => {
+                holder::remove(&holder::path());
+                if !guard.acquire() {
+                    return Err(
+                        "Freight Fate is already running; one game at a time, agent or human. \
+                         Call again once it has quit."
+                            .to_string(),
+                    );
+                }
+            }
+            HolderVerdict::Stale { pid, .. } => {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    if guard.acquire() {
+                        break;
+                    }
+                }
+                if !guard.acquired() {
+                    return Err(format!(
+                        "A leftover agent server (process {pid}) still holds the game, but the \
+                         program that started it has exited. It should quit by itself within a few \
+                         seconds; if it does not, end process {pid} and call again."
+                    ));
+                }
+            }
+            HolderVerdict::Live { pid } => {
+                return Err(format!(
+                "Another agent server (process {pid}) is running a game for a live MCP client; \
+                 one game at a time. Call again once it has quit."
+            ))
+            }
+            HolderVerdict::NoRecord => {
+                return Err(
+                    "Freight Fate is already running; one game at a time, agent or human. \
+                     Call again once it has quit."
+                        .to_string(),
+                );
+            }
+        }
     }
     let log_path = ff_core::settings::game_root()
         .join("logs")
@@ -1804,235 +1119,17 @@ fn boot(reset: bool) -> Result<(App, crate::single_instance::SingleInstanceGuard
         std::env::set_var("FREIGHT_FATE_LOG", "INFO");
     }
     crate::app::configure_logging();
+    if let Err(error) = holder::write(&holder::path(), &holder::current()) {
+        eprintln!("Could not record the agent server holder: {error}");
+    }
     sandbox::open_session(&dir, &log_path);
     match App::new() {
         Ok(app) => Ok((app, guard)),
         Err(e) => {
             guard.release();
             sandbox::close_session();
+            holder::remove_if_ours(&holder::path(), std::process::id());
             Err(format!("The game could not start: {e}"))
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::audio::{AudioEngine, NullBackend};
-
-    fn tee_audio(ears: &SharedEars) -> TeeAudio {
-        TeeAudio {
-            inner: Box::new(AudioEngine::with_backend(Box::new(NullBackend::new()))),
-            ears: Rc::clone(ears),
-            weather_key: None,
-            ambient_key: None,
-            loop_keys: HashMap::new(),
-        }
-    }
-
-    #[test]
-    fn press_parser_reaches_the_function_key_help_surface() {
-        assert_eq!(parse_key("f1"), Some((Key::F1, None)));
-        assert_eq!(parse_key("F2"), Some((Key::F2, None)));
-    }
-
-    #[test]
-    fn press_parser_reaches_speech_stop_and_speed_adjustment_keys() {
-        assert_eq!(parse_key("control"), Some((Key::LCtrl, None)));
-        assert_eq!(parse_key("ctrl"), Some((Key::LCtrl, None)));
-        assert_eq!(parse_key("shift"), Some((Key::LShift, None)));
-        assert_eq!(parse_key("plus"), Some((Key::Plus, Some('+'))));
-        assert_eq!(parse_key("minus"), Some((Key::Minus, Some('-'))));
-    }
-
-    #[test]
-    fn press_command_carries_modifier_chords_to_the_game() {
-        let args = serde_json::from_value(json!({
-            "key": "a",
-            "modifiers": ["alt", "shift"]
-        }))
-        .unwrap();
-
-        let command = build_command("press", &args).unwrap();
-
-        let Command::Press {
-            key,
-            text,
-            mods,
-            times,
-        } = command
-        else {
-            panic!("press tool did not build a press command");
-        };
-        assert_eq!(key, Key::A);
-        assert_eq!(text, Some('a'));
-        assert_eq!(
-            mods,
-            Mods {
-                shift: true,
-                ctrl: false,
-                alt: true,
-            }
-        );
-        assert_eq!(times, 1);
-    }
-
-    #[test]
-    fn press_command_rejects_unknown_modifiers() {
-        let args = serde_json::from_value(json!({
-            "key": "a",
-            "modifiers": ["meta"]
-        }))
-        .unwrap();
-
-        let error = match build_command("press", &args) {
-            Ok(_) => panic!("unknown modifier was accepted"),
-            Err(error) => error,
-        };
-        assert_eq!(error, "\"meta\" is not a modifier this server knows");
-    }
-
-    #[test]
-    fn scale_discovery_only_stages_scales_open_in_the_built_drive() {
-        let (hit, _opts, found, picked) = discover("scale", None, None, 83, usize::MAX).unwrap();
-
-        assert!(found > 0);
-        assert_eq!(picked, found);
-        assert!(hit.label.starts_with("OPEN scale:"), "{}", hit.label);
-    }
-
-    #[test]
-    fn ears_tell_a_silent_engine_return_from_a_crank() {
-        // Unpausing brings the engine loop back without the ignition
-        // one-shot; the ear used to call both "[engine] starting".
-        let ears: SharedEars = Rc::new(RefCell::new(Ears::default()));
-        let mut audio = tee_audio(&ears);
-
-        audio.engine_start();
-        audio.stop_world();
-        audio.engine_start_with(false);
-
-        assert_eq!(
-            drain_ears(&ears)
-                .lines()
-                .filter(|line| line.starts_with("[engine]"))
-                .collect::<Vec<_>>(),
-            vec!["[engine] starting", "[engine] running again, no crank"]
-        );
-    }
-
-    #[test]
-    fn ears_report_a_continuing_sound_bed_once_until_it_stops() {
-        let ears: SharedEars = Rc::new(RefCell::new(Ears::default()));
-        let mut audio = tee_audio(&ears);
-
-        audio.start_loop_with(4, "poi/weigh_station_lane", 0.5, 0);
-        audio.start_loop_with(4, "poi/weigh_station_lane", 0.6, 0);
-        assert_eq!(
-            drain_ears(&ears)
-                .lines()
-                .filter(|line| *line == "[sound bed] poi/weigh_station_lane starts")
-                .count(),
-            1
-        );
-
-        audio.stop_loop_with(4, 0);
-        audio.start_loop_with(4, "poi/weigh_station_lane", 0.5, 0);
-        assert_eq!(
-            drain_ears(&ears),
-            "[sound bed] poi/weigh_station_lane starts"
-        );
-    }
-
-    #[test]
-    fn ears_report_ambient_transitions_without_frame_by_frame_repeats() {
-        let ears: SharedEars = Rc::new(RefCell::new(Ears::default()));
-        let mut audio = tee_audio(&ears);
-
-        audio.set_ambient_with(Some("ambience/night"), 0.4);
-        audio.set_ambient_with(Some("ambience/night"), 0.5);
-        audio.set_ambient_with(None, 0.0);
-        audio.set_ambient_with(Some("ambience/night"), 0.4);
-
-        assert_eq!(
-            drain_ears(&ears).lines().collect::<Vec<_>>(),
-            vec![
-                "[ambience] ambience/night",
-                "[ambience] stopped",
-                "[ambience] ambience/night",
-            ]
-        );
-    }
-
-    #[test]
-    fn stopping_world_allows_the_same_sound_bed_to_be_reported_again() {
-        let ears: SharedEars = Rc::new(RefCell::new(Ears::default()));
-        let mut audio = tee_audio(&ears);
-
-        audio.start_loop_with(4, "poi/weigh_station_lane", 0.5, 0);
-        audio.stop_world();
-        audio.start_loop_with(4, "poi/weigh_station_lane", 0.5, 0);
-
-        assert_eq!(
-            drain_ears(&ears)
-                .lines()
-                .filter(|line| *line == "[sound bed] poi/weigh_station_lane starts")
-                .count(),
-            2
-        );
-    }
-
-    #[test]
-    fn ears_report_a_continuing_weather_bed_once() {
-        let ears: SharedEars = Rc::new(RefCell::new(Ears::default()));
-        let mut audio = tee_audio(&ears);
-
-        audio.set_weather_with(Some("weather/rain_light"), 0.7);
-        audio.set_weather_with(Some("weather/rain_light"), 0.7);
-
-        assert_eq!(
-            drain_ears(&ears)
-                .lines()
-                .filter(|line| *line == "[weather] weather/rain_light")
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn ears_report_weather_stopping_and_restarting() {
-        let ears: SharedEars = Rc::new(RefCell::new(Ears::default()));
-        let mut audio = tee_audio(&ears);
-
-        audio.set_weather_with(Some("weather/rain_light"), 0.7);
-        audio.set_weather_with(None, 0.0);
-        audio.set_weather_with(Some("weather/rain_light"), 0.7);
-
-        assert_eq!(
-            drain_ears(&ears).lines().collect::<Vec<_>>(),
-            vec![
-                "[weather] weather/rain_light",
-                "[weather] stopped",
-                "[weather] weather/rain_light",
-            ]
-        );
-    }
-
-    #[test]
-    fn stopping_world_allows_the_same_weather_to_be_reported_again() {
-        let ears: SharedEars = Rc::new(RefCell::new(Ears::default()));
-        let mut audio = tee_audio(&ears);
-
-        audio.set_weather_with(Some("weather/rain_light"), 0.7);
-        audio.stop_world();
-        audio.set_weather_with(Some("weather/rain_light"), 0.7);
-
-        assert_eq!(
-            drain_ears(&ears)
-                .lines()
-                .filter(|line| *line == "[weather] weather/rain_light")
-                .count(),
-            2
-        );
     }
 }

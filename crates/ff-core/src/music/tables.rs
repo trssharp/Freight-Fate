@@ -9,7 +9,7 @@ use super::MusicTrack;
 /// `(key, title, description, duration_s)` -- the literal tables below.
 type Row = (&'static str, &'static str, &'static str, f64);
 
-fn tracks(rows: &[Row]) -> Vec<MusicTrack> {
+pub(super) fn tracks(rows: &[Row]) -> Vec<MusicTrack> {
     rows.iter()
         .map(|(key, title, description, duration_s)| {
             MusicTrack::new(key, title, description, *duration_s)
@@ -65,12 +65,20 @@ pub static MENU_TRACKS: Lazy<Vec<MusicTrack>> = Lazy::new(|| {
 });
 
 pub static MENU_ROTATION_TRACKS: Lazy<Vec<MusicTrack>> = Lazy::new(|| {
-    tracks(&[(
-        "menu_urban_roll",
-        "Urban Roll",
-        "Easy city-groove menu bed",
-        114.5,
-    )])
+    tracks(&[
+        (
+            "menu_urban_roll",
+            "Urban Roll",
+            "Easy city-groove menu bed",
+            114.5,
+        ),
+        (
+            "menu_d_major_medley",
+            "D-Major Medley",
+            "Instrumental medley menu bed",
+            238.8,
+        ),
+    ])
 });
 
 pub static DAY_DRIVE_TRACKS: Lazy<Vec<MusicTrack>> = Lazy::new(|| {
@@ -80,6 +88,12 @@ pub static DAY_DRIVE_TRACKS: Lazy<Vec<MusicTrack>> = Lazy::new(|| {
             "Open Road",
             "Easy mid-tempo groove for long hauls",
             131.6,
+        ),
+        (
+            "drive_bossa_to_blues",
+            "From Bossa to Blues",
+            "Bossa-to-blues instrumental drive bed",
+            223.2,
         ),
         (
             "drive_desert_two_lane",
@@ -514,6 +528,9 @@ pub static COUNTRY_TRACKS: Lazy<Vec<MusicTrack>> = Lazy::new(|| {
             368.7,
         ),
     ])
+    .into_iter()
+    .chain(super::expansion::tracks("country"))
+    .collect()
 });
 
 pub static CLASSIC_ROCK_TRACKS: Lazy<Vec<MusicTrack>> = Lazy::new(|| {
@@ -621,6 +638,9 @@ pub static CLASSIC_ROCK_TRACKS: Lazy<Vec<MusicTrack>> = Lazy::new(|| {
             141.7,
         ),
     ])
+    .into_iter()
+    .chain(super::expansion::tracks("classic_rock"))
+    .collect()
 });
 
 pub static BLUES_TRACKS: Lazy<Vec<MusicTrack>> = Lazy::new(|| {
@@ -698,6 +718,9 @@ pub static BLUES_TRACKS: Lazy<Vec<MusicTrack>> = Lazy::new(|| {
             166.6,
         ),
     ])
+    .into_iter()
+    .chain(super::expansion::tracks("blues"))
+    .collect()
 });
 
 // Nashville jazz-crossover instrumentals: the Nashville After Hours station
@@ -745,6 +768,55 @@ pub static JAZZ_TRACKS: Lazy<Vec<MusicTrack>> = Lazy::new(|| {
             "Penny for Your Thoughts",
             "Thoughtful brushed-drums jazz instrumental",
             195.0,
+        ),
+        // 2026-09-25 batch, tools/radio_content_pools.py SONG_PLAN "jazz".
+        (
+            "radio_jazz_lower_broad_lullaby",
+            "Lower Broad Lullaby",
+            "Hushed after-close stroll past dark honky-tonks",
+            212.0,
+        ),
+        (
+            "radio_jazz_velvet_downbeat",
+            "Velvet Downbeat",
+            "Plush mid-tempo swing for late sets",
+            198.4,
+        ),
+        (
+            "radio_jazz_neon_and_nylon",
+            "Neon and Nylon",
+            "Nylon-string jazz under neon light",
+            206.8,
+        ),
+        (
+            "radio_jazz_printers_alley_last_call",
+            "Printer's Alley Last Call",
+            "Smoky last-call blues-jazz crawl",
+            220.0,
+        ),
+        (
+            "radio_jazz_brushed_steel",
+            "Brushed Steel",
+            "Jazz-meets-pedal-steel crossover piece",
+            189.6,
+        ),
+        (
+            "radio_jazz_midnight_mezzanine",
+            "Midnight Mezzanine",
+            "Elegant solo-piano-led nocturne",
+            216.4,
+        ),
+        (
+            "radio_jazz_blue_neon_glow",
+            "Blue Neon Glow",
+            "Smoky female vocal ballad for the small hours",
+            227.6,
+        ),
+        (
+            "radio_jazz_cumberland_moonrise",
+            "Cumberland Moonrise",
+            "Riverside moonrise meditation",
+            234.1,
         ),
     ])
 });
@@ -828,6 +900,36 @@ pub static GOSPEL_TRACKS: Lazy<Vec<MusicTrack>> = Lazy::new(|| {
             "Gentle piano ballad of hope before dawn",
             198.1,
         ),
+        (
+            "radio_gospel_hands_on_the_wheel",
+            "Hands on the Wheel",
+            "Trucker gospel shuffle of faith on the road",
+            188.0,
+        ),
+        (
+            "radio_gospel_hallelujah_highway",
+            "Hallelujah Highway",
+            "Hand-clapping up-tempo gospel celebration",
+            176.0,
+        ),
+        (
+            "radio_gospel_old_church_bell",
+            "Old Church Bell",
+            "Close-harmony quartet remembering a country church",
+            192.0,
+        ),
+        (
+            "radio_gospel_sunday_sunrise",
+            "Sunday Sunrise",
+            "Instrumental organ-and-steel Sunday meditation",
+            204.0,
+        ),
+        (
+            "radio_gospel_carry_me_home",
+            "Carry Me Home",
+            "Slow spiritual with deep soloist and choir",
+            234.0,
+        ),
     ])
 });
 
@@ -851,16 +953,90 @@ pub static TEJANO_TRACKS: Lazy<Vec<MusicTrack>> = Lazy::new(|| {
             "Romantic border-moon ranchera ballad",
             216.0,
         ),
+        (
+            "radio_tejano_baila_conmigo",
+            "Baila Conmigo",
+            "Irresistible dance-floor cumbia invitation",
+            174.0,
+        ),
+        (
+            "radio_tejano_acordeon_del_alma",
+            "Acordeón del Alma",
+            "Accordion showcase instrumental with soul",
+            170.0,
+        ),
+        (
+            "radio_tejano_polvo_del_camino",
+            "Polvo del Camino",
+            "Road-dust conjunto tune for long hauls",
+            190.0,
+        ),
+        (
+            "radio_tejano_corazon_de_cromo",
+            "Corazón de Cromo",
+            "Modern Tejano pop with a chrome heart",
+            179.0,
+        ),
+        (
+            "radio_tejano_cumbia_del_mercado",
+            "Cumbia del Mercado",
+            "Market-day cumbia instrumental",
+            168.1,
+        ),
     ])
 });
 
 pub static SYNTHWAVE_TRACKS: Lazy<Vec<MusicTrack>> = Lazy::new(|| {
-    tracks(&[(
-        "radio_synthwave_afterglow_avenue",
-        "Afterglow Avenue",
-        "Dreamwave with soft vocals for the last mile",
-        224.0,
-    )])
+    tracks(&[
+        (
+            "radio_synthwave_afterglow_avenue",
+            "Afterglow Avenue",
+            "Dreamwave with soft vocals for the last mile",
+            224.0,
+        ),
+        (
+            "radio_synthwave_midnight_grid",
+            "Midnight Grid",
+            "Pulsing retrowave for empty city freeways",
+            208.0,
+        ),
+        (
+            "radio_synthwave_sodium_lights",
+            "Sodium Lights",
+            "Amber-lit nocturne of highway lamps",
+            222.0,
+        ),
+        (
+            "radio_synthwave_starlight_odometer",
+            "Starlight Odometer",
+            "Glittering night-drive arpeggio piece",
+            196.1,
+        ),
+        (
+            "radio_synthwave_neon_mirage",
+            "Neon Mirage",
+            "Desert-heat retrowave shimmer",
+            230.0,
+        ),
+        (
+            "radio_synthwave_taillight_river",
+            "Taillight River",
+            "Flowing red-light meditation for slow lanes",
+            218.1,
+        ),
+        (
+            "radio_synthwave_analog_heart",
+            "Analog Heart",
+            "Synthpop love song for machines that feel",
+            192.0,
+        ),
+        (
+            "radio_synthwave_desert_satellites",
+            "Desert Satellites",
+            "Wide-sky ambient synthwave finale",
+            240.0,
+        ),
+    ])
 });
 
 pub static NIGHT_JAZZ_TRACK: Lazy<MusicTrack> = Lazy::new(|| {
@@ -870,23 +1046,4 @@ pub static NIGHT_JAZZ_TRACK: Lazy<MusicTrack> = Lazy::new(|| {
         "Late-night instrumental jazz",
         180.0,
     )
-});
-
-// Vocal ballads exclusive to the Night Line station playlist. They stay out of
-// NIGHT_DRIVE_TRACKS so the Roadhouse night rotation remains instrumental.
-pub static NIGHT_LINE_VOCAL_TRACKS: Lazy<Vec<MusicTrack>> = Lazy::new(|| {
-    tracks(&[
-        (
-            "radio_night_last_diner",
-            "Last Diner Open",
-            "Quiet late-night diner ballad",
-            158.7,
-        ),
-        (
-            "radio_night_third_shift_waltz",
-            "Third Shift Waltz",
-            "Gentle waltz for night workers",
-            109.2,
-        ),
-    ])
 });

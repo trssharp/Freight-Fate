@@ -13,6 +13,7 @@ use ff_core::speech_text::overspeed_nag;
 use crate::app::{GameContext, SayEvent};
 use crate::states::driving::DrivingState;
 use crate::states::driving_core::*;
+use crate::states::driving_enforcement::SCALE_REMINDER_REAL_LEAD_S;
 use crate::states::driving_updates::{limit_drop_speech_latency_s, live};
 
 impl DrivingState {
@@ -195,17 +196,19 @@ impl DrivingState {
         self.reset_pull_over_tracker();
         self.pull_over_compliance = PULL_OVER_START_COMPLIANCE;
         self.pull_over_prev_mph = self.trip.truck.speed_mph();
-        let where_ = match self.trip.active_post_at(self.trip.position_mi) {
-            Some(post) => post.reason().to_string(),
-            None => "highway enforcement".to_string(),
+        // The signal key is named until the exit signal has been used a few
+        // times (the same counter the stop callouts retire on).
+        let speed = ctx.settings.speed_text(self.trip.truck.speed_mph());
+        let zone = ctx.settings.speed_text(limit);
+        let message = if self.instruction_retired(ctx, "take_exit") {
+            format!("Lights and siren behind you. {speed} in a {zone} zone. Signal and stop on the shoulder.")
+        } else {
+            format!(
+                "Lights and siren behind you. {speed} in a {zone} zone. Signal with {} and stop on \
+                 the shoulder.",
+                ctx.control_hint("take_exit")
+            )
         };
-        let signal_hint = ctx.control_hint("take_exit");
-        let message = format!(
-            "Lights and siren behind you. A trooper on this {where_} clocked you at {} in a {} \
-             zone. Signal with {signal_hint} and stop on the shoulder.",
-            ctx.settings.speed_text(self.trip.truck.speed_mph()),
-            ctx.settings.speed_text(limit)
-        );
         self.arm_pull_over(ctx, &message);
         ctx.controller.rumble.alert();
     }
@@ -295,8 +298,19 @@ impl DrivingState {
         // One demand on the driver at a time. This guarded on the stop and the
         // ramp but not on a running hazard deadline, so a scale could speak
         // over a braking window the player had two seconds to make.
-        if self.enforcement_bypassed(ctx) || self.enforcement_busy() {
+        if self.enforcement_bypassed(ctx) {
             return;
+        }
+        if self.enforcement_busy() {
+            // The reminder cannot speak while the cab is taken; one that
+            // lands late because of it is the game's late, not the driver's.
+            self.note_scale_reminders_held_by_game();
+            return;
+        }
+        if self.departure_ramp_mi.is_some() {
+            // Pulling out of a facility, slow on purpose: a reminder held
+            // under the bypass speed here is not a crawl past the scale.
+            self.note_scale_reminders_held_by_game();
         }
         let stops: Vec<RoadStop> = self
             .trip
@@ -310,13 +324,23 @@ impl DrivingState {
             let key = self.weigh_station_key(&stop);
             if ahead > 0.0
                 && ahead <= self.scale_notice_lookahead_mi(ctx)
-                && key != self.weigh_station_notice_key
+                && !self.weigh_station_noticed.contains(&key)
                 && self.scale_is_open(&stop)
             {
                 // Only an OPEN scale is spoken. A closed one gets the thinner,
                 // drier approach bed and nothing said -- the swell says
                 // "scale", and the absence of speech is what says "closed".
-                self.weigh_station_notice_key = key.clone();
+                // A set, not one key: two open scales inside the lookahead
+                // used to take turns overwriting a single key, each frame
+                // re-announcing the other, and the nearer one's reminder
+                // never fired because its key was never the one held.
+                self.weigh_station_noticed.insert(key.clone());
+                if ahead <= self.scale_reminder_mi() {
+                    // First heard inside the reminder window: the reminder
+                    // rides right behind it, and any shortfall in its real
+                    // seconds is the game's.
+                    self.scale_reminder_held_by_game.insert(key.clone());
+                }
                 // Its own earcon, not the shared inspection cue: testers
                 // could not tell "the scale is ahead" apart from "you are
                 // being looked at for something else" (owner ruling,
@@ -324,17 +348,16 @@ impl DrivingState {
                 // its own, before a word is spoken.
                 ctx.audio
                     .play_with("events/weigh_station_warning", 0.7, 0.0);
-                // Action first, and both keys through control_hint. The old
-                // line hard-coded "press T", and T at speed planned a sleep
-                // stop past the scale -- the instruction itself marched a
-                // tester into the bypass charge (report, 2026-08-12).
+                // No keys: the old line hard-coded "press T", and T at speed
+                // planned a sleep stop past the scale -- the instruction
+                // itself marched a tester into the bypass charge (report,
+                // 2026-08-12). The reminder nearer the scale names the exit.
                 // A transponder truck's verdict is rolled BEFORE the notice
                 // is worded (silent, deterministic, so this is the same
-                // verdict either way): a green truck used to be told "Signal
-                // for the scale exit" and then, one sentence later, that it
-                // needed no exit -- the notice contradicting itself a breath
+                // verdict either way): a green truck used to be told to pull
+                // in and then, one sentence later, that it needed no exit -- the notice contradicting itself a breath
                 // too late (adversarial battery). A red truck, and every
-                // truck without a transponder, still gets the full pull-in
+                // truck without a transponder, still gets the pull-in
                 // instruction, which stays true for them.
                 let mut verdict = String::new();
                 if ctx
@@ -345,14 +368,9 @@ impl DrivingState {
                     verdict = self.roll_transponder_verdict(&stop, &key);
                 }
                 let instruction = if verdict == "green" {
-                    "Your transponder answers it at road speed.".to_string()
+                    "Transponder bypass."
                 } else {
-                    format!(
-                        "All trucks must pull in. Signal for the scale exit with {}. Stopped at \
-                         the scale, press {} to check in.",
-                        ctx.control_hint("take_exit"),
-                        ctx.control_hint("rest")
-                    )
+                    "All trucks must pull in."
                 };
                 // Bound here and moved into the gate below, not read from the
                 // sweep when the gate runs: the validity test has to compare
@@ -420,6 +438,13 @@ impl DrivingState {
                 }
             }
             self.check_scale_reminder(ctx, &stop, ahead, &key);
+            if self.trip.scale_reminder_hold_mi == Some(stop.at_mi)
+                && (ahead <= 0.0 || self.exit_is_armed_for(&stop))
+            {
+                // Past the gore, or signalled for its ramp, where the armed
+                // exit's own real-time window takes the clock over.
+                self.trip.scale_reminder_hold_mi = None;
+            }
             if self.enforcement_events.contains(&key) {
                 continue;
             }
@@ -449,6 +474,31 @@ impl DrivingState {
                     // tester was fined for blowing past a scale while he was
                     // on its ramp at eighteen (log, 2026-08-10).
                     self.weigh_station_pending = Some(stop.clone());
+                    continue;
+                }
+                if !self.scale_bypass_judgeable(&key) {
+                    // Audible before it can bite. The driver was never told
+                    // about this scale, or heard "Signal for the scale exit"
+                    // too few real seconds ago to have acted on it because
+                    // the game held it back -- a notice that latched late, a
+                    // cab taken inside the window. That is the game's miss,
+                    // not the driver's bypass. A reminder made late by the
+                    // driver's own crawl does not land here; see
+                    // `scale_bypass_judgeable`.
+                    let heard = if self.weigh_station_reminder_key == key {
+                        format!(
+                            "reminder only {:.1} real s before, held back by the game",
+                            self.weigh_station_reminder_age_s
+                        )
+                    } else {
+                        "never announced".to_string()
+                    };
+                    log::info!(
+                        "scale crossing not judged: {} at mile {:.2}, {heard}",
+                        stop.name,
+                        stop.at_mi
+                    );
+                    self.enforcement_events.insert(key);
                     continue;
                 }
                 self.enforcement_events.insert(key);
@@ -531,8 +581,10 @@ impl DrivingState {
             // rescued -- but only while the scale is still ahead to pull
             // in to.
             self.refresh_live_facts();
+            // Named, like the notice it follows: with two scales near, "the
+            // scale" did not say which one the light was for.
             ctx.say_event_with(
-                "Red light. Pull in to the scale.",
+                format!("Red light. Pull in to {}.", stop.name),
                 SayEvent::queued()
                     .priority(EventPriority::Route)
                     .category(SpeechCategory::Navigation)
@@ -543,7 +595,7 @@ impl DrivingState {
 
     /// Whether this load is over the federal 80,000 lb GVW cap.
     ///
-    /// Tractor + trailer + cargo only. Fuel is not counted. An overweight
+    /// Tractor, trailer, cargo, and remaining diesel all count. An overweight
     /// truck is always red-lighted at a transponder scale.
     pub fn cargo_is_overweight(&self) -> bool {
         self.trip.truck.is_over_legal_gvw()
@@ -570,7 +622,7 @@ impl DrivingState {
         if self.enforcement_events.contains(&key) {
             return;
         }
-        self.enforcement_events.insert(key);
+        self.enforcement_events.insert(key.clone());
         if self
             .ramp_stop
             .as_ref()
@@ -580,6 +632,25 @@ impl DrivingState {
         }
         if self.pull_over.is_some() {
             return; // already stopped this frame; one demand on the driver
+        }
+        if self.weigh_station_reminder_key == key
+            && self.weigh_station_reminder_age_s < SCALE_REMINDER_REAL_LEAD_S
+            && self.scale_reminder_held_by_game.contains(&key)
+        {
+            // Signalled in answer to a reminder the game held back until too
+            // late to make the ramp: the same miss on the game's side as an
+            // unarmed crossing inside the reminder's real seconds. A driver
+            // who armed before any reminder was needed knew about the scale
+            // all along, and a reminder late only because of their own crawl
+            // buys nothing either; a missed ramp is still theirs.
+            log::info!(
+                "scale crossing not judged: {} at mile {:.2}, armed after a reminder only \
+                 {:.1} real s before",
+                stop.name,
+                stop.at_mi,
+                self.weigh_station_reminder_age_s
+            );
+            return;
         }
         self.charge_weigh_station_bypass(ctx, &stop);
     }

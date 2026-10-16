@@ -1,6 +1,7 @@
 //! The Tab status screen's browse, and the two readouts it shares with the
 //! spoken keys: the gear name and the air-brake sentence.
 
+use ff_core::models::business::display_rank_for;
 use ff_core::models::career::xp_to_next_level;
 use ff_core::pyfmt::fmt_grouped;
 
@@ -32,14 +33,16 @@ impl DrivingState {
     /// again on 2026-08-20 ("this is still not in this build"), and he was
     /// exactly right. The status browse is where a driver asks mid-run.
     pub fn career_status_line(&self, ctx: &GameContext) -> String {
-        let career = &profile_of(ctx).career;
+        let profile = profile_of(ctx);
+        let career = &profile.career;
         let owed = xp_to_next_level(career.xp);
         let level = career.level();
+        let title = display_rank_for(profile).title;
         let tail = match owed {
             Some(owed) => format!("{} experience to level {}", fmt_grouped(owed, 0), level + 1),
             None => "top career level".to_string(),
         };
-        format!("Career: level {level}, {}. {tail}.", career.rank().title)
+        format!("Career: level {level}, {title}. {tail}.")
     }
 
     /// `status_lines()`: the Tab status screen's browse.
@@ -53,8 +56,10 @@ impl DrivingState {
             self.trip.progress_summary(imperial)
         };
         let zone = match reason {
-            Some(reason) => format!(" in a {reason} zone"),
-            None => String::new(),
+            Some(reason) if !ff_core::sim::trip::is_street_zone_reason(&reason) => {
+                format!(" in a {reason} zone")
+            }
+            _ => String::new(),
         };
         let calendar = self.calendar_phrase(ctx);
         let calendar = if calendar.is_empty() {
@@ -69,7 +74,10 @@ impl DrivingState {
             ),
             format!("Limit: {}{zone}", ctx.settings.speed_text(limit)),
             self.trip.npc_traffic_status(),
-            format!("Progress: {} percent there", self.trip.progress_percent()),
+            format!(
+                "Progress: {} percent there",
+                self.journey_progress_percent()
+            ),
             format!("Route: {progress}"),
             self.career_status_line(ctx),
             format!(
@@ -124,7 +132,18 @@ impl DrivingState {
             (truck.engine_wear_pct, "Engine"),
         ] {
             if worn >= WEAR_STATUS_PCT {
-                lines.push(format!("{label}: {worn:.0} percent worn"));
+                if worn >= ff_core::sim::vehicle::COMPONENT_SERVICE_WARNING_PCT {
+                    let component = match label {
+                        "Tires" => crate::states::driving_damage::MaintenanceComponent::Tires,
+                        "Brakes" => crate::states::driving_damage::MaintenanceComponent::Brakes,
+                        _ => crate::states::driving_damage::MaintenanceComponent::Engine,
+                    };
+                    lines.push(crate::states::driving_damage::maintenance_status_line(
+                        component, worn,
+                    ));
+                } else {
+                    lines.push(format!("{label}: {worn:.0} percent worn"));
+                }
             }
         }
         let now_h = self.absolute_game_hour(ctx, None);
@@ -161,7 +180,7 @@ impl DrivingState {
             lines.push(format!("HOS: {}", summary.trim_end_matches('.')));
             let context = self.hos_route_context(ctx);
             if !context.is_empty() {
-                lines.push(format!("Next legal stop: {context}"));
+                lines.push(format!("HOS route: {context}"));
             }
         }
         lines
@@ -173,6 +192,29 @@ impl DrivingState {
             Some(mph) => ctx.settings.speed_text(mph),
             None => "posted limit when the open road begins".to_string(),
         }
+    }
+
+    /// The air for the Space readout: the pressure, and only what is not
+    /// normal. Ready air, a released parking brake and an idle compressor are
+    /// the state of every moving truck, so saying them on each press buried
+    /// the speed under them. The full set stays on Tab and the pause menu.
+    /// Empty while the air is ready and the brakes are released: a driver
+    /// looks at the gauge when the buzzer goes, not every glance at the dash
+    /// (owner, 2026-10-14). The Tab screen keeps the full reading.
+    pub fn air_brief_text(&self) -> String {
+        let t = &self.trip.truck;
+        let mut parts = Vec::new();
+        if t.air_low_warning() {
+            parts.push(format!("low air, {:.0} psi", t.air_pressure_psi()));
+        } else if !t.air_ready() {
+            parts.push(format!("air building, {:.0} psi", t.air_pressure_psi()));
+        }
+        if t.spring_brakes_active() {
+            parts.push("spring brakes active".to_string());
+        } else if t.parking_brake {
+            parts.push("parking brake set".to_string());
+        }
+        parts.join(", ")
     }
 
     /// `_air_status_text(detailed=False)`.

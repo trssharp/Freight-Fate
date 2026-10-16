@@ -18,6 +18,7 @@
 //!
 //! `transcript_cruise_support` documents what replaced each monkeypatch.
 
+use ff_core::data::corners::corner_speed_mph;
 use ff_core::sim::trip_models::{NPCVehicle, Zone};
 use ff_core::sim::vehicle::{HIGH_IDLE_DEFAULT_RPM, HIGH_IDLE_STEP_RPM};
 use freight_fate::states::base::Key;
@@ -305,20 +306,14 @@ fn test_cruise_refuses_to_engage_in_a_facility_zone() {
 
     assert!(harness.read_drive(|d| d.cruise_mph).is_none());
     assert!(harness.read_drive(|d| d.keeper_mph).is_none());
+    // A street is not a zone: the refusal names city streets.
     assert!(
         spoken(&harness)
             .iter()
-            .any(|s| s.contains("No adaptive cruise") && s.contains("facility access road")),
+            .any(|s| s == "No cruise on city streets."),
         "{:?}",
         spoken(&harness)
     );
-    // The refusal has to name the way out. A driver who has never turned the
-    // keeper on otherwise hears only that cruise is unavailable and reasonably
-    // concludes that every ramp kills speed control for good (Shane,
-    // 2026-08-15) -- the keeper is exactly what holds speed here.
-    assert!(spoken(&harness)
-        .iter()
-        .any(|s| s.to_lowercase().contains("speed keeper") && s.contains("Settings")));
 }
 
 #[test]
@@ -368,7 +363,7 @@ fn test_speed_keeper_cancels_on_braking() {
     frame(&mut harness, DT);
     assert!(harness.read_drive(|d| d.keeper_mph).is_none());
     assert!(!harness.read_drive(|d| d.speed_control_armed));
-    assert!(said_any(&harness, "Speed keeper canceled"));
+    assert!(said_any(&harness, "Speed keeper off."));
 
     // The access stretch ends.
     harness.with_drive(|d, _| d.trip.zones.clear());
@@ -402,7 +397,7 @@ fn test_speed_keeper_switches_to_cruise_on_the_open_road() {
         55.0
     ));
     assert!(harness.read_drive(|d| d.speed_control_armed));
-    assert!(said_any(&harness, "Open road. Adaptive cruise resuming"));
+    assert!(said_any(&harness, "Cruise resuming, 55"));
 }
 
 /// `_keeper_on_a_street_chain(app, start_before_mi=...)`: a keeper session
@@ -447,12 +442,14 @@ fn keeper_on_a_street_chain(
 
 #[test]
 fn test_speed_keeper_is_under_the_turn_speed_before_the_corner() {
-    // The tester report: the keeper held the street's 25 into a corner that
-    // advises 20, so the corner was taken over its speed and the safe
+    // The tester report: the keeper held the street's 25 into a corner it
+    // could not take, so the corner was taken over its speed and the safe
     // turnaround was charged. It now sheds the speed on the approach.
     let (mut harness, cue) = keeper_on_a_street_chain("Corner Keeper", 0.25);
     let advise = harness.read_drive(|d| d.turn_speed_mph(&cue));
-    assert_eq!(advise, 20.0); // a 25 mph street, capped at what a trailer turns
+    // An unmeasured corner on this fixture, so the square-corner price.
+    let load = harness.read_drive(|d| d.trip.truck.roll_load_fraction());
+    assert_eq!(advise, corner_speed_mph(None, load));
 
     let trace = roll_to(&mut harness, cue.at_mi, 60 * 300);
     // Under the number BEFORE the corner, not arriving at it on the spot: the
@@ -521,8 +518,13 @@ fn test_speed_keeper_makes_the_second_corner_of_a_short_block() {
         25.0,
         0.5
     ));
-    assert_eq!(harness.read_drive(|d| d.turn_speed_mph(&first)), 20.0);
-    assert_eq!(harness.read_drive(|d| d.turn_speed_mph(&second)), 15.0);
+    // Unmeasured corners on this fixture, so both price as square ones.
+    let square = corner_speed_mph(
+        None,
+        harness.read_drive(|d| d.trip.truck.roll_load_fraction()),
+    );
+    assert_eq!(harness.read_drive(|d| d.turn_speed_mph(&first)), square);
+    assert_eq!(harness.read_drive(|d| d.turn_speed_mph(&second)), square);
     assert!(second.at_mi - first.at_mi < 0.15); // inside the first corner's tail
 
     roll_to(&mut harness, first.at_mi, 60 * 300);
@@ -535,13 +537,13 @@ fn test_speed_keeper_makes_the_second_corner_of_a_short_block() {
     // advise or the service way's posted 15 -- and both are the truth. The
     // number is the behavior under test.
     let ahead = harness.with_drive(|d, ctx| d.keeper_speed_ahead(ctx));
-    assert_eq!(ahead.map(|(mph, _)| mph), Some(15.0));
+    assert_eq!(ahead.map(|(mph, _)| mph), Some(square));
     let trace = roll_to(&mut harness, second.at_mi, 60 * 300);
     assert!(
-        trace.iter().any(|(_, mph)| *mph <= 15.0),
+        trace.iter().any(|(_, mph)| *mph <= square),
         "the keeper never reached the service road's corner speed"
     );
-    assert!(harness.read_drive(|d| d.truck().speed_mph()) <= 15.0);
+    assert!(harness.read_drive(|d| d.truck().speed_mph()) <= square);
 
     frame(&mut harness, DT);
     assert_eq!(harness.read_drive(|d| d.turn_miss_count), 0);
@@ -626,6 +628,53 @@ fn test_speed_keeper_eases_for_a_lower_posted_limit_and_says_so() {
     assert!(harness.read_drive(|d| d.trip.limit_drop_preannounced.contains(&15.0)));
 }
 
+/// Agent drive A (2026-09-24): "Posted limit lower; speed keeper easing to
+/// 15" said again while the truck was building speed from 9. A truck under
+/// the number is not being eased, so nothing is said.
+#[test]
+fn test_speed_keeper_says_nothing_of_easing_when_already_under_the_number() {
+    let mut harness = bench_drive("Keeper Under", 200.0, 0.0);
+    release_keys(&mut harness);
+    press(&mut harness, Key::E, None);
+    harness.with_drive(|d, _| {
+        d.truck_mut().cargo_kg = 0.0;
+        d.truck_mut().grade = 0.0;
+        d.truck_mut().transmission.gear = 3;
+        d.truck_mut().velocity_mps = 9.0 * MPS_PER_MPH;
+    });
+    let drop_mi = harness.read_drive(|d| d.trip.position_mi + 0.3);
+    harness.with_drive(move |d, _| {
+        d.trip.zones = vec![
+            Zone::new(0.0, drop_mi, 25.0, "facility access road"),
+            Zone::new(drop_mi, 1e6, 15.0, "facility access road"),
+        ];
+    });
+    harness.clear_speech();
+    press(&mut harness, Key::K, None);
+    // Holding the road's 25 and already aiming at the 15 -- the keeper's held
+    // ease target, the state a truck is in when it pulls away again short of
+    // the drop.
+    harness.with_drive(move |d, _| {
+        d.keeper_mph = Some(25.0);
+        d.keeper_ease_target = Some((drop_mi, 15.0, "posted limit".to_string()));
+    });
+    for _ in 0..(60 * 30) {
+        frame(&mut harness, DT);
+        if harness.read_drive(|d| d.trip.position_mi) >= drop_mi {
+            break;
+        }
+    }
+    let lines = spoken(&harness);
+    assert!(
+        harness.read_drive(|d| d.truck().speed_mph()) <= 15.0 + KEEPER_SNUB_OVER_MPH,
+        "{lines:#?}"
+    );
+    assert!(
+        !lines.iter().any(|e| e.contains("speed keeper easing")),
+        "{lines:#?}"
+    );
+}
+
 #[test]
 fn test_speed_keeper_takes_the_next_street_up_to_its_posted_number() {
     // The tester report: the keeper "sometimes doesn't hold speeds on access
@@ -663,23 +712,23 @@ fn test_speed_keeper_takes_the_next_street_up_to_its_posted_number() {
     ));
     // An assist that speeds the truck up on its own says the new number: the
     // zone entry announced the law, not what the truck will do.
+    // A street is not a zone: the line says the number alone.
     assert!(
-        spoken(&harness).iter().any(|e| e
-            == "Speed keeper holding 25 miles per hour through the facility access road zone."),
+        spoken(&harness)
+            .iter()
+            .any(|e| e == "Speed keeper holding 25 miles per hour."),
         "{:#?}",
         spoken(&harness)
     );
     // Raised once for the street. The zone-entry line lands in the same
-    // frame and purges the channel, so the keeper line is handed back and
-    // submitted a second time -- that pair is the pacer delivering ONE
-    // occurrence (without the hand-back the player would hear none of it,
-    // the flush having cut it before the voice said a word). What must not
-    // happen is the assist raising it again as the frames run on.
+    // frame; it queues behind the keeper line rather than purging it and
+    // handing it back, so the voice is sent it once. What must not happen is
+    // the assist raising it again as the frames run on.
     let said_at_the_street = spoken(&harness)
         .iter()
         .filter(|e| e.contains("Speed keeper holding 25"))
         .count();
-    assert_eq!(said_at_the_street, 2, "{:#?}", spoken(&harness));
+    assert_eq!(said_at_the_street, 1, "{:#?}", spoken(&harness));
     frames(&mut harness, 60 * 40, DT);
     let speed = harness.read_drive(|d| d.truck().speed_mph());
     assert!(speed > 21.0, "{speed}");
@@ -875,7 +924,7 @@ fn test_air_ready_cue_does_not_repeat_on_compressor_cycling() {
     assert_eq!(
         spoken(&harness)
             .iter()
-            .filter(|e| e.contains("Air pressure ready"))
+            .filter(|e| e.contains("Air ready."))
             .count(),
         0
     );
@@ -893,7 +942,7 @@ fn test_air_ready_cue_does_not_repeat_on_compressor_cycling() {
     assert_eq!(
         spoken(&harness)
             .iter()
-            .filter(|e| e.contains("Air pressure ready"))
+            .filter(|e| e.contains("Air ready."))
             .count(),
         1
     );

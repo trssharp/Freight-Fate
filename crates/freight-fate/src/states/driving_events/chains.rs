@@ -1,8 +1,10 @@
 //! The facility street chains: the surface chain that carries a delivery from
 //! the destination ramp to the gate, the departure chain that carries a loaded
-//! run out of the origin's gate, and the acceleration lane that ends it.
+//! run out of the origin's gate, and the acceleration lane that ends it; and
+//! a road stop's streets from its exit ramp to its lot.
 
 use ff_core::data::world_models::Route;
+use ff_core::sim::trip_models::RoadStop;
 use ff_core::sim::weather::WeatherSystem;
 use ff_core::speech_pacing::{EventPriority, SpeechCategory};
 use ff_core::units::spoken_feet_or_meters;
@@ -10,6 +12,16 @@ use ff_core::units::spoken_feet_or_meters;
 use crate::app::{GameContext, SayEvent};
 use crate::states::driving::DrivingState;
 use crate::states::driving_core::*;
+
+/// Whether a road stop's streets from its exit ramp to its lot are driven.
+/// OFF for 1.9 (owner decision, 2026-09-24): most exits have a ramp end
+/// baked for one direction only, so the same truck stop had streets one way
+/// and none the other (the Love's at Baird, I-20 exit 307, had none
+/// westbound). A stop keeps its entrance at the ramp's end, as before
+/// 2026-09-24, until the re-bake that finds each direction's ramp (2.0). A
+/// drive copies this into `DrivingState::stop_streets_on`, which the 2.0
+/// tests set.
+pub const STOP_STREETS_IN_PLAY: bool = false;
 
 impl DrivingState {
     /// The spoken state name for a city key, or "" when the world is silent.
@@ -26,10 +38,26 @@ impl DrivingState {
 
     /// The destination facility's tier-1 street chain, or None.
     ///
-    /// Only a genuine multi-segment turn-level route makes a chain; a single
-    /// synthetic leg would just be the old teleport with extra steps, so those
-    /// facilities keep the scripted arrival.
+    /// The chain from the end of the ramp this delivery takes, when the bake
+    /// has one from that terminal: it starts on the street the ramp meets.
+    /// Otherwise the facility's default chain, routed from the city centre,
+    /// and only a genuine multi-segment turn-level route makes one of those;
+    /// a single synthetic leg would just be the old teleport with extra
+    /// steps, so those facilities keep the scripted arrival.
     pub fn surface_chain_route(&self, ctx: &GameContext) -> Option<Route> {
+        if !self.facility_streets_on {
+            return None;
+        }
+        if let Some(node) = self.destination_terminal_node(ctx) {
+            let exit_chain = ctx
+                .world
+                .facility_exit_route(&self.job.destination, &self.job.destination_location, node)
+                .ok()
+                .flatten();
+            if let Some(route) = exit_chain.filter(|route| !route.legs.is_empty()) {
+                return Some(route);
+            }
+        }
         let route = ctx
             .world
             .facility_approach_route(&self.job.destination, &self.job.destination_location)
@@ -41,6 +69,32 @@ impl DrivingState {
             return None;
         }
         Some(route)
+    }
+
+    /// The OSM node the destination exit's ramp ends at, for the direction
+    /// this delivery arrives in: the key of the street chain from there. Read
+    /// off the highway trip, which is parked aside once the streets begin.
+    pub fn destination_terminal_node(&self, ctx: &GameContext) -> Option<i64> {
+        if self.phase != DRIVE_PHASE_DELIVERY {
+            return None;
+        }
+        let highway = if self.surface_chain {
+            self.highway_trip.as_ref()?
+        } else {
+            &self.trip
+        };
+        let exit_mi = match self.ramp_stop.as_ref() {
+            Some(stop) if stop.stop_type == "delivery_destination" => {
+                stop.interchange_mi.unwrap_or(stop.at_mi)
+            }
+            _ => {
+                crate::states::driving_events::destination_exit::scan_destination_exit(
+                    ctx.world, highway, true,
+                )?
+                .0
+            }
+        };
+        highway.ramp_terminal_node_at(exit_mi)
     }
 
     /// Whether this delivery's ramp hands off to a street chain.
@@ -81,6 +135,62 @@ impl DrivingState {
             return false;
         };
         let local_state = self.city_state(ctx, &self.job.destination.clone());
+        let first_corner = self.enter_streets(ctx, &route, local_state, false, announce);
+        self.surface_chain = true;
+        if announce {
+            let street = Self::start_street_text(&route);
+            ctx.audio.play_with("ui/notify", 0.7, 0.0);
+            let message = format!(
+                "{street}.{first_corner} {} to the facility gate.",
+                self.trip.distance_text(route.miles())
+            );
+            self.announce_streets(ctx, message, !first_corner.is_empty());
+        }
+        true
+    }
+
+    /// "Start on X", the street a chain begins on.
+    fn start_street_text(route: &Route) -> String {
+        let first = &route.legs[0];
+        if first.local_cue.is_empty() {
+            format!("Start on {}", first.highway)
+        } else {
+            first.local_cue.trim_end_matches('.').to_string()
+        }
+    }
+
+    /// The off-the-ramp line: the route channel, and the first corner's
+    /// reaction window when it carries one.
+    fn announce_streets(&mut self, ctx: &mut GameContext, message: String, with_corner: bool) {
+        if with_corner {
+            self.turn_grace_s = self.turn_grace_seconds(ctx, &message);
+        }
+        let mut opts = SayEvent::queued().priority(EventPriority::Route);
+        opts.category = Some(SpeechCategory::Navigation);
+        ctx.say_event_with(message, opts);
+        self.mark_start_cue_said();
+    }
+
+    /// Swap the highway trip at the end of a ramp for a street chain, park the
+    /// highway aside, and hand the streets to the speed keeper when the
+    /// terminal released the truck to facility stopping assistance. Returns
+    /// the first corner's call, " Then ...", when the chain starts inside its
+    /// window, for the caller's off-the-ramp line; empty otherwise.
+    ///
+    /// `live` is false when a save is being rebuilt: the truck is parked with
+    /// its engine off and the restored position is not set yet, so both
+    /// handoffs are left to the per-frame paths -- the keeper resumes once the
+    /// truck rolls, and the first corner is called from where the truck
+    /// really is. Latched here, a resumed drive never heard that corner's
+    /// approach call, and the keeper refused a parked truck as it loaded.
+    fn enter_streets(
+        &mut self,
+        ctx: &mut GameContext,
+        route: &Route,
+        local_state: String,
+        road_stop: bool,
+        live: bool,
+    ) -> String {
         let options = TripOptions {
             time_scale: self.trip.time_scale,
             seed: Some(self.trip_seed ^ 0x5AFE),
@@ -91,6 +201,7 @@ impl DrivingState {
             bobtail: self.trip.bobtail,
             destination_label: self.trip.destination_label.clone(),
             local_state,
+            road_stop,
             ..Default::default()
         };
         let mut surface = Trip::new(
@@ -111,7 +222,6 @@ impl DrivingState {
         let weather = std::mem::replace(&mut old.weather, self.placeholder_weather());
         self.trip.weather = weather;
         self.highway_trip = Some(old);
-        self.surface_chain = true;
         // A latched destination arrival belongs to the trip it began on. The
         // ramp's arrival stopped the truck at the ramp's end; the street chain
         // is a fresh approach with its own point half a mile on, and carrying
@@ -141,17 +251,21 @@ impl DrivingState {
         // on the way out, rather than waiting a frame for the resume path.
         // The arrival assist takes the pedals back at the gate as it always
         // has. `approach_pull_ahead_available` refused the pull-ahead with the
-        // keeper off, so a chain reached this way always has it.
-        if self.approach_pull_ahead {
-            self.approach_pull_ahead = false;
-            if ctx.settings.speed_keeper {
-                let (limit, zone_reason) = self.trip.speed_limit_at(self.trip.position_mi);
-                if let Some(zone_reason) = zone_reason {
-                    if self.cruise_mph.is_some() {
-                        self.cancel_cruise(ctx, true);
-                    }
-                    self.engage_keeper(ctx, limit, &zone_reason, Some(limit), true);
+        // keeper off, so a chain reached this way always has it. An armed
+        // session takes the streets the same way, now rather than a frame
+        // later: a free-flowing ramp hands over at the ramp's own speed, and
+        // for that frame nothing held the truck to the street's number.
+        let pull_ahead = std::mem::take(&mut self.approach_pull_ahead);
+        if !live {
+            return String::new();
+        }
+        if (pull_ahead || self.speed_control_armed) && ctx.settings.speed_keeper {
+            let (limit, zone_reason) = self.trip.speed_limit_at(self.trip.position_mi);
+            if let Some(zone_reason) = zone_reason {
+                if self.cruise_mph.is_some() {
+                    self.cancel_cruise(ctx, true);
                 }
+                self.engage_keeper(ctx, limit, &zone_reason, Some(limit), true);
             }
         }
         // The first corner, if the chain starts inside its own window: it is
@@ -168,38 +282,116 @@ impl DrivingState {
                 let call = self.turn_approach_text(ctx, &corner, ahead);
                 first_corner = format!(" Then {}", lower_first(&call));
                 self.turn_advised.insert(corner.key.clone());
-                self.trip.controlled_turn = true;
-                if let Some(sound) = local_turn_sound(Some(&corner.direction)) {
-                    let pan = if corner.direction == "left" {
-                        -TURN_CUE_PAN
-                    } else {
-                        TURN_CUE_PAN
-                    };
-                    ctx.audio.play_with(sound, 1.0, pan);
+                self.pace_clock_for_turn(&corner, ahead);
+                // Spoken inside this line, so its chime goes with it.
+                self.chime_corner(ctx, &corner);
+                if ahead <= crate::states::driving_turns::TURN_NOW_MI {
+                    self.turn_called_now.insert(corner.key.clone());
                 }
             }
         }
-        if announce {
-            let first = &route.legs[0];
-            let street = if first.local_cue.is_empty() {
-                format!("Start on {}", first.highway)
+        first_corner
+    }
+
+    /// The streets from the end of a road stop's exit ramp to its lot, for
+    /// this trip's direction, or None when the stop has none baked.
+    pub fn stop_chain_route(&self, stop: &RoadStop) -> Option<Route> {
+        if !self.stop_streets_on || stop.stop_type == "delivery_destination" {
+            return None;
+        }
+        let highway = if self.stop_chain.is_some() {
+            self.highway_trip.as_ref()?
+        } else {
+            &self.trip
+        };
+        highway
+            .stop_approach_route(stop)
+            .filter(|route| !route.legs.is_empty())
+    }
+
+    /// Off a road stop's exit ramp onto the streets to its lot.
+    ///
+    /// The same swap as a facility's chain: the highway trip is parked with
+    /// its odometer at the exit, the streets carry their own limits, lights
+    /// and signs, and the driveway is a turn into the lot. At the lot the
+    /// highway comes back and the stop opens as it always has
+    /// (`finish_stop_chain`).
+    pub fn begin_stop_chain(&mut self, ctx: &mut GameContext, stop: &RoadStop) -> bool {
+        if self.surface_chain || self.stop_chain.is_some() || self.departure_chain {
+            return false;
+        }
+        let Some(route) = self.stop_chain_route(stop) else {
+            return false;
+        };
+        let city = route.cities.first().cloned().unwrap_or_default();
+        let local_state = self.city_state(ctx, &city);
+        let first_corner = self.enter_streets(ctx, &route, local_state, true, true);
+        self.stop_chain = Some(stop.clone());
+        self.stop_chain_end_said = false;
+        let street = Self::start_street_text(&route);
+        ctx.audio.play_with("ui/notify", 0.7, 0.0);
+        // In closing units: these streets are a few hundred feet to a mile,
+        // and whole miles said "0 miles" for the lot.
+        let message = format!(
+            "Off the ramp. {street}.{first_corner} {} to {}.",
+            self.closing_text(route.miles()),
+            stop.spoken_name()
+        );
+        self.announce_streets(ctx, message, !first_corner.is_empty());
+        true
+    }
+
+    /// At the end of a road stop's streets: stopped, the highway trip comes
+    /// back and the stop opens; still rolling, the lot says where it is once.
+    pub fn handle_stop_chain_end(&mut self, ctx: &mut GameContext) {
+        let Some(stop) = self.stop_chain.clone() else {
+            return;
+        };
+        if self.trip.truck.speed_mph() <= DOCKING_MAX_MPH {
+            self.finish_stop_chain(ctx);
+            self.open_poi_stop(ctx, &stop, true, None);
+            return;
+        }
+        if self.cruise_mph.is_some() || self.keeper_mph.is_some() {
+            // The lot is the stop: automatic speed control lets go here, as
+            // it did at the end of a stop's ramp, and stays off until the
+            // truck drives on (`resume_speed_control_if_ready`).
+            self.pause_speed_control(ctx, true);
+        }
+        if !self.stop_chain_end_said {
+            self.stop_chain_end_said = true;
+            let place = stop.spoken_name();
+            let message = if self.terse_speech(ctx) {
+                format!("At {place}. Stop now.")
             } else {
-                first.local_cue.trim_end_matches('.').to_string()
+                format!("At {place}. Come to a stop.")
             };
-            ctx.audio.play_with("ui/notify", 0.7, 0.0);
-            let message = format!(
-                "Off the ramp and onto city streets. {street}.{first_corner} {} to the facility \
-                 gate.",
-                self.trip.distance_text(route.miles())
-            );
-            if !first_corner.is_empty() {
-                self.turn_grace_s = self.turn_grace_seconds(ctx, &message);
-            }
-            let mut opts = SayEvent::queued().priority(EventPriority::Route);
+            let mut opts = SayEvent::new();
             opts.category = Some(SpeechCategory::Navigation);
             ctx.say_event_with(message, opts);
         }
-        true
+    }
+
+    /// Back onto the highway trip from a road stop's streets, with the clock,
+    /// the toll ledger and the truck carried over: the stop and the ramp back
+    /// up are the highway's, as they always were.
+    pub fn finish_stop_chain(&mut self, _ctx: &mut GameContext) {
+        if self.stop_chain.take().is_none() {
+            return;
+        }
+        let Some(mut highway) = self.highway_trip.take() else {
+            return;
+        };
+        highway.game_minutes = self.trip.game_minutes;
+        highway.toll_charges = self.trip.toll_charges.clone();
+        highway.hos_violation = self.trip.hos_violation;
+        highway.truck = self.trip.truck.clone();
+        let mut streets = self.replace_trip(highway);
+        let weather = std::mem::replace(&mut streets.weather, self.placeholder_weather());
+        self.trip.weather = weather;
+        self.destination_arrival_active = false;
+        self.destination_assist_brake = 0.0;
+        self.reset_turn_state_for_trip();
     }
 
     /// The origin facility's street chain driven outbound, or None.
@@ -208,7 +400,7 @@ impl DrivingState {
     /// chain qualifies; other facilities keep the scripted departure straight
     /// onto the highway.
     pub fn departure_chain_route(&self, ctx: &GameContext) -> Option<Route> {
-        if self.phase != DRIVE_PHASE_DELIVERY {
+        if self.phase != DRIVE_PHASE_DELIVERY || !self.facility_streets_on {
             return None;
         }
         ctx.world
@@ -281,14 +473,24 @@ impl DrivingState {
             let mut opts = SayEvent::queued().priority(EventPriority::Route);
             opts.category = Some(SpeechCategory::Navigation);
             ctx.say_event_with(
-                format!(
-                    "Out of the gate and onto city streets. {street}. {distance} to the \
-                     {merge_highway} on-ramp."
-                ),
+                format!("{street}. {distance} to the {merge_highway} on-ramp."),
                 opts,
             );
+            self.mark_start_cue_said();
         }
         true
+    }
+
+    /// The briefing names the street the chain starts on, so the route's own
+    /// start cue would say it a second time a moment later: "Start on 4th
+    /// Avenue Southeast." straight after "...onto city streets. Start on 4th
+    /// Avenue Southeast." (agent drives, Aberdeen and Abilene, 2026-09-23).
+    fn mark_start_cue_said(&mut self) {
+        for half in ["advance", "near"] {
+            self.trip
+                .announced_navigation
+                .insert(format!("local:start:{half}"));
+        }
     }
 
     /// End of the streets: up the on-ramp and onto the highway trip.
@@ -308,8 +510,7 @@ impl DrivingState {
         self.trip.weather = weather;
         self.departure_chain = false;
         // Coming up the ramp you are in the right lane, merging left.
-        self.lane.lane = 0;
-        self.lane.offset = 0.0;
+        self.lane.recentre(0);
         let merge_highway = self
             .trip
             .route
@@ -327,11 +528,13 @@ impl DrivingState {
         let grade = self.trip.grade_at(0.0);
         let lane_mi = acceleration_lane_mi(highway_mph, grade * 100.0);
         self.departure_ramp_mi = Some(lane_mi);
+        self.departure_merge_road_mph = highway_mph;
         let capability_mph = acceleration_lane_capability_mph(&self.trip.truck, lane_mi, grade);
         let merge_target_mph = merge_traffic_target_mph(highway_mph).max(CRUISE_MIN_MPH);
         self.departure_cruise_handoff_mph =
             (capability_mph + 0.5 >= merge_target_mph).then_some(merge_target_mph);
         self.departure_merge_recovery = false;
+        self.clock_pacing.reset_merge_recovery();
         // A real length of road is only room to build speed on if it is spent
         // at the rate a truck really covers it. The exit watch pins the lane
         // to the real clock every frame, but it has already run for this one,
@@ -384,9 +587,14 @@ impl DrivingState {
     pub fn update_departure_ramp(&mut self, ctx: &mut GameContext, moved_mi: f64) {
         let Some(left) = self.departure_ramp_mi else {
             if self.departure_merge_recovery {
-                let (limit, _) = self.trip.speed_limit_at(self.trip.position_mi);
+                // Recovered against the same road the warning named.
+                let limit = if self.departure_merge_road_mph > 0.0 {
+                    self.departure_merge_road_mph
+                } else {
+                    self.trip.speed_limit_at(self.trip.position_mi).0
+                };
                 if self.trip.truck.speed_mph() + 0.5 >= merge_traffic_target_mph(limit) {
-                    self.departure_merge_recovery = false;
+                    self.end_departure_merge_recovery("merge speed reached");
                 }
             }
             return;
@@ -399,7 +607,18 @@ impl DrivingState {
         self.departure_ramp_mi = None;
         self.departure_cruise_handoff_mph = None;
         let position = self.trip.position_mi;
-        let (limit, _) = self.trip.speed_limit_at(position);
+        // The road being JOINED, not the zone under the wheels. Read at the
+        // taper, a ramp posted below its own highway made the game measure
+        // the truck against the ramp and call a slow join "up to speed": out
+        // of Ardmore Company Yard the truck reached the taper 14 miles an
+        // hour under the road and heard the plain "Lane ending. Merge left."
+        // (departure sweep, 2026-09-20). The number a merging driver needs is
+        // the speed of the traffic they are merging with.
+        let limit = if self.departure_merge_road_mph > 0.0 {
+            self.departure_merge_road_mph
+        } else {
+            self.trip.speed_limit_at(position).0
+        };
         let speed = self.trip.truck.speed_mph();
         // Under the limit by enough to matter is the NORMAL outcome for a
         // loaded truck, so it is said as a fact about the gap you need, never
@@ -413,14 +632,21 @@ impl DrivingState {
             // on the real clock until it is close to traffic speed prevents
             // time compression from turning a slow, loaded join into a
             // sudden highway-speed transition.
-            self.departure_merge_recovery = true;
+            self.start_departure_merge_recovery(speed, limit);
             format!(
-                "Lane ending at {}, under the {} traffic is running. Take a big gap.",
+                "Lane ending at {}, traffic at {}. Take a big gap.",
                 ctx.settings.speed_text(speed),
                 ctx.settings.speed_text(limit)
             )
+        } else if self.lane_count_here() > 1 {
+            // Said as done, because it is: the truck is already in the
+            // mainline's right lane here. "Merge left" asked for a move the
+            // game had made, and a driver who obeyed it went on into the
+            // passing lane -- or, on a one-lane road, heard "No lane to your
+            // left here" (agent drives out of Aberdeen, 2026-09-23).
+            "Lane ended. In the right lane.".to_string()
         } else {
-            "Lane ending. Merge left.".to_string()
+            "Lane ended.".to_string()
         };
         ctx.audio.play_with("vehicle/signal_tone", 0.6, -0.6);
         let mut opts = SayEvent::queued().priority(EventPriority::Route);

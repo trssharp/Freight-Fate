@@ -9,19 +9,30 @@
 //! truck. Controllers keep the combined readout on D-pad right; a pad has
 //! nowhere to put three more info buttons.
 
+use ff_core::models::jobs::route_drive_hours;
 use ff_core::sim::trip_models::RoadStop;
 
 use crate::app::GameContext;
+use crate::bindings::Action;
 use crate::states::driving::DrivingState;
 use crate::states::driving_core::*;
+
+/// The arrival estimate's pace for a truck not yet moving on the highway:
+/// the same typical pace the stop list's estimate names.
+const HIGHWAY_PACE_MPH: f64 = crate::states::driving_stop_detail::FALLBACK_MPH;
+/// The same for the road into the facility. Assumed, not measured: the
+/// street-limit bake's own fallback for a street it has no statute for.
+const STREET_PACE_MPH: f64 = ff_core::data::street_limits::FALLBACK_MPH;
 
 impl DrivingState {
     /// The spoken clock is anchored to the computer when Real time is
     /// selected.  Calling that initial wall-clock reading a route timezone
     /// would be misleading when the computer is elsewhere, so name it as the
     /// game's local clock.  Accelerated modes retain the geographic label.
-    pub fn clock_zone_label(&self, ctx: &GameContext) -> &'static str {
-        if ctx.settings.time_scale == 1.0 {
+    /// It follows the pace the drive is running: a pace chosen while rolling
+    /// waits for the next stop, and so does its clock.
+    pub fn clock_zone_label(&self, _ctx: &GameContext) -> &'static str {
+        if self.trip.time_scale == 1.0 {
             "local game time"
         } else {
             self.trip.current_timezone().name
@@ -111,16 +122,39 @@ impl DrivingState {
             let remaining = ctx
                 .settings
                 .distance_text(self.trip.remaining_miles(), false);
-            ctx.say(&format!(
-                "{now} Pickup at {facility}, {remaining} to go, {hours_used:.1} hours used.{tail}"
-            ));
+            ctx.say(&format!("{now} Pickup {facility}, {remaining}.{tail}"));
             return;
         }
         let remaining = self.job.deadline_game_h - hours_used;
-        let eta = self.trip.eta_game_hours(self.trip.truck.speed_mph());
+        // On the departure chain `self.trip` is the two miles of streets to
+        // the on-ramp and the highway run sits parked in `highway_trip`, so
+        // the chain's own estimate is the streets alone: "arrival in 0.1
+        // hours" with 123 miles of interstate still to drive (agent drive,
+        // Dallas to Sherman, 2026-09-11). Add the highway at its route pace,
+        // the same walk the hours-of-service planner already does here.
+        let highway_hours = if self.departure_chain {
+            self.highway_trip.as_ref().map_or(0.0, |highway| {
+                route_drive_hours(Some(&highway.route), highway.position_mi, Some(ctx.world))
+            })
+        } else {
+            0.0
+        };
+        // Off the highway the road left is the gate's, not the frozen mainline
+        // remainder, and a truck stopped at a ramp's stop bar is not a truck
+        // doing 1 mph for the rest of the trip: "arrival in 8.6 hours at a
+        // typical highway pace" two miles from the gate (agent drive B,
+        // 2026-09-24). The fallback pace was the truck's own crawl, not the
+        // typical pace the readout names.
+        let speed = self.trip.truck.speed_mph();
+        let moving = speed >= ff_core::sim::trip::ETA_MIN_MPH;
+        let gate_mi = self.gate_distance_mi(ctx);
+        let eta = match gate_mi {
+            Some(gate) => gate / if moving { speed } else { STREET_PACE_MPH },
+            None => self.trip.eta_game_hours(HIGHWAY_PACE_MPH),
+        } + highway_hours;
         if remaining <= 0.0 {
             ctx.say(&format!(
-                "{now} {:.1} hours past the deadline. The pay is shrinking.{tail}",
+                "{now} {:.1} hours late. Pay is dropping.{tail}",
                 -remaining
             ));
             return;
@@ -136,15 +170,19 @@ impl DrivingState {
             ));
             return;
         }
-        let basis = if self.trip.truck.speed_mph() >= ff_core::sim::trip::ETA_MIN_MPH {
+        // With the highway still ahead the estimate is mostly the route's
+        // pace, whatever the streets are doing right now.
+        let basis = if moving && highway_hours == 0.0 {
             "at this pace"
+        } else if gate_mi.is_some() && highway_hours == 0.0 {
+            "at a typical street pace"
         } else {
             "at a typical highway pace"
         };
         let appointment = deadline_appointment(self, ctx);
         ctx.say(&format!(
-            "{now} {verdict}: arrival in {eta:.1} hours {basis}, deadline in {remaining:.1}, due \
-             {appointment}. {hours_used:.1} hours on the road.{tail}"
+            "{now} {verdict}. Arrival {eta:.1} hours {basis}. Deadline {remaining:.1}, due \
+             {appointment}.{tail}"
         ));
     }
 
@@ -172,7 +210,7 @@ impl DrivingState {
         }
         let left = hos::duration_text(limit.remaining_min / 60.0);
         match limit.kind {
-            "break" => format!("Break due in {left}."),
+            "break" => format!("30-minute break due in {left}."),
             "drive" => format!("Driving time left: {left}."),
             _ => format!("Duty window closes in {left}."),
         }
@@ -183,13 +221,21 @@ impl DrivingState {
     ///
     /// Muscle memory says C, so the pointer has to ride C itself. Three
     /// presses is enough to learn it and few enough not to become noise.
+    ///
+    /// The three keys are keyboard only, and a pad's clock button already
+    /// reads all three limits, so the pointer waits for the keyboard.
     pub fn hos_key_notice(&self, ctx: &mut GameContext) -> String {
         let left = profile_of(ctx).hos_key_notice_left;
-        if left <= 0 {
+        if left <= 0 || ctx.controller.device() != ff_core::input_hints::KEYBOARD {
             return String::new();
         }
         profile_mut_of(ctx).hos_key_notice_left = left - 1;
-        " Hours of service moved to Alt A, Alt S, and Alt D.".to_string()
+        format!(
+            " Hours of service moved to {}, {}, and {}.",
+            ctx.control_name(Action::HosWheel),
+            ctx.control_name(Action::HosBreak),
+            ctx.control_name(Action::HosDrive)
+        )
     }
 
     /// `_speak_hos_wheel_time()`: Alt A -- how much of this shift is already
@@ -226,44 +272,16 @@ impl DrivingState {
 
     /// `_hos_route_context()`.
     pub fn hos_route_context(&self, ctx: &GameContext) -> String {
-        let mode = &ctx.settings.hos_mode;
-        let Some(limit) = hos_of(ctx).next_limit(mode) else {
+        let Some(advice) = self.hos_stop_advice(ctx) else {
             return String::new();
         };
-        if limit.remaining_min <= 0.0 {
-            return "Next legal action is a compliant break or 10-hour reset.".to_string();
-        }
-        let legal_miles = self.legal_miles_for_hos(limit.remaining_min);
-        let next_stop = self.trip.upcoming_stop((legal_miles + 5.0).max(5.0));
-        let action = if limit.kind == "break" {
-            "break"
-        } else {
-            "sleep"
-        };
-        let Some(next_stop) = next_stop else {
-            return format!(
-                "No route stop before the next {action} limit, due in {:.1} hours. Stopped, you \
-                 can sleep on the shoulder, with poor rest and a possible parking ticket.",
-                limit.remaining_min / 60.0
-            );
-        };
-        let ahead = 0.0f64.max(next_stop.at_mi - self.trip.position_mi);
-        let verdict = if ahead <= legal_miles {
-            "before"
-        } else {
-            "after"
-        };
-        let mut stop_text = format!(
-            "Next legal stop: {}{} in {}",
-            self.trip.planned_prefix(next_stop),
-            next_stop.spoken_name(),
-            ctx.settings.distance_text(ahead, false)
-        );
-        let parking_text = next_stop.parking_text();
-        if !parking_text.is_empty() {
-            stop_text.push_str(&format!(", {parking_text}"));
-        }
-        format!("{stop_text}, {verdict} the next {action} limit.")
+        let fallback_distance = ctx.settings.distance_text(advice.ahead_mi, false);
+        let suggested_distance = advice
+            .suggested
+            .as_ref()
+            .map(|option| ctx.settings.distance_text(option.ahead_mi, false))
+            .unwrap_or_else(|| fallback_distance.clone());
+        advice.summary(&suggested_distance, &fallback_distance)
     }
 
     /// `_legal_miles_for_hos(remaining_min)`.
@@ -282,7 +300,13 @@ impl DrivingState {
             if !(0.0..=within_mi).contains(&ahead) {
                 continue;
             }
-            if !stop.actions.iter().any(|a| a == action) || stop.parking == "none" {
+            if !stop
+                .actions
+                .iter()
+                .any(|a| a == action || (action == "break" && a == "sleep"))
+                || stop.parking == "none"
+                || !stop.accessible_to(self.trip.bobtail)
+            {
                 continue;
             }
             if best.is_none_or(|b| stop.at_mi < b.at_mi) {

@@ -4,6 +4,11 @@
 
 use serde_json::{json, Map, Value};
 
+use ff_core::models::jobs::{
+    remaining_route_hos_plan, ACTIVE_TRIP_FAIRNESS_SLACK, DEADLINE_DISPATCH_MIN_SLACK_H,
+};
+use ff_core::pyfmt::round_py_n;
+use ff_core::sim::hos::limits;
 use ff_core::sim::hos::HosClock;
 
 use crate::app::GameContext;
@@ -14,7 +19,7 @@ use super::DrivingState;
 /// Bumped when the meaning of a snapshot's deadline changes. A snapshot
 /// written under an older model gets the one-time fair-deadline floor on
 /// resume; one at the current model keeps the deadline exactly as saved.
-pub const ACTIVE_TRIP_DEADLINE_MODEL: i64 = 1;
+pub const ACTIVE_TRIP_DEADLINE_MODEL: i64 = 2;
 
 fn f(data: &Map<String, Value>, key: &str, fallback: f64) -> f64 {
     data.get(key).and_then(Value::as_f64).unwrap_or(fallback)
@@ -48,6 +53,13 @@ fn strings(data: &Map<String, Value>, key: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn warning_levels(data: &Map<String, Value>, key: &str) -> Option<[u8; 3]> {
+    let items = data.get(key)?.as_array()?;
+    (items.len() == 3).then(|| {
+        std::array::from_fn(|index| items[index].as_u64().unwrap_or_default().min(2) as u8)
+    })
 }
 
 impl DrivingState {
@@ -145,7 +157,15 @@ impl DrivingState {
             "delivery"
         };
         let route_kind = if self.phase == DRIVE_PHASE_PICKUP {
-            "facility_approach"
+            // A relayed load's deadhead: a corridor into the shipper's city
+            // with its approach on the end. A plain approach names its own
+            // city and no other, however many street legs it has.
+            let first = self.route.cities.first();
+            if self.route.cities.iter().any(|city| Some(city) != first) {
+                "deadhead_approach"
+            } else {
+                "facility_approach"
+            }
         } else {
             "corridor_itinerary"
         };
@@ -172,9 +192,16 @@ impl DrivingState {
         out.insert("route_kind".to_string(), json!(route_kind));
         out.insert("navigation_schema".to_string(), json!(1));
         out.insert("trailer_refused".to_string(), json!(self.trailer_refused));
+        out.insert("trailer_repaired".to_string(), json!(self.trailer_repaired));
         out.insert("trip_seed".to_string(), json!(self.trip_seed));
         out.insert("start_hour".to_string(), json!(self.trip.start_hour));
-        out.insert("position_mi".to_string(), json!(self.trip.position_mi));
+        // On a road stop's streets the saved place is the highway's, at the
+        // stop's exit, where a ramp in progress is saved too.
+        let position_mi = match (&self.stop_chain, &self.highway_trip) {
+            (Some(_), Some(highway)) => highway.position_mi,
+            _ => self.trip.position_mi,
+        };
+        out.insert("position_mi".to_string(), json!(position_mi));
         out.insert("game_minutes".to_string(), json!(self.trip.game_minutes));
         out.insert("toll_charges".to_string(), json!(tolls));
         out.insert("start_damage".to_string(), json!(self.start_damage));
@@ -202,7 +229,13 @@ impl DrivingState {
             json!(self.out_of_service_creep_s),
         );
         out.insert("start_wear".to_string(), json!({"tire": self.start_tire_wear, "brake": self.start_brake_wear, "engine": self.start_engine_wear}));
+        out.insert(
+            "maintenance_levels".to_string(),
+            json!(self.maintenance_levels),
+        );
         out.insert("rig_buffs".to_string(), json!(self.rig_buffs));
+        out.insert("stop_visit".to_string(), json!(self.stop_visit));
+        out.insert("drove_automatic".to_string(), json!(self.drove_automatic));
         out.insert(
             "speed_control_armed".to_string(),
             json!(self.speed_control_armed),
@@ -217,6 +250,14 @@ impl DrivingState {
         );
         out.insert("engine_on".to_string(), json!(self.trip.truck.engine_on));
         out.insert("chains_on".to_string(), json!(self.trip.truck.chains_on));
+        out.insert(
+            "chain_checkpoint_hold".to_string(),
+            json!(self.chain_checkpoint_hold),
+        );
+        out.insert(
+            "chain_wear_pct".to_string(),
+            json!(self.trip.truck.chain_wear_pct),
+        );
         out.insert("hos".to_string(), json!(hos_of(ctx).to_dict()));
         out.insert("fatigue".to_string(), json!(profile_of(ctx).fatigue));
         out.insert("hos_fine_count".to_string(), json!(self.hos_fine_count));
@@ -253,12 +294,20 @@ impl DrivingState {
         out.insert("surface_chain".to_string(), json!(self.surface_chain));
         out.insert("departure_chain".to_string(), json!(self.departure_chain));
         out.insert(
+            "facility_streets".to_string(),
+            json!(self.facility_streets_on),
+        );
+        out.insert(
             "planned_stop_key".to_string(),
             json!(self.trip.planned_stop_key),
         );
         out.insert(
             "selected_stop_key".to_string(),
             json!(self.selected_stop_key),
+        );
+        out.insert(
+            "selected_stop_break".to_string(),
+            json!(self.selected_stop_break),
         );
         // Kept for a save opened by an older build, which knows only the name.
         out.insert(
@@ -282,13 +331,35 @@ impl DrivingState {
         } else {
             DRIVE_PHASE_DELIVERY
         };
+        // The Facility streets setting the drive started under; a save from
+        // before the setting was driven on the streets.
+        let facility_streets = b(data, "facility_streets", true);
         let route = if phase == DRIVE_PHASE_PICKUP {
             let origin = job_payload_data.get("origin").and_then(Value::as_str)?;
             let location = job_payload_data
                 .get("origin_location")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            ctx.world.facility_approach_route(origin, location).ok()?
+            let approach = ctx
+                .world
+                .facility_approach_route_with(origin, location, facility_streets)
+                .ok();
+            if s(data, "route_kind") == "deadhead_approach" {
+                // A relayed load: the corridor the save names, then the
+                // shipper's approach rebuilt fresh, joined as it was driven.
+                // The approach's own duplicated end city comes off first.
+                let mut cities = strings(data, "route_cities");
+                while cities.len() > 2 && cities.last() == cities.get(cities.len() - 2) {
+                    cities.pop();
+                }
+                let corridor = ctx.world.route_from_cities(&cities)?;
+                match approach {
+                    Some(approach) => corridor.then(&approach),
+                    None => corridor,
+                }
+            } else {
+                approach?
+            }
         } else {
             let cities = strings(data, "route_cities");
             ctx.world.route_from_cities(&cities)?
@@ -304,7 +375,8 @@ impl DrivingState {
         // saving at a stop and continuing. Snapshots now carry the deadline
         // model they were written under, so the floor is applied once to a
         // save that predates the marker and never again.
-        if i(data, "deadline_model", 0) < ACTIVE_TRIP_DEADLINE_MODEL {
+        let deadline_model = i(data, "deadline_model", 0);
+        if deadline_model < 1 {
             job.deadline_game_h = fair_active_deadline(
                 &job,
                 &route,
@@ -312,6 +384,30 @@ impl DrivingState {
                 position_mi,
                 Some(ctx.world),
             );
+        }
+        // Version 1 snapshots predate the loaded-departure HOS reconciliation.
+        // Repair only a still-on-time delivery whose remaining legal route
+        // requires sleep and will overrun its saved deadline. This runs once;
+        // the resume owner persists the new marker immediately.
+        if deadline_model < ACTIVE_TRIP_DEADLINE_MODEL
+            && phase == DRIVE_PHASE_DELIVERY
+            && limits(&ctx.settings.hos_mode).is_some()
+        {
+            if let Some(clock) = ctx.profile.as_ref().map(|p| &p.hos) {
+                let hours_used = game_minutes / 60.0;
+                let hours_left = job.deadline_game_h - hours_used;
+                if hours_left > 0.0 {
+                    let legal =
+                        remaining_route_hos_plan(&route, position_mi, Some(ctx.world), clock);
+                    if legal.sleeps > 0 && legal.total_h() > hours_left {
+                        let floor = hours_used
+                            + legal.total_h() * ACTIVE_TRIP_FAIRNESS_SLACK
+                            + DEADLINE_DISPATCH_MIN_SLACK_H;
+                        job.deadline_game_h = round_py_n(job.deadline_game_h.max(floor), 1);
+                        job.deadline_covers_rest = true;
+                    }
+                }
+            }
         }
 
         let trip_seed = data.get("trip_seed").and_then(Value::as_i64)?;
@@ -332,6 +428,7 @@ impl DrivingState {
             profile_mut_of(ctx).sync_calendar_hour_to(local_start);
         }
         state.resumed = true;
+        state.facility_streets_on = facility_streets;
         state.start_damage = f(data, "start_damage", state.start_damage);
         // A save from before the damage bands carries neither key: derive
         // the announced band from the damage it does carry, so a resumed
@@ -353,14 +450,30 @@ impl DrivingState {
         state.start_tire_wear = f(&start_wear, "tire", state.trip.truck.tire_wear_pct);
         state.start_brake_wear = f(&start_wear, "brake", state.trip.truck.brake_wear_pct);
         state.start_engine_wear = f(&start_wear, "engine", state.trip.truck.engine_wear_pct);
+        state.maintenance_levels = warning_levels(data, "maintenance_levels")
+            .unwrap_or_else(|| state.maintenance_wear_levels());
         // Chains stay on the drives across a save; absent on older saves.
         state.trip.truck.chains_on = b(data, "chains_on", false);
+        state.chain_checkpoint_hold = b(data, "chain_checkpoint_hold", false);
+        // The chain meter rides with the drive: the profile only catches up
+        // at a stop, so a set that snapped (or wore) since then came back as
+        // it was at the last stop. An older save keeps the profile's value.
+        state.trip.truck.chain_wear_pct =
+            f(data, "chain_wear_pct", state.trip.truck.chain_wear_pct);
         state.trailer_refused = b(data, "trailer_refused", false);
+        state.trailer_repaired = b(data, "trailer_repaired", false);
         state.rig_buffs = data
             .get("rig_buffs")
             .cloned()
             .and_then(|value| serde_json::from_value::<RigBuffs>(value).ok())
             .unwrap_or_default();
+        // Parked at a stop through a save: the fuel still pays for the shower.
+        state.stop_visit = data
+            .get("stop_visit")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default();
+        state.drove_automatic = b(data, "drove_automatic", false);
         // "speeding_strikes" was a required snapshot field until the silent
         // at-delivery speeding charge was removed. Snapshots written before
         // that still carry it; the key is simply no longer consulted.
@@ -401,6 +514,8 @@ impl DrivingState {
             (Some(selected), Some(planned)) if selected == planned => selected_key,
             _ => None,
         };
+        state.selected_stop_break =
+            state.selected_stop_key.is_some() && b(data, "selected_stop_break", false);
         let tolls: Vec<Value> = data
             .get("toll_charges")
             .and_then(Value::as_array)
@@ -441,6 +556,11 @@ impl DrivingState {
         }
         state.air_ready_said = state.trip.truck.air_ready();
         state.low_air_said = state.trip.truck.air_low_warning();
+        // Already under the line on resume: do not re-announce a cue the
+        // driver heard before the save. Above the line clears the latch.
+        state.low_fuel_said = state.trip.truck.fuel_fraction() <= LOW_FUEL_WARN_FRACTION;
+        let (range, needed, _) = state.fuel_range_need();
+        state.fuel_range_short_said = range < needed;
         state.spring_brake_said = state.trip.truck.spring_brakes_active();
         // HOS and fatigue: absent in pre-1.5 snapshots, defaulting to a
         // fresh clock and a rested driver.

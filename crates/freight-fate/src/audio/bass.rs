@@ -16,7 +16,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -25,13 +25,14 @@ use bass_sys::{
     BASS_ACTIVE_PLAYING, BASS_ATTRIB_FREQ, BASS_ATTRIB_PAN, BASS_ATTRIB_VOL,
     BASS_CONFIG_DEV_DEFAULT, BASS_CONFIG_NET_BUFFER, BASS_CONFIG_NET_PREBUF,
     BASS_CONFIG_NET_READTIMEOUT, BASS_CONFIG_NET_TIMEOUT, BASS_DEFAULT_DEVICE, BASS_ERROR_ALREADY,
+    BASS_MUSIC_PRESCAN, BASS_MUSIC_RAMPS, BASS_MUSIC_SINCINTER, BASS_MUSIC_STOPBACK,
     BASS_STREAM_AUTOFREE,
 };
 use ff_core::audio_fades::FadeScheduler;
 use ff_core::audio_loops::SustainLoopSpec;
 use ff_core::pyrandom::PyRandom;
 
-use super::assets::{playback_bytes, plugin_lib_dir, SFX_EXTENSIONS};
+use super::assets::{playback_bytes, plugin_lib_dir, MODULE_EXTENSIONS, SFX_EXTENSIONS};
 use super::backend::{loop_category, one_shot_category, AudioBackend, Buses, VolumeUpdate};
 use super::bass_radio::{PendingRadioStart, RadioShared};
 use super::sustain::SustainLoop;
@@ -64,7 +65,9 @@ pub(super) fn slide(handle: u32, attrib: u32, value: f64, ms: u32) -> Result<(),
 
 /// The BASSHLS plugin file name on this platform.
 fn bass_hls_plugin_name() -> &'static str {
-    if cfg!(windows) {
+    if cfg!(target_os = "ios") {
+        "basshls.framework"
+    } else if cfg!(windows) {
         "basshls.dll"
     } else if cfg!(target_os = "macos") {
         "libbasshls.dylib"
@@ -185,10 +188,7 @@ impl BassBackend {
         if !bass_sys::native_available() {
             return Err(BassError::NOT_LOADED);
         }
-        let _ = safe::set_config(BASS_CONFIG_NET_TIMEOUT, RADIO_CONNECT_TIMEOUT_MS);
-        let _ = safe::set_config(BASS_CONFIG_NET_READTIMEOUT, RADIO_READ_TIMEOUT_MS);
-        let _ = safe::set_config(BASS_CONFIG_NET_BUFFER, RADIO_NET_BUFFER_MS);
-        let _ = safe::set_config(BASS_CONFIG_NET_PREBUF, RADIO_NET_PREBUF_PERCENT);
+        Self::configure_net();
         if Self::headless_requested() {
             Self::init_device(BASS_NO_SOUND_DEVICE)?;
             return Ok(false); // asked-for silence is not a fallback
@@ -200,6 +200,23 @@ impl BassBackend {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// The radio's network settings, and the name a station's server sees
+    /// for a listener: Freight Fate and its version, not BASS's own
+    /// "BASS/2.4". BASS keeps the agent string for the life of the process,
+    /// so it is handed over once however many engines come up.
+    fn configure_net() {
+        let _ = safe::set_config(BASS_CONFIG_NET_TIMEOUT, RADIO_CONNECT_TIMEOUT_MS);
+        let _ = safe::set_config(BASS_CONFIG_NET_READTIMEOUT, RADIO_READ_TIMEOUT_MS);
+        let _ = safe::set_config(BASS_CONFIG_NET_BUFFER, RADIO_NET_BUFFER_MS);
+        let _ = safe::set_config(BASS_CONFIG_NET_PREBUF, RADIO_NET_PREBUF_PERCENT);
+        static AGENT: Once = Once::new();
+        AGENT.call_once(|| {
+            if let Err(err) = safe::set_net_agent(&radio_user_agent()) {
+                log::warn!("Radio user agent not set ({err}); stations see BASS's default");
+            }
+        });
     }
 
     pub(super) fn headless_requested() -> bool {
@@ -222,10 +239,7 @@ impl BassBackend {
         if !bass_sys::native_available() {
             return Err(BassError::NOT_LOADED);
         }
-        let _ = safe::set_config(BASS_CONFIG_NET_TIMEOUT, RADIO_CONNECT_TIMEOUT_MS);
-        let _ = safe::set_config(BASS_CONFIG_NET_READTIMEOUT, RADIO_READ_TIMEOUT_MS);
-        let _ = safe::set_config(BASS_CONFIG_NET_BUFFER, RADIO_NET_BUFFER_MS);
-        let _ = safe::set_config(BASS_CONFIG_NET_PREBUF, RADIO_NET_PREBUF_PERCENT);
+        Self::configure_net();
         if no_sound {
             Self::init_device(BASS_NO_SOUND_DEVICE)?;
         } else {
@@ -352,14 +366,30 @@ impl BassBackend {
     /// Memory streams sidestep BASS filename-encoding quirks entirely and
     /// work identically for packed and loose assets. BASS reads the buffer
     /// during playback; the `Stream` pins it for exactly as long as the
-    /// stream lives.
+    /// stream lives. A tracker module (`ext` in [`MODULE_EXTENSIONS`]) loads
+    /// as BASS music instead; `BASS_MUSIC_AUTOFREE` is the same bit.
     pub(super) fn make_stream(
         &self,
         data: Arc<[u8]>,
+        ext: &str,
         label: &str,
         looping: bool,
     ) -> Option<Stream> {
-        let stream = match safe::stream_create_mem_shared(data, BASS_STREAM_AUTOFREE) {
+        let opened = if MODULE_EXTENSIONS
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case(ext))
+        {
+            let mut flags = BASS_MUSIC_RAMPS | BASS_MUSIC_SINCINTER | BASS_MUSIC_PRESCAN;
+            // A one-shot module must end so a playlist can advance: many
+            // modules loop back to the start with a `Bxx` jump forever.
+            if !looping {
+                flags |= BASS_MUSIC_STOPBACK;
+            }
+            safe::music_load_mem_shared(data, flags | BASS_STREAM_AUTOFREE)
+        } else {
+            safe::stream_create_mem_shared(data, BASS_STREAM_AUTOFREE)
+        };
+        let stream = match opened {
             Ok(stream) => stream,
             Err(err) => {
                 log::warn!("Could not open stream: {label} ({err})");
@@ -381,11 +411,11 @@ impl BassBackend {
                 return None;
             }
         }
-        let Some((data, _ext)) = playback_bytes(key, SFX_EXTENSIONS) else {
+        let Some((data, ext)) = playback_bytes(key, SFX_EXTENSIONS) else {
             log::warn!("Missing sound: {key}");
             return None;
         };
-        self.make_stream(data, key, looping)
+        self.make_stream(data, &ext, key, looping)
     }
 
     /// Keep a stream alive until BASS finishes with it.
@@ -426,6 +456,7 @@ impl BassBackend {
         self.exclusive_cues
             .retain(|_, stream| is_playing(stream.handle()));
         if self.exclusive_cues.contains_key(key) {
+            self.update_cue(key, volume, pan);
             return;
         }
         if let Some(stream) = self.start_one_shot(key, volume, pan) {
@@ -509,6 +540,32 @@ impl BassBackend {
             BASS_ATTRIB_PAN,
             pan.clamp(-1.0, 1.0) as f32,
         );
+    }
+
+    /// Re-pitch a running loop to `rate` times its recorded speed.
+    ///
+    /// The recording's own sample rate is read once and remembered on the
+    /// entry (the road loop does the same), so every later call is one
+    /// attribute slide. A short slide rather than a snap: the jake growl
+    /// calls this every frame on a descent, and stepped frequency jumps on
+    /// a sustained tone are audible as zipper noise.
+    pub(super) fn set_loop_rate(&mut self, channel: u32, rate: f64) {
+        let Some(entry) = self.loops.get_mut(&channel) else {
+            return;
+        };
+        let handle = entry.stream.handle();
+        let base_freq = match entry.base_freq {
+            Some(base) => base,
+            None => match get_frequency(handle) {
+                Ok(base) => {
+                    entry.base_freq = Some(base);
+                    base
+                }
+                Err(_) => return,
+            },
+        };
+        // A dying stream drops its pitch silently; the volume path logs.
+        let _ = slide(handle, BASS_ATTRIB_FREQ, base_freq * rate.max(0.05), 120);
     }
 
     pub(super) fn stop_loop(&mut self, channel: u32, fade_ms: u32) {
@@ -868,158 +925,28 @@ impl BassBackend {
     }
 }
 
-impl AudioBackend for BassBackend {
-    fn name(&self) -> &'static str {
-        "bass"
-    }
+#[path = "bass_backend.rs"]
+mod backend_impl;
 
-    fn enabled(&self) -> bool {
-        self.enabled
-    }
+/// What a radio station's server sees as the listener's player.
+pub(crate) fn radio_user_agent() -> String {
+    format!(
+        "FreightFate/{} (+https://orinks.net/freight-fate)",
+        crate::app::version()
+    )
+}
 
-    fn buses(&self) -> &Buses {
-        &self.buses
-    }
+#[cfg(test)]
+mod tests {
+    use super::radio_user_agent;
 
-    fn buses_mut(&mut self) -> &mut Buses {
-        &mut self.buses
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-
-    fn play_if_idle(&mut self, key: &str, volume: f64, pan: f64) {
-        BassBackend::play_if_idle(self, key, volume, pan);
-    }
-
-    fn play(&mut self, key: &str, volume: f64, pan: f64) {
-        BassBackend::play(self, key, volume, pan);
-    }
-
-    fn start_loop(&mut self, channel: u32, key: &str, volume: f64, fade_ms: u32) {
-        BassBackend::start_loop(self, channel, key, volume, fade_ms);
-    }
-
-    fn set_loop_volume(&mut self, channel: u32, volume: f64) {
-        BassBackend::set_loop_volume(self, channel, volume);
-    }
-
-    fn set_loop_pan(&mut self, channel: u32, pan: f64) {
-        BassBackend::set_loop_pan(self, channel, pan);
-    }
-
-    fn stop_loop(&mut self, channel: u32, fade_ms: u32) {
-        BassBackend::stop_loop(self, channel, fade_ms);
-    }
-
-    fn loop_entry(&self, channel: u32) -> Option<(String, f64)> {
-        self.loops
-            .get(&channel)
-            .map(|entry| (entry.key.clone(), entry.gain))
-    }
-
-    fn start_sustain_loop(&mut self, channel: u32, key: &str, spec: SustainLoopSpec, volume: f64) {
-        BassBackend::start_sustain_loop(self, channel, key, spec, volume);
-    }
-
-    fn release_sustain_loop(&mut self, channel: u32, fade_ms: u32) {
-        BassBackend::release_sustain_loop(self, channel, fade_ms);
-    }
-
-    fn engine_start(&mut self, play_start_sound: bool) {
-        BassBackend::engine_start(self, play_start_sound);
-    }
-
-    fn engine_stop(&mut self, shutdown_sound: bool) {
-        BassBackend::engine_stop(self, shutdown_sound);
-    }
-
-    fn set_engine_pan(&mut self, pan: f64) {
-        BassBackend::set_engine_pan(self, pan);
-    }
-
-    fn set_engine_rpm(&mut self, rpm: f64, throttle: f64) {
-        BassBackend::set_engine_rpm(self, rpm, throttle);
-    }
-
-    fn set_engine_duck(&mut self, duck: f64) {
-        BassBackend::set_engine_duck(self, duck);
-    }
-
-    fn set_road_noise(&mut self, speed_mps: f64) {
-        BassBackend::set_road_noise(self, speed_mps);
-    }
-
-    fn update(&mut self, dt: f64) {
-        BassBackend::update(self, dt);
-    }
-
-    fn reverse_start(&mut self) {
-        BassBackend::reverse_start(self);
-    }
-
-    fn reverse_stop(&mut self) {
-        BassBackend::reverse_stop(self);
-    }
-
-    fn engine_running(&self) -> bool {
-        self.engine_running
-    }
-
-    fn engine_starting(&self) -> bool {
-        self.engine_starting.get()
-    }
-
-    fn engine_voice_classic(&self) -> Option<bool> {
-        Some(self.engine_voice_classic)
-    }
-
-    fn set_engine_voice_classic(&mut self, classic: bool) {
-        self.engine_voice_classic = classic;
-    }
-
-    fn engine_last_rpm_throttle(&self) -> (f64, f64) {
-        (self.engine_last_rpm, self.engine_last_throttle)
-    }
-
-    fn play_music(&mut self, track: &str, fade_ms: u32) {
-        BassBackend::play_music(self, track, fade_ms);
-    }
-
-    fn play_music_at(&mut self, track: &str, fade_ms: u32, start_s: f64) {
-        BassBackend::play_music_at(self, track, fade_ms, start_s);
-    }
-
-    fn play_radio_stream(&mut self, url: &str, fade_ms: u32) -> Result<(), AudioError> {
-        BassBackend::play_radio_stream(self, url, fade_ms)
-    }
-
-    fn radio_now_playing(&self) -> Option<String> {
-        BassBackend::radio_now_playing(self)
-    }
-
-    fn play_music_file(&mut self, path: &str, fade_ms: u32) -> Result<(), AudioError> {
-        BassBackend::play_music_file(self, path, fade_ms)
-    }
-
-    fn music_playing(&self) -> bool {
-        BassBackend::music_playing(self)
-    }
-
-    fn stop_music(&mut self, fade_ms: u32) {
-        BassBackend::stop_music(self, fade_ms);
-    }
-
-    fn set_volumes(&mut self, volumes: &VolumeUpdate) {
-        BassBackend::set_volumes(self, volumes);
-    }
-
-    fn shutdown(&mut self) {
-        BassBackend::shutdown(self);
+    #[test]
+    fn stations_see_freight_fate_and_its_version() {
+        let agent = radio_user_agent();
+        assert!(
+            agent.starts_with(&format!("FreightFate/{} ", crate::app::version())),
+            "{agent}"
+        );
+        assert!(!agent.contains("BASS"), "{agent}");
     }
 }

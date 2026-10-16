@@ -104,6 +104,35 @@ fn test_seeding_carries_careers_but_never_the_identity() {
     assert!(sandbox::audit(&sandbox).is_empty());
 }
 
+/// The agent's online session reaches staging with a driver of its own. The
+/// retired `--online` mode copied the real `online.json` in; a source build
+/// then handed anyone an agent that backed up to production as themselves.
+#[test]
+fn test_the_staging_session_takes_no_identity_and_talks_only_to_staging() {
+    let _guard = sandbox_env();
+    let previous_url = std::env::var_os("FREIGHT_FATE_ONLINE_URL");
+    let root = TempDir::new("ff-sandbox");
+    let source = fake_real_saves(root.path());
+    let staging = root.path().join("staging");
+
+    sandbox::prepare_staging(&staging, false, &source).unwrap();
+    let url = freight_fate::online_presence::base_url();
+    match previous_url {
+        Some(old) => std::env::set_var("FREIGHT_FATE_ONLINE_URL", old),
+        None => std::env::remove_var("FREIGHT_FATE_ONLINE_URL"),
+    }
+
+    assert_eq!(url, sandbox::STAGING_URL);
+    assert!(!staging.join("online.json").exists());
+    assert!(!staging.join("online.token").exists());
+    assert!(!staging.join("cloud_saves.json").exists());
+    assert!(!staging.join("profiles").exists());
+    assert_eq!(
+        read_settings(&staging.join("settings.json"))["cloud_saves"],
+        true
+    );
+}
+
 #[test]
 fn test_the_seeded_settings_have_every_publishing_switch_off() {
     let _guard = sandbox_env();
@@ -117,6 +146,22 @@ fn test_the_seeded_settings_have_every_publishing_switch_off() {
     for key in sandbox::OFFLINE_SETTINGS {
         assert_eq!(settings.get(key), Some(&Value::Bool(false)), "{key}");
     }
+    // The live-data feeds carry no identity and are what a sandbox drive is
+    // there to hear, so they are on whatever the real settings said, and a
+    // later prepare puts them back on if a session turned one off.
+    for key in sandbox::LIVE_SETTINGS {
+        assert_eq!(settings.get(key), Some(&Value::Bool(true)), "{key}");
+    }
+    let mut flipped = settings.clone();
+    flipped.insert("real_traffic".to_string(), Value::Bool(false));
+    std::fs::write(
+        sandbox.join("settings.json"),
+        serde_json::to_string_pretty(&Value::Object(flipped)).unwrap(),
+    )
+    .unwrap();
+    sandbox::prepare(&sandbox, false, true, &source).unwrap();
+    let settings = read_settings(&sandbox.join("settings.json"));
+    assert_eq!(settings.get("real_traffic"), Some(&Value::Bool(true)));
     // Everything else is copied through, because the point of seeding real
     // settings is that the drive reproduces what a player would get.
     assert_eq!(

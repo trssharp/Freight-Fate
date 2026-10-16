@@ -180,73 +180,13 @@ fn test_ledger_write_failure_keeps_career_award_but_suppresses_public_event() {
 }
 
 #[test]
-fn test_arrival_uses_account_new_achievements_for_mastodon_reasons() {
-    // Separate outboxes prove the account ledger, rather than an outbox's
-    // event-id dedupe, controls which career achievements can be public.
+fn test_ledger_write_failure_still_announces_the_arrival_award() {
     let mut app = TestApp::new();
-    let first_mastodon = offline_journal(&app.data_dir.path().join("first-mastodon.json"));
-    app.ctx.services.mastodon = first_mastodon.clone();
-    app.ctx.profile = Some(Profile::named_in("First Mastodon Career", "Chicago"));
-    let first_path = app.ctx.profile.as_ref().expect("a career").path();
-    let first_job = an_unlocked_job(&app, 0);
-    let mut first_drive = a_finished_delivery(&mut app, first_job);
-
-    ArrivalState::new(&mut app.ctx, &mut first_drive);
-
-    let second_mastodon = offline_journal(&app.data_dir.path().join("second-mastodon.json"));
-    app.ctx.services.mastodon = second_mastodon.clone();
-    app.ctx.profile = Some(Profile::named_in("Second Mastodon Career", "Chicago"));
-    let second_path = app.ctx.profile.as_ref().expect("a career").path();
-    let second_job = an_unlocked_job(&app, 0);
-    let mut second_drive = a_finished_delivery(&mut app, second_job);
-
-    ArrivalState::new(&mut app.ctx, &mut second_drive);
-
-    let mut achievement_reasons = Vec::new();
-    for item in first_mastodon
-        .items()
-        .iter()
-        .chain(second_mastodon.items().iter())
-    {
-        for reason in item.payload["payload"]["reasons"]
-            .as_array()
-            .expect("Mastodon reasons")
-        {
-            if reason["type"] == "achievements" {
-                achievement_reasons.push(reason.clone());
-            }
-        }
-    }
-    let first_delivery_mentions = achievement_reasons
-        .iter()
-        .filter(|reason| {
-            reason["names"]
-                .as_array()
-                .is_some_and(|names| names.iter().any(|name| name == "Signed, Sealed, Hauled"))
-        })
-        .count();
-    assert_eq!(first_delivery_mentions, 1);
-    assert!(Profile::load(&first_path)
-        .unwrap()
-        .achievements
-        .iter()
-        .any(|id| id == "first_delivery"));
-    assert!(Profile::load(&second_path)
-        .unwrap()
-        .achievements
-        .iter()
-        .any(|id| id == "first_delivery"));
-}
-
-#[test]
-fn test_ledger_write_failure_keeps_arrival_award_out_of_mastodon() {
-    let mut app = TestApp::new();
-    app.ctx.services.mastodon = offline_journal(&app.data_dir.path().join("mastodon.json"));
     let blocked_data_dir = app.data_dir.path().join("blocked-data-dir");
     std::fs::write(&blocked_data_dir, b"a file, not a directory").unwrap();
     app.ctx.account_achievements =
         freight_fate::account_achievements::AccountAchievements::empty(&blocked_data_dir);
-    app.ctx.profile = Some(Profile::named_in("Mastodon Ledger Failure", "Chicago"));
+    app.ctx.profile = Some(Profile::named_in("Ledger Failure", "Chicago"));
     let job = an_unlocked_job(&app, 0);
     let mut driving = a_finished_delivery(&mut app, job);
 
@@ -261,7 +201,6 @@ fn test_ledger_write_failure_keeps_arrival_award_out_of_mastodon() {
         "{:?}",
         arrival.summary_parts
     );
-    assert!(app.ctx.services.mastodon.items().is_empty());
 }
 
 #[test]
@@ -689,6 +628,36 @@ fn test_the_number_that_means_nothing_takes_a_whole_mile() {
 }
 
 #[test]
+fn test_the_old_national_limit_takes_a_whole_mile_too() {
+    // The double nickel, held rather than passed through, same as its
+    // sibling above -- and it must not fall out of ordinary highway driving,
+    // which is the whole risk with a number this close to a posted limit.
+    let mut app = TestApp::new();
+    let mut d = a_drive_for_badges(&mut app);
+
+    for speed in [45.0, 55.0, 65.0, 55.0] {
+        d.trip.truck.velocity_mps = speed / 2.23694;
+        d.track_driving_badges(&mut app.ctx, 1.0 / 60.0);
+    }
+    assert!(!earned(&app, "fifty_five_mph"));
+
+    // Most of a mile is not a mile.
+    for _ in 0..(40 * 60) {
+        d.trip.truck.velocity_mps = 55.0 / 2.23694;
+        d.track_driving_badges(&mut app.ctx, 1.0 / 60.0);
+    }
+    assert!(!earned(&app, "fifty_five_mph"));
+
+    for _ in 0..(40 * 60) {
+        d.trip.truck.velocity_mps = 55.0 / 2.23694;
+        d.track_driving_badges(&mut app.ctx, 1.0 / 60.0);
+    }
+    assert!(earned(&app, "fifty_five_mph"));
+    // And the other held number stayed where it was.
+    assert!(!earned(&app, "sixty_nine_mph"));
+}
+
+#[test]
 fn test_eighty_eight_miles_an_hour_is_noticed() {
     let mut app = TestApp::new();
     let mut d = a_drive_for_badges(&mut app);
@@ -933,4 +902,126 @@ fn test_category_with_nothing_earned_still_reads_naturally() {
             "{rows:?}"
         );
     }
+}
+
+/// Every badge in the catalog is either awarded somewhere in the shipping
+/// code or listed below as deliberately retired.
+///
+/// Found by audit on 2026-09-20: `thrifty_run` and `coffee_regular` had never
+/// been awardable in either runtime -- no award site, no test, no retirement
+/// note, from the day they were written. Nothing caught it, because nothing
+/// was looking. This looks.
+///
+/// It reads the source rather than playing the game, so it proves reachability
+/// and not correctness: a badge can be wired here and still fire at the wrong
+/// moment. What it does catch is the failure that has actually happened --
+/// copy written for a badge nobody wired up.
+#[test]
+fn test_every_badge_is_awarded_somewhere_or_named_as_retired() {
+    use std::collections::BTreeSet;
+    use std::fs;
+    use std::path::Path;
+
+    // Merged into "first_day" at the pickup, by design; their catalog rows
+    // stay so the cloud validator's allow-list never sees a removed id.
+    const RETIRED: [&str; 3] = ["first_dispatch", "first_pickup", "air_ready"];
+
+    fn sources(dir: &Path, out: &mut String) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if path.is_dir() {
+                if name != "tests" && name != "playtest" {
+                    sources(&path, out);
+                }
+            } else if name.ends_with(".rs") && name != "catalog.rs" && name != "tests.rs" {
+                out.push_str(&fs::read_to_string(&path).unwrap_or_default());
+            }
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crates/");
+    let mut code = String::new();
+    sources(&root.join("ff-core/src"), &mut code);
+    sources(&root.join("freight-fate/src"), &mut code);
+    // Comments name retired ids in prose; strip them so a note is not a wire.
+    let code: String = code
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let retired: BTreeSet<&str> = RETIRED.into_iter().collect();
+    let unwired: Vec<&str> = ff_core::achievements::ACHIEVEMENTS
+        .iter()
+        .map(|a| a.id)
+        .filter(|id| !retired.contains(id) && !code.contains(&format!("\"{id}\"")))
+        .collect();
+    assert!(
+        unwired.is_empty(),
+        "these badges have copy but no way to earn them: {unwired:?}"
+    );
+
+    // And a retired badge must stay retired. Here the question is narrower --
+    // is it AWARDED -- because a bare mention is not a wire: the training
+    // stage enum spells "first_dispatch" as its own stage id, which is a name
+    // collision and not a badge.
+    let revived: Vec<&str> = RETIRED
+        .into_iter()
+        .filter(|id| {
+            code.contains(&format!("award_achievement(\"{id}\")"))
+                || code.contains(&format!("push(&mut ids, \"{id}\")"))
+        })
+        .collect();
+    assert!(
+        revived.is_empty(),
+        "retired badges are wired again: {revived:?}"
+    );
+}
+
+/// Eight miles to the gallon over the whole run earns the badge, and a
+/// thirstier run does not. Unearnable until 2026-09-20: the copy had been in
+/// the catalog from the start with no award site anywhere.
+#[test]
+fn test_a_light_footed_run_earns_its_mileage_badge() {
+    let mut app = TestApp::new();
+    app.ctx.profile = Some(Profile::named("Sipper"));
+    let job = an_unlocked_job(&app, 0);
+    let mut driving = a_finished_delivery(&mut app, job);
+
+    // 400 miles on 40 gallons is ten to the gallon.
+    driving.trip.position_mi = 400.0;
+    driving.trip.fuel_used_gal = 40.0;
+    ArrivalState::new(&mut app.ctx, &mut driving);
+    assert!(earned(&app, "thrifty_run"));
+    drop(app);
+
+    let mut app = TestApp::new();
+    app.ctx.profile = Some(Profile::named("Heavy Foot"));
+    let job = an_unlocked_job(&app, 0);
+    let mut driving = a_finished_delivery(&mut app, job);
+    // The same 400 miles on 80 gallons is five, which the model calls normal.
+    driving.trip.position_mi = 400.0;
+    driving.trip.fuel_used_gal = 80.0;
+    ArrivalState::new(&mut app.ctx, &mut driving);
+    assert!(!earned(&app, "thrifty_run"));
+}
+
+/// A run that burned nothing cannot claim the mileage badge: a resumed trip
+/// starts its fuel tally at zero, and zero gallons is not infinite mileage.
+#[test]
+fn test_a_run_with_no_fuel_burned_claims_no_mileage() {
+    let mut app = TestApp::new();
+    app.ctx.profile = Some(Profile::named("No Burn"));
+    let job = an_unlocked_job(&app, 0);
+    let mut driving = a_finished_delivery(&mut app, job);
+    driving.trip.position_mi = 400.0;
+    driving.trip.fuel_used_gal = 0.0;
+    ArrivalState::new(&mut app.ctx, &mut driving);
+    assert!(!earned(&app, "thrifty_run"));
 }

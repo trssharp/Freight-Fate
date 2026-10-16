@@ -4,13 +4,17 @@
 //! instead of a browsable folder: `freight_fate/music.pak` carries every entry
 //! under `music/`, `freight_fate/sounds.pak` carries everything else. The
 //! split keeps the small (tens-of-MB) gameplay SFX library out of the much
-//! larger (several-hundred-MB) music payload, so an LFS pull for a sound-only
-//! change does not drag the whole music library with it. Each pack is a
+//! larger (several-hundred-MB) music payload, so a sound-only change does not
+//! drag the whole music library with it. Each pack is a
 //! deflated zip XOR-masked with a fixed key, so renaming one does not turn it
 //! back into an openable archive; this deters casual editing, nothing more.
-//! Career 1.9 source checkouts receive the encrypted packs through Git LFS.
-//! Tests can explicitly disable the default packs and exercise the loose-file
+//! In a source checkout `assets/sounds.pak` is an ordinary committed file and
+//! `assets/music.pak` is downloaded by `tools/build_release.py`. Tests can explicitly disable the default packs and exercise the loose-file
 //! fallback.
+//!
+//! A third pack, `channel3000.pak`, carries Channel 3000's clips under
+//! `c3k/`. It is never read into memory or opened at startup: see
+//! [`streamed`], which opens it on the first `c3k/` lookup.
 //!
 //! `tools/pack_sounds.py` writes both packs; the audio engine reads them
 //! through [`open_default`], which returns one object that routes a lookup to
@@ -32,6 +36,9 @@ use std::sync::{Arc, Mutex};
 
 use once_cell::sync::Lazy;
 use zip::write::SimpleFileOptions;
+
+mod streamed;
+pub use streamed::{channel3000_pack_available, LazyPack, StreamedPack};
 use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter};
 
 pub const PACK_MAGIC: &[u8; 6] = b"FFPK1\0";
@@ -45,10 +52,9 @@ pub const DEFAULT_MUSIC_PACK_NAME: &str = "music.pak";
 /// unmaterialised pack as present, so a test guarded with "if the file is not
 /// there, skip" never skips and asserts against 130 bytes of text instead.
 ///
-/// CI checks out without LFS deliberately: music.pak is 250 MB and sounds.pak
-/// 7.5 MB, and fetching both on every push exhausted the repository's LFS
-/// budget (see `.github/workflows/rust.yml`, and `ci.yml` for the Python
-/// side). A pointer here is the ordinary case on a runner, not a fault.
+/// The packs no longer live in Git LFS, but a checkout made while they did
+/// can still hold a pointer where `assets/sounds.pak` should be, so the
+/// guard stays.
 pub const LFS_POINTER_MAGIC: &[u8] = b"version https://git-lfs";
 
 /// Whether `path` is a Git LFS pointer standing in for the real file.
@@ -300,7 +306,12 @@ impl SoundPack {
     }
 }
 
-/// Routes a lookup between the sounds pack and the music pack by name.
+/// Routes a lookup between the sounds pack, the music pack and Channel
+/// 3000's pack by name.
+///
+/// `c3k/...` names go to Channel 3000's [`LazyPack`], which opens its file
+/// on the first such lookup and never otherwise; [`CombinedPack::names`]
+/// leaves it out for the same reason.
 ///
 /// Offers the read-only slice of [`SoundPack`] (`names`/`has`/`read`) so a
 /// caller that got a single pack back before keeps working unchanged: a
@@ -312,11 +323,26 @@ impl SoundPack {
 pub struct CombinedPack {
     sounds: Option<Arc<SoundPack>>,
     music: Option<Arc<SoundPack>>,
+    channel3000: Option<Arc<LazyPack>>,
 }
 
 impl CombinedPack {
     pub fn new(sounds: Option<Arc<SoundPack>>, music: Option<Arc<SoundPack>>) -> Self {
-        Self { sounds, music }
+        Self {
+            sounds,
+            music,
+            channel3000: None,
+        }
+    }
+
+    /// Route `c3k/` names to `pack`, unopened until one is asked for.
+    pub fn with_channel3000(mut self, pack: Arc<LazyPack>) -> Self {
+        self.channel3000 = Some(pack);
+        self
+    }
+
+    fn is_channel3000(name: &str) -> bool {
+        name.starts_with(crate::channel3000::CLIP_KEY_PREFIX)
     }
 
     fn pack_for(&self, name: &str) -> Option<&SoundPack> {
@@ -336,10 +362,16 @@ impl CombinedPack {
     }
 
     pub fn has(&self, name: &str) -> bool {
+        if Self::is_channel3000(name) {
+            return self.channel3000.as_ref().is_some_and(|pack| pack.has(name));
+        }
         self.pack_for(name).is_some_and(|pack| pack.has(name))
     }
 
     pub fn read(&self, name: &str) -> Option<Vec<u8>> {
+        if Self::is_channel3000(name) {
+            return self.channel3000.as_ref().and_then(|pack| pack.read(name));
+        }
         self.pack_for(name).and_then(|pack| pack.read(name))
     }
 }
@@ -347,6 +379,12 @@ impl CombinedPack {
 /// Read-and-unmask one pack file, or None when it is absent/unreadable.
 fn load_one_pack(path: &Path, label: &str) -> Option<Arc<SoundPack>> {
     if !path.exists() {
+        // Once per process: the loader reads the packs a single time. A
+        // source run without music.pak (it is builder-local) says so here.
+        log::info!(
+            "No {label} pack at {}; its sounds come from loose files, if any",
+            path.display()
+        );
         return None;
     }
     match SoundPack::open(path) {
@@ -387,6 +425,8 @@ fn capitalize(label: &str) -> String {
 pub struct PackLoader {
     sounds_path: PathBuf,
     music_path: PathBuf,
+    /// Channel 3000's pack: handed to every combined view unopened.
+    channel3000: Option<Arc<LazyPack>>,
     /// `None` until a load has been attempted; then the combined view, or
     /// `None` when both packs are unusable.
     state: Mutex<Option<Option<Arc<CombinedPack>>>>,
@@ -399,10 +439,17 @@ impl PackLoader {
         Self {
             sounds_path: sounds_path.into(),
             music_path: music_path.into(),
+            channel3000: None,
             state: Mutex::new(None),
             prefetch_started: AtomicBool::new(false),
             loads: AtomicUsize::new(0),
         }
+    }
+
+    /// Route `c3k/` names to `pack` in every view this loader opens.
+    pub fn with_channel3000(mut self, pack: Arc<LazyPack>) -> Self {
+        self.channel3000 = Some(pack);
+        self
     }
 
     /// How many times the packs were actually read off disk (tests pin this
@@ -427,8 +474,16 @@ impl PackLoader {
         self.loads.fetch_add(1, Ordering::SeqCst);
         let sounds = load_one_pack(&self.sounds_path, "sound");
         let music = load_one_pack(&self.music_path, "music");
-        let combined = if sounds.is_some() || music.is_some() {
-            Some(Arc::new(CombinedPack::new(sounds, music)))
+        let channel3000 = self
+            .channel3000
+            .as_ref()
+            .filter(|pack| pack.path().exists());
+        let combined = if sounds.is_some() || music.is_some() || channel3000.is_some() {
+            let mut combined = CombinedPack::new(sounds, music);
+            if let Some(pack) = channel3000 {
+                combined = combined.with_channel3000(Arc::clone(pack));
+            }
+            Some(Arc::new(combined))
         } else {
             None
         };
@@ -492,10 +547,9 @@ impl PackLoader {
     }
 }
 
-/// Where the shipped packs live: next to the data tree. The Python module
-/// used its own package directory (`src/freight_fate/`); a frozen build puts
-/// the packs under `<exe dir>/freight_fate/`, a source checkout has them in
-/// the repo. `FREIGHT_FATE_PACK_DIR` overrides both.
+/// Where the shipped packs live: a packaged build puts them under
+/// `<exe dir>/freight_fate/`, a source checkout under `assets/`.
+/// `FREIGHT_FATE_PACK_DIR` overrides both.
 pub fn default_pack_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("FREIGHT_FATE_PACK_DIR") {
         return PathBuf::from(dir);
@@ -518,8 +572,7 @@ pub fn default_pack_dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
-            .join("src")
-            .join("freight_fate"),
+            .join("assets"),
     );
     candidates
         .iter()
@@ -537,10 +590,15 @@ pub fn default_pack_dir() -> PathBuf {
 
 static DEFAULT_LOADER: Lazy<Arc<PackLoader>> = Lazy::new(|| {
     let dir = default_pack_dir();
-    Arc::new(PackLoader::new(
-        dir.join(DEFAULT_PACK_NAME),
-        dir.join(DEFAULT_MUSIC_PACK_NAME),
-    ))
+    Arc::new(
+        PackLoader::new(
+            dir.join(DEFAULT_PACK_NAME),
+            dir.join(DEFAULT_MUSIC_PACK_NAME),
+        )
+        .with_channel3000(Arc::new(LazyPack::new(
+            dir.join(crate::channel3000::CHANNEL_3000_PACK_NAME),
+        ))),
+    )
 });
 
 fn packs_disabled() -> bool {
@@ -569,7 +627,7 @@ pub fn open_default() -> Option<Arc<CombinedPack>> {
 // ---------------------------------------------------------------------------
 // Generated sounds
 //
-// Runtime-synthesized cues (the ladder earcons, the lane guide tone, the
+// Runtime-synthesized cues (the lane guide tone, the
 // enforcement signature) are published under ordinary sound keys and win
 // over every pack and loose file: `audio._asset_bytes` checks `_GENERATED`
 // first, so a synthesized cue plays through the same path as a packed asset
@@ -580,19 +638,43 @@ type Generated = HashMap<String, (Arc<Vec<u8>>, String)>;
 
 static GENERATED: Lazy<Mutex<Generated>> = Lazy::new(|| Mutex::new(HashMap::new()));
 static GENERATED_VERSION: AtomicU64 = AtomicU64::new(0);
+/// Per key, the [`GENERATED_VERSION`] at which it last changed. Entries are
+/// kept after an unregister so a stamp never repeats for a key.
+static KEY_VERSIONS: Lazy<Mutex<HashMap<String, u64>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+fn stamp(key: &str) {
+    let version = GENERATED_VERSION.fetch_add(1, Ordering::SeqCst) + 1;
+    KEY_VERSIONS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key.to_string(), version);
+}
 
 /// Publish synthesized audio under `key` for every backend.
 ///
-/// Bumps [`generated_sound_version`]: anything measured or rendered from the
-/// old bytes (the audio engine's clip-length and cab-sealed caches) was
-/// measuring nothing and must be dropped, which the game crate does by
-/// checking the version.
+/// Moves [`generated_sound_version`] for `key` alone: anything measured or
+/// rendered from its old bytes (the audio engine's clip-length and
+/// cab-sealed caches) was measuring nothing and must be dropped, which the
+/// game crate does by checking that key's version. Other keys' cached
+/// entries stand.
 pub fn register_generated_sound(key: &str, data: Vec<u8>, ext: &str) {
     GENERATED
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(key.to_string(), (Arc::new(data), ext.to_string()));
-    GENERATED_VERSION.fetch_add(1, Ordering::SeqCst);
+    stamp(key);
+}
+
+/// Drop a generated sound, e.g. a synthesized piece that has played.
+pub fn unregister_generated_sound(key: &str) {
+    let removed = GENERATED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(key)
+        .is_some();
+    if removed {
+        stamp(key);
+    }
 }
 
 /// The bytes and extension published under `key`, if any.
@@ -616,10 +698,15 @@ pub fn generated_sound_keys() -> Vec<String> {
     keys
 }
 
-/// A counter that moves on every registration, for caches keyed on the
-/// generated set.
-pub fn generated_sound_version() -> u64 {
-    GENERATED_VERSION.load(Ordering::SeqCst)
+/// A stamp that moves whenever `key` is registered or unregistered (0 if it
+/// never was), for caches of anything derived from that key's sound.
+pub fn generated_sound_version(key: &str) -> u64 {
+    KEY_VERSIONS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(key)
+        .copied()
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -835,7 +922,7 @@ mod tests {
     }
 
     fn committed_pack_dir() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src/freight_fate")
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets")
     }
 
     /// Whether the shipped pack at `path` is really here, saying out loud
@@ -857,15 +944,17 @@ mod tests {
             .unwrap_or_default();
         if is_lfs_pointer(path) {
             eprintln!(
-                "SKIPPING {}: it is a Git LFS pointer, not the pack. CI checks out \
-                 without LFS on purpose (fetching the packs on every push exhausted \
-                 the repository's LFS budget); run \
-                 `git lfs pull --include=\"src/freight_fate/{name}\"` to check this \
-                 locally.",
+                "SKIPPING {}: it is a leftover Git LFS pointer, not the pack. The \
+                 packs are plain files now: `git checkout -- assets/{name}` restores \
+                 sounds.pak, and tools/build_release.py downloads music.pak.",
                 path.display()
             );
         } else {
-            eprintln!("SKIPPING {}: not present (LFS)", path.display());
+            eprintln!(
+                "SKIPPING {}: not present (sounds.pak is committed; music.pak is \
+                 builder-local and tools/build_release.py downloads it)",
+                path.display()
+            );
         }
         false
     }
@@ -885,9 +974,9 @@ mod tests {
         // The trap this guard exists for: a pointer is a file that EXISTS,
         // so `Path::exists` alone reads an unmaterialised pack as present.
         //
-        // Written into a temp directory, never over the shipped packs: those
-        // are Git LFS objects (music.pak is 250 MB) and the working tree
-        // holds the only copy.
+        // Written into a temp directory, never over the shipped packs: the
+        // working tree holds the only local copy (music.pak is a 250 MB
+        // download).
         let tmp = tempfile::tempdir().unwrap();
         let pointer = tmp.path().join(DEFAULT_PACK_NAME);
         write_lfs_pointer(&pointer, &"a".repeat(64), 7_781_859);
@@ -929,32 +1018,33 @@ mod tests {
             return;
         }
         let pack_bytes = std::fs::read(&path).unwrap();
-        // Repacked 2026-08-29 (the scale verdict tones): added the procedural
-        // events/scale_green.ogg and events/scale_red.ogg cues, which the code
-        // and the sound catalog both named while the pack carried neither --
-        // and the release ships THIS pack rather than baking a fresh one, so
-        // both lights changed in silence for players. 162 entries, the prior
-        // 160 preserved byte for byte plus the two new assets.
-        //
-        // Merged into rather than rebuilt, deliberately: a plain
-        // `tools/pack_sounds.py` run on the current builder machine yields
-        // 113 entries, because 60 API-generated effects are no longer in the
-        // loose tree. Re-baking here would silently drop them.
-        //
-        // Repacked 2026-08-14 (weigh-station warning earcon): added the
-        // procedural events/weigh_station_warning.ogg cue (owner ruling --
-        // the scale gets its own earcon instead of reusing the shared
-        // inspection cue), taking the pack from 159 entries to 160.
-        assert_eq!(pack_bytes.len(), 7_788_924);
         assert!(pack_bytes.starts_with(PACK_MAGIC));
-        use sha2::{Digest, Sha256};
-        let digest = hex::encode(Sha256::digest(&pack_bytes));
-        assert_eq!(
-            digest,
-            "45f297c8c0562fb018674ce51e691d3cd93501793ce7b41d378bfc35b9d2cf99"
-        );
+        // The release ships THIS pack, so what has to hold is that it carries
+        // every cue the game teaches -- the failure that happened was cues
+        // missing from it (the scale lights, 2026-08-29) and a re-bake from
+        // the incomplete loose tree dropping 60 effects. A deliberate swap of
+        // one sound is not a failure, so size and hash are not pinned.
         let pack = SoundPack::open(&path).unwrap();
-        assert_eq!(pack.names().len(), 162);
+        // Synthesized cues are not packed: the guide tone publishes itself
+        // here, and enforcement/ is the game crate's siren signature.
+        crate::lane_guide_tone::register_lane_guide_tone();
+        let ships = |key: &str| {
+            !key.is_empty()
+                && (key.starts_with("enforcement/")
+                    || ["ogg", "wav"]
+                        .iter()
+                        .any(|ext| pack.has(&format!("{key}.{ext}")))
+                    || generated_sound(key).is_some())
+        };
+        let missing: Vec<&str> = crate::sound_catalog::catalog_entries()
+            .flat_map(|entry| entry.plays.iter())
+            .filter(|cue| !ships(cue.key) && !ships(cue.fallback))
+            .map(|cue| cue.key)
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "taught but not in sounds.pak: {missing:?}"
+        );
     }
 
     #[test]
@@ -963,14 +1053,8 @@ mod tests {
         if !committed_pack(&path) {
             return;
         }
-        // Split out of sounds.pak on 2026-08-14 alongside the radio
-        // station-identity batch: 356 entries, the music/ subtree plus the new
-        // station jingles and songs. 358 since 2026-08-26 (Dangerous Dan,
-        // Dial-up Summer); 359 since 2026-08-30, when Four Sources and the
-        // Truth joined the country pool. Only the size and header are checked
-        // here: hashing 271 MB is the Python suite's job, once.
-        let len = std::fs::metadata(&path).unwrap().len();
-        assert_eq!(len, 270_786_839);
+        // Only the header: tools/build_release.py checks the download against
+        // DEFAULT_MUSIC_SHA256 before every release build.
         let mut head = [0u8; 6];
         std::fs::File::open(&path)
             .unwrap()
@@ -1156,6 +1240,7 @@ mod tests {
         // The music side of the combined pack answers nothing when music.pak
         // itself is missing, while the sounds side is untouched -- the audio
         // engine takes it from there to the loose tree.
+        captured_logs(); // install the capture before the load
         let tmp = tempfile::tempdir().unwrap();
         let (sounds_out, _music_out) = write_split_fixture_packs(tmp.path());
         let loader = PackLoader::new(&sounds_out, tmp.path().join("no_music_here.pak"));
@@ -1166,11 +1251,46 @@ mod tests {
         );
         assert!(combined.read("music/x.ogg").is_none());
         assert!(!combined.has("music/x.ogg"));
+        loader.open();
+        // The session log says the music pack is missing, once.
+        let missing = tmp.path().join("no_music_here.pak").display().to_string();
+        let said: Vec<String> = captured_logs()
+            .into_iter()
+            .filter(|line| line.contains(&missing))
+            .collect();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].starts_with("INFO No music pack at "), "{said:?}");
+    }
+
+    /// Every log record this test binary has emitted since the capture was
+    /// installed (on first call), as "LEVEL message". No other ff-core unit
+    /// test installs a logger.
+    fn captured_logs() -> Vec<String> {
+        struct Capture;
+        static LINES: Lazy<Mutex<Vec<String>>> = Lazy::new(|| Mutex::new(Vec::new()));
+        impl log::Log for Capture {
+            fn enabled(&self, _: &log::Metadata) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record) {
+                LINES
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(format!("{} {}", record.level(), record.args()));
+            }
+            fn flush(&self) {}
+        }
+        static CAPTURE: Capture = Capture;
+        if log::set_logger(&CAPTURE).is_ok() {
+            log::set_max_level(log::LevelFilter::Info);
+        }
+        LINES.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     #[test]
     fn test_generated_sounds_registry_wins_and_lists_sorted() {
-        let before = generated_sound_version();
+        let before = generated_sound_version("test_registry/alpha");
+        let other = generated_sound_version("test_registry/untouched");
         register_generated_sound("test_registry/zeta", b"zz".to_vec(), "wav");
         register_generated_sound("test_registry/alpha", b"aa".to_vec(), "wav");
         let (data, ext) = generated_sound("test_registry/alpha").unwrap();
@@ -1184,6 +1304,8 @@ mod tests {
             .unwrap();
         let z = keys.iter().position(|k| k == "test_registry/zeta").unwrap();
         assert!(a < z);
-        assert!(generated_sound_version() >= before + 2);
+        assert!(generated_sound_version("test_registry/alpha") > before);
+        // Only the registered key moves; a cache of any other stays valid.
+        assert_eq!(generated_sound_version("test_registry/untouched"), other);
     }
 }

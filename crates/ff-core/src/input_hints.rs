@@ -16,9 +16,28 @@
 
 pub const KEYBOARD: &str = "keyboard";
 pub const CONTROLLER: &str = "controller";
+/// The iPhone or iPad screen, with no keyboard or controller in use.
+pub const TOUCH: &str = "touch";
+
+/// action -> touch phrase, for the controls that are fixed gestures (the
+/// pedal holds, the deep swipe, the key turn, double tap, the two-finger
+/// swipes). A flick is one step; a swipe and hold is continuous. Every other touch
+/// phrase comes from the player's touch bindings or the driving command
+/// list, in `freight-fate`'s bindings.
+pub const TOUCH_HINTS: &[(&str, &str)] = &[
+    // Every gas line reads "hold {}", so the phrase leaves the hold out.
+    ("accelerate", "a swipe up"),
+    ("brake", "a swipe down and hold"),
+    ("emergency_brake", "a deep swipe down"),
+    ("horn", "a two-finger hold"),
+    ("engine", "a two-finger turn to the right"),
+    ("confirm", "a double tap"),
+    ("pause", "a two-finger swipe down"),
+    ("help", "a two-finger swipe up"),
+];
 
 /// action -> (keyboard phrase, controller phrase)
-const HINTS: &[(&str, (&str, &str))] = &[
+pub const HINTS: &[(&str, (&str, &str))] = &[
     ("accelerate", ("the Up arrow", "the right trigger")),
     ("brake", ("the Down arrow", "the left trigger")),
     ("emergency_brake", ("B", "the left trigger fully")),
@@ -60,6 +79,11 @@ const HINTS: &[(&str, (&str, &str))] = &[
 /// action name itself if it is not in the table (so a typo is audible in a
 /// test rather than crashing a prompt mid-drive).
 pub fn control_hint(action: &str, device: &str) -> String {
+    if device == TOUCH {
+        if let Some((_, phrase)) = TOUCH_HINTS.iter().find(|(name, _)| *name == action) {
+            return phrase.to_string();
+        }
+    }
     let (kb, pad) = HINTS
         .iter()
         .find(|(name, _)| *name == action)
@@ -100,6 +124,8 @@ mod tests {
     #[test]
     fn test_unknown_action_is_audible_not_fatal() {
         assert_eq!(control_hint("teleport", KEYBOARD), "teleport");
+        assert_eq!(control_hint("accelerate", TOUCH), "a swipe up");
+        assert_eq!(control_hint("take_exit", TOUCH), "X");
         assert_eq!(control_hint("teleport", CONTROLLER), "teleport");
     }
 

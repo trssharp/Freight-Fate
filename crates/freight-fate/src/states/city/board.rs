@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use serde_json::Value;
 
 use ff_core::models::business::{
-    build_business_settlement, has_weigh_station_transponder, is_owner_operator, pay_label,
+    build_business_settlement, has_weigh_station_transponder, is_owner_operator,
     BusinessSettlement, SettlementTerms, INDEPENDENT_AUTHORITY,
 };
 use ff_core::models::career_objectives::career_objective;
@@ -20,9 +20,7 @@ use ff_core::models::dispatch_policy::{
     declines_remaining, dispatch_policy, DECLINE_REPUTATION_PENALTY, SENIOR_LOAD_CHOICE_LEVEL,
 };
 use ff_core::models::enforcement;
-use ff_core::models::jobs::{
-    credentials_clause, facility_text, lane_key, route_drive_hours, DescribeOptions, Job,
-};
+use ff_core::models::jobs::{lane_key, route_drive_hours, Job};
 use ff_core::models::profile::Profile;
 use ff_core::models::trailers::{
     compatible_with_programs, owned_trailer_for_cargo, required_program_text,
@@ -30,34 +28,43 @@ use ff_core::models::trailers::{
 use ff_core::playtest_levers::forced_dispatch_destination;
 use ff_core::pyfmt::{fmt_f, fmt_grouped};
 use ff_core::sim::hos::limits;
-use ff_core::sim::timezones::{appointment_text, city_zone};
 
 use crate::app::{GameContext, Say, SharedState};
 use crate::impl_state_for_menu;
 use crate::meaningful_play::MeaningfulPlayReason;
 use crate::states::base::{InputEvent, Key, Menu, MenuCore, MenuItem};
 use crate::states::city::{
-    base_menu_current_help, base_menu_handle_event, first_day_guidance_active, first_dispatch_done,
-    home_terminal, launch_driving, profile, profile_mut, sleeps_needed, DrivingLaunch,
-    LaunchAnnouncement, DRIVE_PHASE_DELIVERY, DRIVE_PHASE_PICKUP, PICKUP_CHECK_IN_MIN,
-    PICKUP_LOADING_MIN,
+    base_menu_handle_event, first_dispatch_done, held_load, home_terminal, launch_driving, profile,
+    profile_mut, sleeps_needed, DrivingLaunch, LaunchAnnouncement, DRIVE_PHASE_DELIVERY,
+    DRIVE_PHASE_PICKUP, PICKUP_CHECK_IN_MIN, PICKUP_LOADING_MIN,
 };
+use crate::states::city_pickup::warm_route_feeds;
 use crate::states::city_pickup::{
     pickup_snapshot, PickupFacilityState, PickupOptions, PickupSnapshotOptions,
 };
 
+mod details;
+mod weight;
+pub use details::{describe_job, JobDetailState};
+
 /// The board's class-level `intro_help` (the browsable board; an assigned
 /// board swaps in its own on construction).
 pub const JOB_BOARD_INTRO_HELP: &str =
-    "Enter accepts a dispatch and starts the deadhead from your terminal to its origin \
-     facility. F1 reads the job details. Tab repeats the freight market watch. Escape returns \
-     to the terminal.";
+    "Enter accepts. F1 is job details. Tab is the market. Escape goes back.";
 
 const ASSIGNED_INTRO_HELP: &str =
-    "Dispatch assigned this load. Enter accepts it and starts the deadhead from your terminal \
-     to its origin facility. Declining draws another load, but refusals cost reputation from a \
-     budget that refills at your next promotion. F1 reads the job details. Escape returns to \
-     the terminal.";
+    "Assigned load. Enter accepts. Decline costs dispatch trust until your next promotion. F1 \
+     is details. Escape goes back.";
+
+/// How long dispatch keeps assigning loads: a new hire waits for level 8, but
+/// a driver at level 8 or above is only here because standing slipped.
+fn assignment_ends(p: &Profile) -> String {
+    if p.career.level() < SENIOR_LOAD_CHOICE_LEVEL {
+        format!("until level {SENIOR_LOAD_CHOICE_LEVEL}")
+    } else {
+        "until your standing recovers".to_string()
+    }
+}
 
 // -- shared job wording ----------------------------------------------------------------
 
@@ -74,14 +81,25 @@ fn settlement_for(p: &Profile, job: &Job, with_reputation: bool) -> BusinessSett
             carrier_key: Some(&p.carrier_key),
             owned_trailers: &owned_refs,
             reputation: if with_reputation {
-                Some(p.career.reputation)
+                Some(p.standing())
             } else {
                 None
             },
             transponder: has_weigh_station_transponder(p),
+            record_surcharge: enforcement::record_insurance_surcharge(p),
         },
     )
 }
+
+/// Minutes of shift the hours warning refuses to plan away.
+///
+/// The route estimate already runs slower than the posted limits
+/// (`DEADLINE_PLANNING_SPEED_FACTOR`), but a plan that lands on the last
+/// minute of the window still loses to rain, town limits and a slow ramp.
+/// Half an hour is the smallest unit a dispatcher plans in (the break
+/// requirement is 30 minutes), so a load that fits with less than that to
+/// spare is called what it is: one that needs a rest first.
+pub const HOS_FIT_CUSHION_MIN: f64 = 30.0;
 
 /// Whether the job's origin facility is the yard the truck is parked in.
 ///
@@ -96,6 +114,37 @@ pub fn job_origin_is_this_yard(ctx: &GameContext, job: &Job, terminal_name: &str
     let here = ctx.world.resolve_city_key(&profile(ctx).current_city);
     ctx.world.resolve_city_key(&job.origin) == here
         && job.origin_location.trim() == terminal_name.trim()
+}
+
+/// Driving hours from the board to the shipper's dock: nothing for a load
+/// from this yard, else the facility approach, after the corridor to the
+/// origin city when dispatch relayed the load from a nearby one.
+fn pickup_drive_hours(ctx: &GameContext, job: &Job) -> f64 {
+    if job_origin_is_this_yard(ctx, job, &home_terminal(ctx).name) {
+        return 0.0;
+    }
+    let here = ctx.world.resolve_city_key(&profile(ctx).current_city);
+    let origin = ctx.world.resolve_city_key(&job.origin);
+    let corridor_h = if origin != here {
+        ctx.world
+            .supported_route(&here, &origin, None)
+            .ok()
+            .flatten()
+            .map(|corridor| route_drive_hours(Some(&corridor), 0.0, Some(ctx.world)))
+            .unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    corridor_h
+        + ctx
+            .world
+            .facility_approach_route_with(
+                &job.origin,
+                &job.origin_location,
+                ctx.settings.facility_streets,
+            )
+            .map(|approach| route_drive_hours(Some(&approach), 0.0, Some(ctx.world)))
+            .unwrap_or(0.0)
 }
 
 /// `JobBoardState._locked_reason`: why this driver cannot take the job, or "".
@@ -114,21 +163,15 @@ pub fn locked_reason(p: &Profile, job: &Job) -> String {
 /// `JobBoardState._trailer_note`.
 pub fn trailer_note(p: &Profile, job: &Job) -> String {
     if !is_owner_operator(&p.business_status) {
-        return "Carrier trailer provided.".to_string();
+        return String::new();
     }
     let cargo_key = job.cargo.key;
     if p.business_status == INDEPENDENT_AUTHORITY {
         if let Some(owned) = owned_trailer_for_cargo(cargo_key, p.visible_owned_trailers()) {
-            return format!(
-                "Owned trailer: {}. Direct freight gross, owned-trailer reserve at settlement.",
-                owned.label
-            );
+            return format!("Owned trailer: {}.", owned.label);
         }
         if compatible_with_programs(cargo_key, p.active_trailer_programs()) {
-            return format!(
-                "Trailer program: {}. Direct freight gross, program charge at settlement.",
-                required_program_text(cargo_key)
-            );
+            return format!("Trailer program: {}.", required_program_text(cargo_key));
         }
         return format!(
             "Needs {} trailer program or owned trailer.",
@@ -144,65 +187,34 @@ pub fn trailer_note(p: &Profile, job: &Job) -> String {
     )
 }
 
+/// What the listed amounts on the board mean for this business status:
+/// the help on a job's pay line (F1 on it in the job details).
+pub(super) fn pay_basis_note(status: &str) -> &'static str {
+    if status == INDEPENDENT_AUTHORITY {
+        "Listed amounts are direct freight gross. Insurance, compliance, trailer, truck, and \
+         factoring costs come out at settlement."
+    } else if is_owner_operator(status) {
+        "Listed amounts are owner-operator gross revenue. Trailer program needs are listed on \
+         each job."
+    } else {
+        "Listed amounts are carrier gross, your settlement pays driver wages. Routing is \
+         assigned until you run your own truck."
+    }
+}
+
 fn market_preview(business: &BusinessSettlement) -> String {
     let charges = business.business_charge_total();
     if charges > 0.0 {
         return format!(
-            "Estimated take-home before advances: \
-             {} dollars after \
-             {} dollars business costs.",
+            "Take-home about {} dollars after {} dollars costs.",
             fmt_grouped(business.net_before_advance, 0),
             fmt_grouped(charges, 0)
         );
     }
     format!(
-        "Estimated driver pay before advances: {} dollars.",
+        "Your pay about {} dollars.",
         fmt_grouped(business.net_before_advance, 0)
     )
-}
-
-/// Board line for a carrier-ASSIGNED reposition.
-///
-/// Skips Job.describe() and build_business_settlement() on purpose:
-/// those price and phrase a real load's cargo, and running a
-/// zero-weight reposition through the same math would show the
-/// loaded per-mile wage floor instead of job.pay's already-reduced
-/// empty-mile rate -- a preview the settlement then would not honor.
-fn describe_reposition(ctx: &GameContext, total: usize, job: &Job, index: Option<usize>) -> String {
-    let prefix = match index {
-        Some(i) => format!("Job {i} of {total}: "),
-        None => String::new(),
-    };
-    format!(
-        "{prefix}Carrier-assigned reposition: drive empty to {}, {}. No cargo. Pays {} \
-         dollars, the empty-mile rate. The {} dispatch board opens on arrival.",
-        job.spoken_destination(),
-        ctx.settings.distance_text(job.distance_mi, false),
-        fmt_grouped(job.pay, 0),
-        job.spoken_destination()
-    )
-}
-
-/// `JobBoardState._describe_job(job, index)`: `index` is the 1-based
-/// board position, `total` the board size.
-pub fn describe_job(ctx: &GameContext, total: usize, job: &Job, index: Option<usize>) -> String {
-    if job.bobtail {
-        return describe_reposition(ctx, total, job, index);
-    }
-    let p = profile(ctx);
-    let business = settlement_for(p, job, true);
-    let note = trailer_note(p, job);
-    let preview = market_preview(&business);
-    let distance = ctx.settings.distance_text(job.distance_mi, false);
-    job.describe(&DescribeOptions {
-        index,
-        total: index.map(|_| total),
-        pay_label: pay_label(&p.business_status),
-        trailer_note: &note,
-        display_pay: Some(business.gross_pay),
-        market_preview: &preview,
-        distance_text: &distance,
-    })
 }
 
 // -- JobBoardState ------------------------------------------------------------------------
@@ -230,6 +242,9 @@ impl JobBoardState {
         }
         if state.assigned_mode() {
             state.menu.intro_help = ASSIGNED_INTRO_HELP.to_string();
+        } else if let Some(held) = held_load::held_index(profile(ctx)) {
+            // The load the driver went to sleep for is where they left it.
+            state.menu.index = held.min(state.jobs.len().saturating_sub(1));
         } else if let Some(recommended) = state.recommended_job_index(ctx) {
             if state.recommendation_label(ctx).is_some() {
                 state.menu.index = recommended;
@@ -273,32 +288,33 @@ impl JobBoardState {
     fn announce_assignment(&mut self, ctx: &mut GameContext) {
         let p = profile(ctx);
         let remaining = declines_remaining(p);
+        // How assignment works, and what listed amounts mean, are on the
+        // rows' help and the job details: the entry line is only what is
+        // news today.
         let decline_note = if self.assigned_queue.len() < 2 {
-            "No alternative freight is available to request.".to_string()
+            String::new()
         } else if remaining > 0 {
             format!(
-                "{remaining} decline{} left before your next promotion, each costing dispatch \
-                 trust.",
+                "{remaining} decline{} left before your next promotion. ",
                 if remaining != 1 { "s" } else { "" }
             )
         } else {
-            "No declines left until your next promotion.".to_string()
-        };
-        let objective_text = match self.training_recommendation_label(ctx) {
-            Some(label) => format!("First-day objective: run this {label} load cleanly. "),
-            None => format!("Career objective: {}. ", career_objective(p).title),
+            "No declines left until your next promotion. ".to_string()
         };
         let hos_note = if self.job_exceeds_current_hos(ctx, self.assigned_job()) {
-            "This assignment may need a legal rest before delivery. "
+            "This assignment needs an extra rest on your current hours. "
         } else {
             ""
         };
-        let market = p.market.summary();
+        let market = p.market.headline();
+        let market = if market.is_empty() {
+            market
+        } else {
+            format!("{market} ")
+        };
         let current = self.current_text(ctx);
         ctx.say(&format!(
-            "Dispatch board. Dispatch assigns your load and route until level \
-             {SENIOR_LOAD_CHOICE_LEVEL}. Listed amounts are carrier gross, your settlement \
-             pays driver wages. {objective_text}{decline_note} {hos_note}{market} {current}"
+            "Dispatch board. {decline_note}{hos_note}{market}{current}"
         ));
     }
 
@@ -345,8 +361,8 @@ impl JobBoardState {
                     s.review_locked_board(ctx)
                 })
                 .help(format!(
-                    "The other loads dispatch posted today. Assigned loads only until level \
-                     {SENIOR_LOAD_CHOICE_LEVEL}."
+                    "The other loads dispatch posted today. Assigned loads only {}.",
+                    assignment_ends(profile(ctx))
                 )),
             );
         }
@@ -383,11 +399,7 @@ impl JobBoardState {
                 }
             })
             .collect();
-        ctx.say(&format!(
-            "Dispatch also posted today: {}. Declining draws the first of these next. Load \
-             choice unlocks at level {SENIOR_LOAD_CHOICE_LEVEL}.",
-            lines.join("; ")
-        ));
+        ctx.say(&format!("Also posted today: {}.", lines.join("; ")));
     }
 
     /// Board indices dispatch already re-drew past, remembered with the
@@ -503,11 +515,6 @@ impl JobBoardState {
         None
     }
 
-    fn focused_recommendation_is_spoken(&self, ctx: &GameContext) -> bool {
-        self.recommendation_label(ctx).is_some()
-            && self.recommended_job_index(ctx) == Some(self.menu.index)
-    }
-
     /// (score, index) for each unlocked job; lower scores fit better.
     fn scored_candidates(&self, ctx: &GameContext) -> Vec<(f64, usize)> {
         let p = profile(ctx);
@@ -570,6 +577,26 @@ impl JobBoardState {
         }
         let mut queue = fresh;
         queue.extend(reoffered);
+        // A load dispatch relayed from a nearby city IS the assignment: the
+        // board here was thin, which is the only reason it is on it.
+        let here = ctx.world.resolve_city_key(&profile(ctx).current_city);
+        if let Some(pos) = queue.iter().position(|&index| {
+            let job = &self.jobs[index];
+            !job.bobtail && ctx.world.resolve_city_key(&job.origin) != here
+        }) {
+            let index = queue.remove(pos);
+            queue.insert(0, index);
+        }
+        // The load the driver slept for comes back as the assignment,
+        // unless they have since declined it.
+        if let Some(held) = held_load::held_index(profile(ctx)) {
+            if let Some(pos) = queue.iter().position(|&index| index == held) {
+                if !declined.contains(&held) {
+                    let index = queue.remove(pos);
+                    queue.insert(0, index);
+                }
+            }
+        }
         let forced = forced_dispatch_destination();
         if !forced.is_empty() && !queue.is_empty() {
             // Playtest lever: dispatch assigns the forced-destination load
@@ -630,11 +657,19 @@ impl JobBoardState {
         // mile; being over 30 non-driving minutes, they also reset the break
         // clock, so only the drive and duty limits matter here.
         let pickup_work_min = PICKUP_CHECK_IN_MIN + PICKUP_LOADING_MIN;
-        let drive_h = route_drive_hours(Some(&route), 0.0, Some(ctx.world));
+        // The deadhead to the pickup is driving too. Counting the loaded
+        // route alone let a 5-hour job through on 4 h 17 m of window
+        // (Chippewa Falls to Duluth, owner, 2026-09-12): it fit by minutes on
+        // paper, the pickup and the yard roads ate them, and the drive ended
+        // with a forced 10-hour sleep 5 hours past the deadline.
+        let drive_h =
+            pickup_drive_hours(ctx, job) + route_drive_hours(Some(&route), 0.0, Some(ctx.world));
         let shift_h = drive_limit / 60.0;
-        let fresh_first_h = drive_limit.min(duty_limit - pickup_work_min) / 60.0;
-        let current_first_h = (drive_limit - p.hos.driving_min)
-            .min(duty_limit - p.hos.duty_min - pickup_work_min)
+        let fresh_first_h = (drive_limit - HOS_FIT_CUSHION_MIN)
+            .min(duty_limit - pickup_work_min - HOS_FIT_CUSHION_MIN)
+            / 60.0;
+        let current_first_h = (drive_limit - p.hos.driving_min - HOS_FIT_CUSHION_MIN)
+            .min(duty_limit - p.hos.duty_min - pickup_work_min - HOS_FIT_CUSHION_MIN)
             .max(0.0)
             / 60.0;
         sleeps_needed(drive_h, current_first_h, shift_h)
@@ -651,16 +686,13 @@ impl JobBoardState {
             .filter(|job| self.job_exceeds_current_hos(ctx, job))
             .count();
         if risky == self.jobs.len() {
-            return "On your current hours, every listed dispatch needs an extra legal rest. \
-                    Sleeping first clears that. "
-                .to_string();
+            return "Every load needs an extra rest on your current hours. ".to_string();
         }
         if risky > 0 {
-            return format!(
-                "On your current hours, {risky} dispatch{} \
-                 would need an extra legal rest. ",
-                if risky != 1 { "es" } else { "" }
-            );
+            if risky == 1 {
+                return "1 load needs an extra rest on your current hours. ".to_string();
+            }
+            return format!("{risky} loads need an extra rest on your current hours. ");
         }
         String::new()
     }
@@ -716,11 +748,12 @@ impl JobBoardState {
         }
         if self.needs_hos_confirmation(ctx, index) {
             self.confirm_risky_job = Some(index);
+            held_load::hold_for_rest(profile_mut(ctx), &job);
+            ctx.save_profile();
             ctx.audio.play("ui/warning");
             let summary = profile(ctx).hos.summary(&ctx.settings.hos_mode);
             ctx.say(&format!(
-                "Hours warning. On this shift's hours, this dispatch needs an extra legal \
-                 rest. {summary} Enter again accepts anyway, or sleep first."
+                "Needs an extra rest on this shift's hours. {summary} Enter again to accept."
             ));
             return;
         }
@@ -729,9 +762,19 @@ impl JobBoardState {
             self.accept_reposition(ctx, index);
             return;
         }
-        let route = ctx
-            .world
-            .facility_approach_route(&job.origin, &job.origin_location);
+        // A load dispatch relayed from a nearby city: the deadhead there and
+        // the local approach to its shipper are one drive, so the pickup
+        // opens on arrival exactly as a same-city deadhead's does.
+        let here = ctx.world.resolve_city_key(&profile(ctx).current_city);
+        if ctx.world.resolve_city_key(&job.origin) != here {
+            self.accept_relay(ctx, index, job, &here);
+            return;
+        }
+        let route = ctx.world.facility_approach_route_with(
+            &job.origin,
+            &job.origin_location,
+            ctx.settings.facility_streets,
+        );
         let Ok(route) = route else {
             // A cached board can outlive its facilities (a data update may
             // retire one, e.g. a template gated out by geography). Drop the
@@ -748,7 +791,7 @@ impl JobBoardState {
         // assigned load. The shipping office is a walk across the yard, so
         // the pickup opens right here.
         if job_origin_is_this_yard(ctx, &job, &terminal.name) {
-            self.accept_at_home_yard(ctx, job, &terminal.name);
+            self.accept_at_home_yard(ctx, job);
             return;
         }
         // Junior drivers slip-seat: the yard picks the tractor for the load
@@ -757,13 +800,14 @@ impl JobBoardState {
         let equipment_note = slip_seat_note(ctx, &job);
         profile_mut(ctx).dispatch_board_cache = None;
         let line = format!(
-            "Dispatch accepted from {}.{equipment_note} Deadhead {} on {} to pickup at {}.",
-            terminal.name,
+            "Accepted.{equipment_note} Deadhead {} on {} to pickup at {}.",
             ctx.settings.distance_text(route.miles(), true),
             route.highways().first().cloned().unwrap_or_default(),
             job.origin_facility_text()
         );
         ctx.mark_meaningful_play(MeaningfulPlayReason::JobAccepted);
+        // The deadhead is time enough for 511 to answer before the pickup.
+        warm_route_feeds(ctx, &job.origin, &job.destination);
         launch_driving(
             ctx,
             DrivingLaunch::new(
@@ -778,11 +822,61 @@ impl JobBoardState {
         // stay so the cloud validator's allow-list never sees a removed id.
     }
 
+    /// Accept a load dispatch relayed from a nearby city (`jobs::relay`):
+    /// the corridor to that city and its shipper's own approach, joined as
+    /// one pickup drive, so the deadhead is driven, paid and timed as part
+    /// of the assignment and the pickup opens on arrival.
+    fn accept_relay(&mut self, ctx: &mut GameContext, index: usize, job: Job, here: &str) {
+        let origin = ctx.world.resolve_city_key(&job.origin);
+        let corridor = ctx
+            .world
+            .supported_route(here, &origin, None)
+            .ok()
+            .flatten();
+        let Some(corridor) = corridor else {
+            self.drop_dead_offer(ctx, index);
+            ctx.say("That load's city is no longer on the network. Dispatch pulled the offer.");
+            return;
+        };
+        // A shipper with no baked approach is reached at the city itself.
+        let route = match ctx.world.facility_approach_route_with(
+            &origin,
+            &job.origin_location,
+            ctx.settings.facility_streets,
+        ) {
+            Ok(approach) => corridor.then(&approach),
+            Err(_) => corridor.clone(),
+        };
+        let equipment_note = slip_seat_note(ctx, &job);
+        profile_mut(ctx).dispatch_board_cache = None;
+        // The facility text already names its city; whole miles for a run
+        // this long (heard live: "in Las Vegas, Nevada in Las Vegas, Nevada"
+        // and "211.0 miles", 2026-09-12).
+        let line = format!(
+            "Accepted.{equipment_note} Deadhead {} on {} to {}.",
+            ctx.settings.distance_text(corridor.miles(), false),
+            corridor.highways().first().cloned().unwrap_or_default(),
+            job.origin_facility_text(),
+        );
+        ctx.mark_meaningful_play(MeaningfulPlayReason::JobAccepted);
+        warm_route_feeds(ctx, &job.origin, &job.destination);
+        launch_driving(
+            ctx,
+            DrivingLaunch::new(
+                job,
+                route,
+                DRIVE_PHASE_PICKUP,
+                LaunchAnnouncement::Line(line),
+            ),
+        );
+    }
+
     /// Accept a load staged at the home yard: no deadhead, the shipping
     /// office is here. Same bookkeeping as the deadhead launch (the slip-seat
     /// draw, the board cache, a trip snapshot so a save resumes at the
     /// pickup), then the pickup facility itself instead of a drive to it.
-    fn accept_at_home_yard(&mut self, ctx: &mut GameContext, job: Job, terminal_name: &str) {
+    fn accept_at_home_yard(&mut self, ctx: &mut GameContext, job: Job) {
+        warm_route_feeds(ctx, &job.origin, &job.destination);
         let equipment_note = slip_seat_note(ctx, &job);
         profile_mut(ctx).dispatch_board_cache = None;
         let snapshot = pickup_snapshot(&job, &PickupSnapshotOptions::default());
@@ -790,8 +884,7 @@ impl JobBoardState {
         ctx.save_profile();
         ctx.mark_meaningful_play(MeaningfulPlayReason::JobAccepted);
         ctx.say(&format!(
-            "Dispatch accepted from {terminal_name}.{equipment_note} The load is staged here \
-             in the yard. Check in with the shipping office."
+            "Accepted.{equipment_note} The load is here in the yard."
         ));
         let state = PickupFacilityState::new(ctx, job, PickupOptions::default());
         ctx.push_state(state);
@@ -819,13 +912,11 @@ impl JobBoardState {
         };
         profile_mut(ctx).dispatch_board_cache = None;
         let line = format!(
-            "Dispatch assignment accepted: reposition to {}, {} on {}. No cargo, pay {} \
-             dollars at the empty-mile rate. The {} dispatch board opens on arrival.",
+            "Reposition to {}, {} on {}. Pays {} dollars.",
             job.spoken_destination(),
             ctx.settings.distance_text(route.miles(), true),
             route.highways().first().cloned().unwrap_or_default(),
             fmt_grouped(job.pay, 0),
-            job.spoken_destination()
         );
         ctx.mark_meaningful_play(MeaningfulPlayReason::JobAccepted);
         launch_driving(
@@ -863,7 +954,6 @@ fn sort_scored(candidates: &mut [(f64, usize)]) {
 /// have to already suspect the answer to go and read (Brandon,
 /// 2026-08-21: "what gives?").
 fn slip_seat_note(ctx: &mut GameContext, job: &Job) -> String {
-    let terse = ctx.settings.renders_terse();
     let p = profile_mut(ctx);
     if p.owns_equipment() {
         return String::new();
@@ -872,7 +962,7 @@ fn slip_seat_note(ctx: &mut GameContext, job: &Job) -> String {
         // No draw to announce, so say only the part that is news: why the
         // iron is short of the level, and what gives it back.
         return if equipment_held_back(p) {
-            format!(" {}", equipment_hold_text(p, terse))
+            format!(" {}", equipment_hold_text(p, true))
         } else {
             String::new()
         };
@@ -882,10 +972,7 @@ fn slip_seat_note(ctx: &mut GameContext, job: &Job) -> String {
     if key == before {
         return String::new();
     }
-    format!(
-        " {}",
-        assignment_reason_text::<Profile, Job>(&key, Some(job), Some(p), terse)
-    )
+    format!(" {}", assignment_reason_text::<Profile>(&key, Some(p)))
 }
 
 impl Menu for JobBoardState {
@@ -907,11 +994,7 @@ impl Menu for JobBoardState {
             let p = profile(ctx);
             if p.driving_record.suspended(p.game_hours) {
                 let line = enforcement::suspension_board_line(p);
-                ctx.say(&format!(
-                    "{line} You can still read the \
-                     {n} listed dispatch{plural}. Escape returns to \
-                     the terminal."
-                ));
+                ctx.say(&line);
                 return;
             }
         }
@@ -921,51 +1004,14 @@ impl Menu for JobBoardState {
             self.announce_assignment(ctx);
         } else {
             let p = profile(ctx);
-            let status = p.business_status.as_str();
-            let business_note = if status == INDEPENDENT_AUTHORITY {
-                "Listed amounts are direct freight gross. Insurance, \
-                 compliance, trailer, truck, and factoring costs come out \
-                 at settlement. "
-            } else if is_owner_operator(status) {
-                "Listed amounts are owner-operator gross revenue. Trailer \
-                 program needs are listed on each job. "
-            } else {
-                "Listed amounts are carrier gross, your settlement pays driver wages. You pick \
-                 your own loads, routing is still assigned until you run your own truck. "
-            };
-            let objective_text =
-                if let Some(training_label) = self.training_recommendation_label(ctx) {
-                    let guidance = training_guidance(p);
-                    format!(
-                        "First-day objective: pick a {training_label} load. {} ",
-                        guidance.dispatch_text
-                    )
-                } else if first_day_guidance_active(p) && !is_company_training_profile(p) {
-                    "First-day objective: pick an unlocked load with a deadline you can \
-                     protect and keep your cash cushion. "
-                        .to_string()
-                } else {
-                    let objective = career_objective(p);
-                    let recommendation = if self.focused_recommendation_is_spoken(ctx) {
-                        String::new()
-                    } else {
-                        format!("Recommended dispatch: {}. ", objective.recommendation)
-                    };
-                    format!(
-                        "Career objective: {}. \
-                     {} \
-                     {recommendation}",
-                        objective.title, objective.dispatch_text
-                    )
-                };
+            // What listed amounts mean is on the job details' pay line, and
+            // the objective in Career plan: the entry line is today's board.
             let hos_note = self.hos_board_note(ctx);
-            let market = p.market.summary();
-            ctx.say(&format!(
-                "Dispatch board. {n} dispatch{plural} available. \
-                 {business_note}{objective_text}\
-                 {hos_note}\
-                 {market}"
-            ));
+            let market = p.market.headline();
+            ctx.say(
+                format!("Dispatch board. {n} dispatch{plural} available. {hos_note}{market}")
+                    .trim_end(),
+            );
             let current = self.current_text(ctx);
             ctx.say_with(current, Say::queued().review(false));
         }
@@ -1030,188 +1076,3 @@ impl Menu for JobBoardState {
 }
 
 impl_state_for_menu!(JobBoardState);
-
-// -- JobDetailState -----------------------------------------------------------------------
-
-const JOB_DETAIL_INTRO_HELP: &str =
-    "Up and down review the lines, Home and End jump to the ends. Enter repeats a line, or \
-     accepts on Accept this dispatch. Escape returns to the dispatch board.";
-
-pub struct JobDetailState {
-    menu: MenuCore<Self>,
-    /// The board this job came from, for `Accept this dispatch`.
-    board: SharedState,
-    pub job: Job,
-    job_index: usize,
-}
-
-impl JobDetailState {
-    /// `JobDetailState(ctx, board, job)`; `job_index` is the job's position
-    /// on that board.
-    pub fn new(board: SharedState, job: Job, job_index: usize) -> Self {
-        JobDetailState {
-            menu: MenuCore::new("Job details").with_intro_help(JOB_DETAIL_INTRO_HELP),
-            board,
-            job,
-            job_index,
-        }
-    }
-
-    fn accept(&mut self, ctx: &mut GameContext) {
-        ctx.pop_state();
-        let board = self.board.clone();
-        let index = self.job_index;
-        // The semicolon matters: the RefMut is a temporary of this
-        // statement, and without it the borrow outlives the handle above.
-        if let Ok(mut state) = board.try_borrow_mut() {
-            if let Some(board) = state.as_any_mut().downcast_mut::<JobBoardState>() {
-                board.accept(ctx, index);
-            }
-        };
-    }
-
-    fn detail_lines(&self, ctx: &GameContext) -> Vec<String> {
-        let job = &self.job;
-        if job.bobtail {
-            return self.reposition_detail_lines(ctx);
-        }
-        let p = profile(ctx);
-        let business = settlement_for(p, job, true);
-        let dollars_per_mile = business.gross_pay / job.distance_mi.max(1.0);
-        let s = &ctx.settings;
-        let world = ctx.world;
-        // The detail view is the "tell me more" surface, so it always names the
-        // state -- board offers stay short, but a player who does not know
-        // where Baton Rouge is can open the job and hear "..., Louisiana".
-        let destination_text = facility_text(
-            &job.destination_type,
-            &job.destination_location,
-            &world.spoken_city(&job.destination, Some(true)),
-            &job.destination_locality,
-        );
-        let zone = world
-            .city(&job.destination)
-            .map(|c| city_zone(c))
-            .unwrap_or(ff_core::sim::timezones::EASTERN);
-        let mut lines = vec![
-            format!("Cargo: {}.", job.cargo.label),
-            format!("Origin: {}.", job.origin_facility_text()),
-            format!("Destination: {destination_text}."),
-            format!("Distance: {}.", s.distance_text(job.distance_mi, false)),
-            format!(
-                "{}: {} dollars.",
-                pay_label(&p.business_status),
-                fmt_grouped(business.gross_pay, 0)
-            ),
-            format!(
-                "Dollars per {}: \
-                 {}.",
-                s.distance_unit_text(false),
-                fmt_f(s.per_distance(dollars_per_mile), 2)
-            ),
-            // The appointment reads in the receiver's local time, the way real
-            // dispatch quotes it. "About" because the clock starts at pickup
-            // departure, after check-in and loading.
-            format!(
-                "Deadline: {} hours, deliver by about {}.",
-                fmt_f(job.deadline_game_h, 0),
-                appointment_text(p.game_hours, job.deadline_game_h, zone)
-            ),
-            format!("Equipment: {}.", job.equipment_text()),
-            format!("Trailer: {}", trailer_note(p, job)),
-        ];
-        let locked = locked_reason(p, job);
-        if !locked.is_empty() {
-            lines.push(format!("Locked: {locked}"));
-        } else if !job.cargo.credentials.is_empty() {
-            lines.push(format!(
-                "Cleared for it: you hold {}.",
-                credentials_clause(job.cargo.credentials)
-            ));
-        }
-        lines.push(
-            "Route details happen after pickup: rest, fuel, tolls, weather, and stops.".to_string(),
-        );
-        lines
-    }
-
-    fn reposition_detail_lines(&self, ctx: &GameContext) -> Vec<String> {
-        let job = &self.job;
-        vec![
-            "Carrier-assigned reposition: empty to a nearby city where freight is thicker."
-                .to_string(),
-            format!(
-                "Destination: {}.",
-                ctx.world.spoken_city(&job.destination, Some(true))
-            ),
-            format!(
-                "Distance: {}.",
-                ctx.settings.distance_text(job.distance_mi, false)
-            ),
-            format!(
-                "Pay: {} dollars, the empty-mile rate.",
-                fmt_grouped(job.pay, 0)
-            ),
-            "No cargo, no trailer program, no endorsement needed.".to_string(),
-            "Route details happen after accepting: rest, fuel, tolls, weather, and stops."
-                .to_string(),
-        ]
-    }
-}
-
-impl Menu for JobDetailState {
-    fn menu(&self) -> &MenuCore<Self> {
-        &self.menu
-    }
-
-    fn menu_mut(&mut self) -> &mut MenuCore<Self> {
-        &mut self.menu
-    }
-
-    fn announce_entry(&mut self, ctx: &mut GameContext) {
-        let current = self.current_text(ctx);
-        ctx.say(&format!("Job details. {JOB_DETAIL_INTRO_HELP} {current}"));
-    }
-
-    fn current_help(&self, ctx: &GameContext) -> String {
-        format!(
-            "{JOB_DETAIL_INTRO_HELP} {}",
-            base_menu_current_help(self, ctx)
-        )
-    }
-
-    fn build_items(&mut self, ctx: &mut GameContext) -> Vec<MenuItem<Self>> {
-        let mut items: Vec<MenuItem<Self>> = self
-            .detail_lines(ctx)
-            .into_iter()
-            .map(|line| {
-                let spoken = line.clone();
-                MenuItem::new(line, move |_s: &mut Self, ctx| ctx.say(&spoken))
-                    .help("Enter repeats this line.")
-            })
-            .collect();
-        let locked = locked_reason(profile(ctx), &self.job);
-        if !locked.is_empty() {
-            let spoken = locked.clone();
-            items.push(
-                MenuItem::new(
-                    format!("Cannot accept this dispatch: {locked}"),
-                    move |_s: &mut Self, ctx| ctx.say(&spoken),
-                )
-                .help(format!("This dispatch is locked. {locked}")),
-            );
-        } else {
-            items.push(
-                MenuItem::new("Accept this dispatch", |s: &mut Self, ctx| s.accept(ctx))
-                    .help("Accepts and begins the pickup drive."),
-            );
-        }
-        items.push(
-            MenuItem::new("Back to dispatch board", |s: &mut Self, ctx| s.go_back(ctx))
-                .help("Back without accepting."),
-        );
-        items
-    }
-}
-
-impl_state_for_menu!(JobDetailState);

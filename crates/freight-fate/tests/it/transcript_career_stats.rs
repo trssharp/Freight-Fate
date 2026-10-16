@@ -4,7 +4,7 @@
 use crate::states_main_menu_support::*;
 use ff_core::models::profile::Profile;
 use freight_fate::app::testing::TestApp;
-use freight_fate::states::base::{Key, Menu};
+use freight_fate::states::base::{Key, Menu, SimpleMenuState};
 use freight_fate::states::career_stats::CareerStatsState;
 use freight_fate::states::city::CityMenuState;
 
@@ -34,8 +34,8 @@ fn test_career_stats_is_a_reviewable_menu_with_rest_status() {
     // ASK. A driver in good standing hears what earns the next fleet instead
     // of a hold that is not there (`equipment_status_lines`).
     assert!(
-        rows.iter()
-            .any(|l| l.starts_with("Truck: ") && l.contains("Level 4 earns the regional fleet.")),
+        rows.iter().any(|l| l.starts_with("Truck: ")
+            && l.contains("At level 4, dispatch moves you up to the regional fleet.")),
         "{rows:?}"
     );
     assert!(rows
@@ -98,4 +98,48 @@ fn test_career_stats_is_a_reviewable_menu_with_rest_status() {
 
     key(&mut app, Key::Escape);
     assert!(is::<CityMenuState>(&app));
+}
+
+#[test]
+fn test_career_stats_count_and_list_the_places_delivered_to() {
+    let mut app = TestApp::new();
+    app.ctx.profile = Some(Profile::named_in("Places", "Austin"));
+    let city = CityMenuState::new(&app.ctx, false);
+    app.push_state(city);
+
+    // A new career has been nowhere yet, and the list says so.
+    select::<CityMenuState>(&mut app, "Career stats");
+    let rows = labels::<CareerStatsState>(&app);
+    assert!(rows.iter().any(|l| l == "States visited: 0"), "{rows:?}");
+    assert!(rows.iter().any(|l| l == "Cities visited: 0"), "{rows:?}");
+    select::<CareerStatsState>(&mut app, "Places visited");
+    assert_eq!(
+        labels::<SimpleMenuState>(&app),
+        ["No deliveries yet.", "Back"]
+    );
+    key(&mut app, Key::Escape);
+
+    // The save keeps city keys; a key the world no longer has is left out
+    // rather than counted or read aloud.
+    {
+        let p = app.ctx.profile.as_mut().unwrap();
+        p.achievement_stats.insert(
+            "cities_delivered".to_string(),
+            serde_json::json!([
+                "chicago_il_us",
+                "denver_co_us",
+                "rockford_il_us",
+                "gone_xx_us"
+            ]),
+        );
+    }
+    with_state_mut::<CareerStatsState, _>(&mut app, |s, ctx| s.refresh(ctx, true));
+    let rows = labels::<CareerStatsState>(&app);
+    assert!(rows.iter().any(|l| l == "States visited: 2"), "{rows:?}");
+    assert!(rows.iter().any(|l| l == "Cities visited: 3"), "{rows:?}");
+    select::<CareerStatsState>(&mut app, "Places visited");
+    assert_eq!(
+        labels::<SimpleMenuState>(&app),
+        ["Colorado: Denver", "Illinois: Chicago, Rockford", "Back"]
+    );
 }

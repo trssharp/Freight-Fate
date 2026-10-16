@@ -117,6 +117,28 @@ fn test_heuristic_control_is_deterministic_and_valid() {
 }
 
 #[test]
+fn test_every_stop_off_one_exit_meets_the_same_ramp_end() {
+    // Exit 286A into Abilene has no recorded control, and the dice were
+    // seeded by each stop's own mile: the delivery heard a stop sign and the
+    // truck stop 0.1 mile on a traffic light, for one ramp (agent drive,
+    // 2026-09-23). Seeded by the exit, they agree on every trip.
+    let mut app = TestApp::new();
+    let mut d = a_real_drive(&mut app);
+    let mut delivery = a_stop(30.0);
+    delivery.interchange_mi = Some(30.0);
+    let mut truck_stop = a_stop(30.1);
+    truck_stop.interchange_mi = Some(30.0);
+    for seed in 0..40 {
+        d.trip_seed = seed;
+        assert_eq!(
+            d.ramp_control_for(&app.ctx, &delivery, None),
+            d.ramp_control_for(&app.ctx, &truck_stop, None),
+            "trip seed {seed}"
+        );
+    }
+}
+
+#[test]
 fn test_a_scale_ramp_never_grows_a_terminal_control() {
     let mut app = TestApp::new();
     let d = a_real_drive(&mut app);
@@ -186,6 +208,51 @@ fn test_green_light_rolls_through_clean() {
 }
 
 #[test]
+fn test_a_green_already_called_is_not_called_again_at_the_bar() {
+    // Owner, agent drive into Milwaukee, 2026-10-04: the light changed to
+    // green while the truck rolled toward it ("Light green.", with the chime),
+    // and crossing the bar seconds later chimed and said "Green light" again.
+    let mut app = TestApp::new();
+    let mut d = a_real_drive(&mut app);
+    let audio = app.record_audio();
+    on_ramp(&mut d, "signal", false, GREEN_ROLL_MPH - 5.0);
+
+    d.update_ramp_terminal(&mut app.ctx);
+
+    assert!(d.ramp_terminal_done);
+    let lines = app.event_lines().join("\n");
+    assert!(
+        lines.contains("Through the intersection. Stop at the entrance."),
+        "{lines}"
+    );
+    assert!(!lines.contains("Green light"), "{lines}");
+    let chimes = audio
+        .borrow()
+        .played
+        .iter()
+        .filter(|(key, _, _)| key == "events/ramp_light_green")
+        .count();
+    assert_eq!(chimes, 0);
+
+    // A green nobody has named yet still gets its chime and its name.
+    let mut d = a_real_drive(&mut app);
+    app.clear_speech();
+    on_ramp(&mut d, "signal", false, GREEN_ROLL_MPH - 5.0);
+    d.ramp_light_announced = false;
+    d.update_ramp_terminal(&mut app.ctx);
+    let lines = app.event_lines().join("\n");
+    assert!(
+        lines.contains("Green light. Through the intersection."),
+        "{lines}"
+    );
+    assert!(audio
+        .borrow()
+        .played
+        .iter()
+        .any(|(key, _, _)| key == "events/ramp_light_green"));
+}
+
+#[test]
 fn test_still_braking_toward_the_bar_is_not_a_violation() {
     let mut app = TestApp::new();
     let mut d = a_real_drive(&mut app);
@@ -217,6 +284,40 @@ fn test_transition_assist_brakes_for_the_red() {
 
     assert!(d.trip.truck.brake > 0.0);
     assert_eq!(d.trip.truck.throttle, 0.0);
+}
+
+#[test]
+fn test_the_ramp_assists_release_number_always_sits_under_its_engage_number() {
+    // Owner, live drive 2026-09-18: about twenty "Route-transition assistance
+    // slowing / released" pairs down one 30 mph ramp, burying the stop-bar
+    // countdown underneath them.
+    //
+    // The hysteresis band is what should prevent that -- engage at the ramp
+    // cap, release only below it -- and it had been broken since 2026-08-11 by
+    // borrowing the release number from `armed_ramp_cruise_mph`, a CRUISE
+    // TARGET that floors at RAMP_MIN_DESIGN_MPH. On a slow ramp both numbers
+    // clamped to that floor and the band became a point.
+    //
+    // Asserted as the invariant rather than by counting spoken lines, because
+    // the invariant is what was violated and it holds for EVERY ramp speed,
+    // including the ones no fixture in this suite happens to produce.
+    for cap in [15.0, 25.0, 30.0, 35.0, 40.0, 45.0, 55.0] {
+        let release = DrivingState::ramp_assist_release_mph(cap);
+        assert!(
+            release < cap,
+            "a {cap} mph ramp releases at {release}, so the band is not a band"
+        );
+    }
+
+    // And specifically on the ramp the owner drove, where borrowing the cruise
+    // target collapsed it. This is the case that regressed.
+    let cap = RAMP_MIN_DESIGN_MPH;
+    assert_eq!(
+        RAMP_MIN_DESIGN_MPH.max(cap - RAMP_CRUISE_HEADROOM_MPH),
+        cap,
+        "the cruise target still floors -- that part is correct and deliberate"
+    );
+    assert!(DrivingState::ramp_assist_release_mph(cap) < cap);
 }
 
 #[test]
@@ -300,10 +401,22 @@ fn test_transition_assist_caps_a_hot_green_crossing() {
 
     d.update_ramp_terminal_assist(&mut app.ctx);
 
-    // A green crossing is a roll, not the bar's real stop: lift instead of
-    // holding service brake while the ramp cap is already slowing the truck.
+    // The assist takes the truck THROUGH the light and facility assistance
+    // takes over after it (owner, 2026-09-22), so a hot green is brought to
+    // rolling speed by the bar -- a measured application, not a stop.
     assert_eq!(d.trip.truck.throttle, 0.0);
+    assert!(
+        d.trip.truck.brake > 0.0,
+        "40 mph this close to the bar needs brake"
+    );
+    assert!(d.trip.truck.brake < 1.0, "a roll, not the full stop hold");
+
+    // Under rolling speed it lets go: never a held service floor on a green.
+    d.trip.truck.velocity_mps = 15.0 / 2.23694;
+    d.trip.truck.brake = 0.0;
+    d.update_ramp_terminal_assist(&mut app.ctx);
     assert_eq!(d.trip.truck.brake, 0.0);
+    assert_eq!(d.ramp_assist_brake, 0.0);
 }
 
 #[test]
@@ -380,11 +493,19 @@ fn test_the_cross_bubble_answers_an_empty_crossroad() {
     let mut app = TestApp::new();
     let mut d = a_real_drive(&mut app);
     d.cross_bubble = None;
-    // With no bubble to consult (older saves mid-ramp) the old certainty
-    // stands: the violation hits.
+    // No bubble and no controlled terminal: there is no crossroad to meet.
+    d.ramp_control = String::new();
     let (met, vehicle) = d.cross_violation_meets();
-    assert_eq!(met, CrossMeeting::Hit);
+    assert_eq!(met, CrossMeeting::Empty);
     assert!(vehicle.is_none());
+    assert!(d.cross_bubble.is_none());
+    // No bubble at a controlled terminal (a save restored mid-ramp): the
+    // crossroad is rolled on the spot instead of the old certainty that the
+    // violation hits, and the answer names the vehicle when it meets one.
+    d.ramp_control = "stop".to_string();
+    let (met, vehicle) = d.cross_violation_meets();
+    assert!(d.cross_bubble.is_some(), "the crossroad was not rolled");
+    assert_eq!(vehicle.is_some(), met != CrossMeeting::Empty);
     assert_eq!(DrivingState::cross_vehicle_sound(None), "traffic/car_cross");
 }
 
@@ -470,7 +591,7 @@ fn test_the_ramp_cap_is_the_number_once_on_the_ramp() {
 fn test_the_exit_lane_is_never_ready_from_the_left_lane() {
     let mut app = TestApp::new();
     let mut d = a_real_drive(&mut app);
-    d.exit_lane_alignment = 1.0;
+    d.exit_lane_entered = true;
     d.lane.lane = 1;
     d.lane_change_target = None;
     assert!(!d.exit_lane_ready());
@@ -484,20 +605,18 @@ fn test_the_exit_lane_is_never_ready_from_the_left_lane() {
 fn test_resetting_the_exit_lane_clears_every_latch() {
     let mut app = TestApp::new();
     let mut d = a_real_drive(&mut app);
-    d.exit_lane_alignment = 1.0;
-    d.exit_lane_prompt_said = true;
-    d.exit_lane_ready_said = true;
-    d.exit_commit_said = true;
+    d.exit_lane_entered = true;
+    d.exit_taper_said = true;
+    d.lane.exit_lane_open = true;
     d.exit_cancel_armed = true;
     d.exit_right_taps = 3;
     d.exit_countdown_said.push(2.0);
 
     d.reset_exit_lane_state();
 
-    assert_eq!(d.exit_lane_alignment, 0.0);
-    assert!(!d.exit_lane_prompt_said);
-    assert!(!d.exit_lane_ready_said);
-    assert!(!d.exit_commit_said);
+    assert!(!d.exit_lane_entered);
+    assert!(!d.exit_taper_said);
+    assert!(!d.lane.exit_lane_open);
     assert!(!d.exit_cancel_armed);
     assert_eq!(d.exit_right_taps, 0);
     assert!(d.exit_countdown_said.is_empty());
@@ -559,34 +678,19 @@ fn test_arming_on_the_ramp_is_refused() {
 }
 
 #[test]
-fn test_capping_cruise_for_a_ramp_says_when_not_just_what() {
-    // Owner playtest, 2026-08-21: "will ease to 40" heard five miles out
-    // reads as "I am going to 40 now".
-    let mut app = TestApp::new();
-    let mut d = a_real_drive(&mut app);
-    let stop = a_stop(d.trip.position_mi + 5.0);
-    d.cruise_mph = Some(65.0);
-    d.trip.truck.velocity_mps = mph_to_mps(65.0);
-
-    let text = d.cap_cruise_for_ramp(&app.ctx, Some(&stop));
-    assert!(text.contains("holds road speed, then eases to"), "{text}");
-
-    // Already at the ramp number: the plain holding line.
-    d.cruise_exit_mph = None;
-    d.trip.truck.velocity_mps = mph_to_mps(20.0);
-    let text = d.cap_cruise_for_ramp(&app.ctx, Some(&stop));
-    assert!(text.contains("holding"), "{text}");
-}
-
-#[test]
-fn test_the_cap_says_nothing_twice_for_one_exit() {
+fn test_capping_cruise_for_a_ramp_caps_once_for_one_exit() {
+    // The cap is no longer narrated (owner, 2026-10-14); it still lands once
+    // and a second call for the same exit leaves it alone.
     let mut app = TestApp::new();
     let mut d = a_real_drive(&mut app);
     let stop = a_stop(d.trip.position_mi + 5.0);
     d.cruise_mph = Some(65.0);
 
-    assert!(!d.cap_cruise_for_ramp(&app.ctx, Some(&stop)).is_empty());
-    assert!(d.cap_cruise_for_ramp(&app.ctx, Some(&stop)).is_empty());
+    d.cap_cruise_for_ramp(Some(&stop));
+    let capped = d.cruise_exit_mph.expect("the ramp cap");
+    assert!(capped <= 65.0);
+    d.cap_cruise_for_ramp(Some(&stop));
+    assert_eq!(d.cruise_exit_mph, Some(capped));
 }
 
 #[test]
@@ -598,9 +702,8 @@ fn test_a_paused_session_remembers_the_ramp_cap_silently() {
     d.speed_control_armed = true;
     d.speed_control_target_mph = Some(65.0);
 
-    let text = d.cap_cruise_for_ramp(&app.ctx, Some(&stop));
+    d.cap_cruise_for_ramp(Some(&stop));
 
-    assert_eq!(text, "");
     assert!(d.cruise_exit_mph.is_some());
 }
 
@@ -650,9 +753,9 @@ fn test_no_destination_exit_while_the_departure_chain_runs() {
 }
 
 #[test]
-fn test_the_destination_announcement_names_the_automation_once() {
-    // Sarah A, 2026-08-15: lane keeping taking the exit must not read as the
-    // exit taking itself.
+fn test_the_destination_announcement_names_only_the_exit() {
+    // Owner, 2026-10-14: "Players know they have assists on or they don't."
+    // With lane keeping on full the callout is the exit and nothing more.
     let mut app = TestApp::new();
     let mut d = a_real_drive(&mut app);
     app.ctx.settings.lane_keeping = "full".to_string();
@@ -661,17 +764,12 @@ fn test_the_destination_announcement_names_the_automation_once() {
         .destination_exit_stop(&mut app.ctx)
         .expect("a delivery always has a destination exit");
 
-    let first = d.destination_exit_announcement(&mut app.ctx, &stop, 2.0);
-    assert!(
-        first.contains("Lane keeping will take this exit"),
-        "{first}"
-    );
-
-    let second = d.destination_exit_announcement(&mut app.ctx, &stop, 1.0);
-    assert!(
-        !second.contains("Lane keeping will take this exit"),
-        "said once per run: {second}"
-    );
+    for ahead in [2.0, 1.0] {
+        let line = d.destination_exit_announcement(&mut app.ctx, &stop, ahead);
+        assert!(line.starts_with("In "), "{line}");
+        assert!(!line.contains("Lane keeping"), "{line}");
+        assert_eq!(line.matches('.').count(), 1, "one sentence: {line}");
+    }
 }
 
 #[test]
@@ -995,6 +1093,29 @@ fn test_a_limit_change_cue_is_the_roads_state_not_a_turn() {
 }
 
 #[test]
+fn test_a_limit_change_may_never_age_out() {
+    // Each limit is said once: the advance "drops to 55" marks it announced,
+    // so a dropped advance left the boundary silent and the truck in a 55 it
+    // never heard of (agent drive, exit 286A into Abilene, 2026-09-23).
+    let mut app = TestApp::new();
+    let d = a_real_drive(&mut app);
+    for text in [
+        "Speed limit drops to 55 in half a mile.",
+        "Speed limit reduced to 55.",
+    ] {
+        let event = an_event(
+            TripEventKind::GpsCue,
+            text,
+            TripEventData {
+                limit_change: Some(true),
+                ..Default::default()
+            },
+        );
+        assert_eq!(d.event_priority(&event), EventPriority::Route, "{text}");
+    }
+}
+
+#[test]
 fn test_the_advance_half_of_a_cue_is_only_an_advisory() {
     let event = an_event(
         TripEventKind::GpsCue,
@@ -1190,7 +1311,7 @@ fn test_the_accel_coast_buttons_walk_the_fives_grid() {
 }
 
 #[test]
-fn test_the_dial_with_cruise_off_says_where_the_switch_is() {
+fn test_the_dial_with_cruise_off_says_it_is_off() {
     let mut app = TestApp::new();
     let mut d = a_real_drive(&mut app);
     app.clear_speech();
@@ -1198,12 +1319,12 @@ fn test_the_dial_with_cruise_off_says_where_the_switch_is() {
     d.adjust_cruise(&mut app.ctx, 1, false);
 
     let spoken = app.main_lines().join(" ");
-    assert!(spoken.contains("Adaptive cruise off. Press K"), "{spoken}");
+    assert_eq!(spoken, "Adaptive cruise off.");
 }
 
 #[test]
 fn test_the_keeper_refuses_politely_when_it_is_switched_off() {
-    // Shane, 2026-08-15: naming the way out matters more than the refusal.
+    // Shane, 2026-08-15: the refusal names where the keeper will not hold.
     let mut app = TestApp::new();
     let mut d = a_real_drive(&mut app);
     app.ctx.settings.speed_keeper = false;
@@ -1213,7 +1334,7 @@ fn test_the_keeper_refuses_politely_when_it_is_switched_off() {
 
     let spoken = app.main_lines().join(" ");
     assert!(
-        spoken.contains("The speed keeper holds speed here; turn it on in Settings"),
+        spoken.contains("No cruise in a construction zone."),
         "{spoken}"
     );
     assert!(d.keeper_mph.is_none());
@@ -1300,7 +1421,7 @@ fn test_the_keeper_owns_up_when_it_cannot_hold_the_number() {
 
     assert!(d.keeper_overrun_said);
     let spoken = app.event_lines().join(" ");
-    assert!(spoken.contains("Speed keeper cannot hold"), "{spoken}");
+    assert!(spoken.contains("Speed keeper can't hold"), "{spoken}");
     assert!(spoken.contains("on this grade"), "{spoken}");
 }
 
@@ -1501,8 +1622,12 @@ fn test_a_truck_up_to_speed_gets_the_plain_merge_line() {
 
     d.update_departure_ramp(&mut app.ctx, 0.10);
 
+    // Said as done: the truck is already in the mainline's right lane, and
+    // "Merge left" sent a driver who obeyed it into the passing lane (agent
+    // drives out of Aberdeen, 2026-09-23).
     let spoken = app.event_lines().join(" ");
-    assert!(spoken.contains("Lane ending. Merge left."), "{spoken}");
+    assert!(spoken.contains("Lane ended."), "{spoken}");
+    assert!(!spoken.contains("Merge left"), "{spoken}");
 }
 
 // -- arrival and the gate (test_facility_overshoot.py) --------------------------------
@@ -1635,6 +1760,9 @@ fn test_a_ramp_terminal_call_never_speaks_a_limit_it_does_not_have() {
         d.announce_ramp_terminal(&mut app.ctx);
         let said = app.event_lines();
         assert!(!said.is_empty(), "{control} says nothing at all");
+        if control == "signal" {
+            assert_eq!(said, vec!["Light green."]);
+        }
         // Every line the call put on the channel, not just the last: the
         // terminal call can hand back a line it interrupted, so `[-1]` (what
         // the Python stub read) is not always the one under test here.
@@ -1653,15 +1781,27 @@ fn test_a_ramp_terminal_call_never_speaks_a_limit_it_does_not_have() {
             );
         }
 
-        // And with a real number it still says it.
+        // Signs still name a valid limit; signals announce only their color.
         app.clear_speech();
         let pos = d.trip.position_mi;
         d.trip
             .zones
             .push(Zone::new(pos + 0.02, pos + 1.0, 45.0, "city street"));
         d.ramp_light_announced = false;
+        if control == "signal" {
+            // Change color so the speech pacer does not suppress a duplicate.
+            d.ramp_light_offset_s = 0.0;
+        }
         d.announce_ramp_terminal(&mut app.ctx);
         let said = app.event_lines();
+        if control == "signal" {
+            assert!(said.iter().any(|line| line == "Light red."));
+            // An interrupted green call may be requeued after the red call.
+            assert!(said
+                .iter()
+                .all(|line| matches!(line.as_str(), "Light red." | "Light green.")));
+            continue;
+        }
         assert!(
             said.iter().any(|line| line.contains("45 miles per hour")),
             "{control}: {said:?}"
@@ -1700,6 +1840,32 @@ fn test_the_upcoming_readout_never_says_zero_miles() {
     let line = said.last().expect("U said nothing at all");
     assert!(!line.contains("0 miles"), "{line:?}");
     assert!(line.contains("0.4 miles"), "{line:?}");
+}
+
+#[test]
+fn test_the_upcoming_readout_leaves_highway_stops_on_the_highway() {
+    // Agent drive, exit 286A into Abilene, 2026-09-23: stopped at the ramp's
+    // stop sign, U said "Coming up: Flying J Travel Center Abilene in 0.1
+    // miles, where the ramp ends at a traffic light" -- a highway stop the
+    // truck had left the road for, and a ramp end it was already at.
+    let mut app = TestApp::new();
+    let mut d = a_real_drive(&mut app);
+    app.ctx.settings.imperial_units = true;
+    d.trip.position_mi = 50.0;
+    d.trip.zones.clear();
+    d.trip.curves.clear();
+    let pos = d.trip.position_mi;
+    d.trip.stops = vec![RoadStop::new("Flying J", pos + 0.1, "travel_center")];
+    d.ramp_mi = Some(0.02);
+    app.clear_speech();
+
+    d.speak_upcoming(&mut app.ctx, 15.0);
+
+    let said = app.main_lines();
+    assert!(
+        !said.iter().any(|line| line.contains("Flying J")),
+        "{said:?}"
+    );
 }
 
 #[test]

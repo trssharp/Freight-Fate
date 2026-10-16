@@ -125,8 +125,11 @@ fn test_stop_and_road_stop_agree() {
                 vehicle_access: level.to_string(),
                 ..Default::default()
             };
+            // The runtime stop carries the SCREENED level, as placement copies
+            // it: a nameless travel center with unverified parking reads as
+            // bobtail-only in both places, or in neither.
             let road_stop = RoadStop {
-                vehicle_access: level.to_string(),
+                vehicle_access: world_stop.effective_vehicle_access().to_string(),
                 ..RoadStop::new("X", 10.0, "travel_center")
             };
             assert_eq!(
@@ -269,19 +272,13 @@ fn test_route_planning_counts_only_usable_stops() {
     leg.stops = stops();
     let route = Route::from_legs(cached.cities[..2].to_vec(), vec![leg]);
 
-    let usable: Vec<&str> = route
-        .accessible_stop_details(false)
-        .iter()
-        .map(|s| s.name.as_str())
-        .collect();
+    let usable_stops = route.accessible_stop_details(false);
+    let usable: Vec<&str> = usable_stops.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(usable, ["Big Rig Plaza"]);
     // The unfiltered view still sees everything, for tooling and data review.
     assert_eq!(route.stop_details().len(), 3);
 
-    let bobtailing: Vec<&str> = route
-        .accessible_stop_details(true)
-        .iter()
-        .map(|s| s.name.as_str())
-        .collect();
+    let bobtailing_stops = route.accessible_stop_details(true);
+    let bobtailing: Vec<&str> = bobtailing_stops.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(bobtailing, ["Big Rig Plaza", "Corner Mart"]);
 }

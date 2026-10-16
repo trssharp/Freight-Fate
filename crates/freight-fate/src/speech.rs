@@ -30,14 +30,14 @@
 //!   (used by the headless test suite and CI), and forced to a specific backend
 //!   with `FREIGHT_FATE_SPEECH_BACKEND=<name>` (for example `SAPI`).
 //!
-//! # Threading: everything Prism runs on ONE thread -- the speech worker
+//! # Threading: each Prism context stays on its speech worker
 //!
-//! Two Prism [`prism::Context`]s probing backends from different threads crash
-//! inside Prism (found while porting: the registry's runtime checks are not
-//! re-entrant across threads). So there is exactly one context per process,
-//! and every call on it -- construction, the 3 s health poll, speaking,
-//! configuring, shutdown -- happens on one thread. [`Speech`] is deliberately
-//! not `Send` or `Sync`.
+//! Every call on a Prism [`prismer::Prism`] -- construction, health checks,
+//! speaking, configuring and shutdown -- happens on the worker that created
+//! it. [`Speech`] is deliberately not `Send` or `Sync`. Recovery may leave an
+//! old generation inside an in-flight native call while a replacement uses
+//! private backend instances. After that call returns, the old worker stops
+//! dispatching operations and retains its native objects until process exit.
 //!
 //! That one thread used to be the game loop's, which made every spoken line
 //! a synchronous screen-reader/SAPI call the game waited on -- and the one
@@ -158,12 +158,8 @@ impl PreviewFeature {
 /// warnings) that falls back to the main channel when no separate voice is
 /// bound. `interrupt` cuts off the previous utterance on that channel.
 ///
-/// The "Speech is now using X." line a backend switch produces is spoken by
-/// the object itself, straight through the new main voice and bypassing the
-/// message log -- exactly what `Speech.refresh(announce=True)` did in Python,
-/// where it called its own `say`. No hook and no returned list, because the
-/// caller never saw that line in Python either; a test double that wants to
-/// see it records what `say` received.
+/// A backend switch is silent: the new voice simply carries on with the
+/// next line (owner call, 2026-10-10).
 pub trait SpeechSink {
     /// Speak (and braille, where supported) `text` on the main channel.
     fn say(&mut self, text: &str, interrupt: bool);
@@ -258,11 +254,33 @@ pub trait SpeechSink {
     fn say_adjustment_preview(&mut self, setting: &str, text: &str, interrupt: bool) -> bool;
 
     /// Re-detect which screen reader or voice should be speaking. `true` when
-    /// the main voice changed; with `announce` the new voice says so.
-    fn refresh(&mut self, announce: bool) -> bool;
+    /// the main voice changed.
+    fn refresh(&mut self) -> bool;
+
+    /// Whether the main voice is still speaking a line. Sinks that cannot
+    /// answer it report `false`.
+    fn is_speaking(&self) -> bool {
+        false
+    }
+
+    /// How long the speech worker holds this sink's first lines after
+    /// start-up, so the screen reader's own announcement of the new window
+    /// cannot talk over the game's first screen. Most voices need none.
+    fn startup_hold(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
 
     /// Release the backends and context. Safe to call more than once.
     fn shutdown(&mut self);
+
+    /// Release the backends like [`shutdown`](SpeechSink::shutdown), calling
+    /// `pump` between wait slices so the caller can keep the window
+    /// answering the OS while an in-flight utterance finishes (issue 266).
+    /// Sinks whose shutdown never waits use the default.
+    fn shutdown_pumping(&mut self, pump: &mut dyn FnMut()) {
+        let _ = pump;
+        self.shutdown();
+    }
 }
 
 /// `GameContext.apply_speech`: reflect the speech settings on the sink.

@@ -105,11 +105,16 @@ pub fn pay_advance_unavailable_reason(money: f64, outstanding: f64, used_for_loa
     "Pay-advance limit reached. Deliver a load to pay it down.".to_string()
 }
 
-/// The per-session fuel market: one wobble per region, drawn once.
+/// The per-session fuel market: one wobble per region, drawn once, unless
+/// this week's real national price has been handed in.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Economy {
     /// `(region, multiplier)` in [`REGION_FUEL_PRICE`] order.
     market: Vec<(&'static str, f64)>,
+    /// This week's US average diesel price per gallon from the live feed
+    /// (`sim::real_fuel_price`), when real fuel prices are on. Replaces the
+    /// wobble: the table's regional spread rides on top of it instead.
+    live_national: Option<f64>,
 }
 
 impl Economy {
@@ -124,7 +129,32 @@ impl Economy {
             .iter()
             .map(|(region, _)| (*region, rng.uniform(0.92, 1.10)))
             .collect();
-        Self { market }
+        Self {
+            market,
+            live_national: None,
+        }
+    }
+
+    /// The baked table's own national level: the plain mean of its regions.
+    /// Derived from the table, so the live price slots in where the table's
+    /// average sat and each region keeps its usual distance from it.
+    pub fn table_national_price() -> f64 {
+        REGION_FUEL_PRICE
+            .iter()
+            .map(|(_, price)| *price)
+            .sum::<f64>()
+            / REGION_FUEL_PRICE.len() as f64
+    }
+
+    /// Hand in this week's national diesel price, or take it away again.
+    /// A price that is not a positive finite number is ignored.
+    pub fn set_live_national_price(&mut self, price: Option<f64>) {
+        self.live_national = price.filter(|p| p.is_finite() && *p > 0.0);
+    }
+
+    /// The live national price in force, when there is one.
+    pub fn live_national_price(&self) -> Option<f64> {
+        self.live_national
     }
 
     /// This session's wobble for a region (1.0 when the region is unknown).
@@ -138,7 +168,15 @@ impl Economy {
 
     pub fn fuel_price(&self, region: &str) -> f64 {
         let base = region_fuel_price(region).unwrap_or(DEFAULT_FUEL_PRICE);
-        round_py_n(base * self.market_mult(region), 2)
+        match self.live_national {
+            // Derived: this week's national pump price plus the table's own
+            // spread for the region above or below its mean. Regional diesel
+            // differences are mostly taxes and freight, a dollar figure that
+            // rides on the national level rather than a share of it, so the
+            // spread adds instead of scaling.
+            Some(live) => round_py_n((live + (base - Self::table_national_price())).max(0.5), 2),
+            None => round_py_n(base * self.market_mult(region), 2),
+        }
     }
 
     pub fn fuel_cost(&self, region: &str, gallons: f64) -> f64 {
@@ -245,6 +283,37 @@ mod tests {
     }
 
     // -- the fuel market ----------------------------------------------------
+
+    #[test]
+    fn test_a_live_national_price_carries_the_regional_spread_and_drops_the_wobble() {
+        let mut economy = Economy::new(Some(42));
+        let seeded_ca = economy.fuel_price("california");
+        economy.set_live_national_price(Some(5.967));
+        assert_eq!(economy.live_national_price(), Some(5.967));
+        let mean = Economy::table_national_price();
+        // California sits its usual dollar-and-change above the national
+        // level, not a third above it.
+        let expected_ca = round_py_n(5.967 + (5.10 - mean), 2);
+        assert_eq!(economy.fuel_price("california"), expected_ca);
+        assert!(economy.fuel_price("california") != seeded_ca);
+        assert_eq!(
+            economy.fuel_price("gulf_coast"),
+            round_py_n(5.967 + (3.40 - mean), 2)
+        );
+        // A region the table does not know rides the default's spread.
+        assert_eq!(
+            economy.fuel_price("nowhere"),
+            round_py_n(5.967 + (DEFAULT_FUEL_PRICE - mean), 2)
+        );
+        assert_eq!(
+            economy.fuel_cost("gulf_coast", 100.0),
+            round_py_n(economy.fuel_price("gulf_coast") * 100.0, 2)
+        );
+        // Nonsense is ignored, and taking the price away restores the wobble.
+        economy.set_live_national_price(Some(f64::NAN));
+        assert_eq!(economy.live_national_price(), None);
+        assert_eq!(economy.fuel_price("california"), seeded_ca);
+    }
 
     #[test]
     fn test_every_region_covered_in_flavor_tables() {

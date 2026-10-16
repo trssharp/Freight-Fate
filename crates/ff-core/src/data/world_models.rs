@@ -10,17 +10,19 @@
 use std::fmt;
 
 use super::world_constants::{
-    lookup, vehicle_access_allows, DEFAULT_VEHICLE_ACCESS, LOCATION_TYPE_LABELS,
-    PARKING_CERTAINTY_LABELS, STOP_TYPE_LABELS, TOLL_METHOD_LABELS,
+    lookup, screened_vehicle_access, vehicle_access_allows, DEFAULT_VEHICLE_ACCESS,
+    LOCATION_TYPE_LABELS, PARKING_CERTAINTY_LABELS, STOP_TYPE_LABELS, TOLL_METHOD_LABELS,
 };
 use crate::pyfmt::{py_int, py_str_float, round_py_int, round_py_n};
 
 mod interchange;
 mod leg;
+mod street;
 pub use interchange::{
     destinations_without_via, format_route_ref, join_destinations, route_token, Interchange,
 };
-pub use leg::{CorridorBuilder, CorridorDetail, DetailSource, Leg, Route, NO_LEG_ID};
+pub use leg::{BillboardBan, CorridorBuilder, CorridorDetail, DetailSource, Leg, Route, NO_LEG_ID};
+pub use street::{Driveway, ExitChain, LocalGeometrySegment, StreetControl, StreetLimit};
 
 /// The errors the Python data layer raised: `ValueError` for data that
 /// fails validation, `KeyError` for an unknown city/facility/service, and
@@ -276,6 +278,10 @@ pub struct FacilityApproach {
     pub dock_hint: bool,
     pub final_hint: String,
     pub source_note: String,
+    /// Where `segments` leaves the public street, if the chain does.
+    pub driveway: Option<Driveway>,
+    /// One chain per ramp terminal a delivery can arrive at, whole.
+    pub exit_chains: Vec<ExitChain>,
 }
 
 /// A roadside stop (truck stop, rest area, weigh station, ...) along a leg.
@@ -297,6 +303,18 @@ pub struct Stop {
     /// Whether a combination vehicle can physically get in here. Defaults to
     /// tractor_trailer so unclassified data keeps behaving as it always has.
     pub vehicle_access: String,
+    /// Signed exit number of the interchange that serves this stop, decided
+    /// once at bake time (`tools/snap_stops_to_interchanges.py`); "" when
+    /// nothing decided it and the mile-marker lookup still stands in.
+    pub exit_ref: String,
+    /// `at_mi` of this leg's interchange record for that exit. An identity to
+    /// match exactly, never a mile to search near; None when the leg records
+    /// no such exit.
+    pub interchange_mi: Option<f64>,
+    /// The streets from each of that exit's ramp terminals to the stop's
+    /// driveway, keyed by terminal node like a facility's exit chains. Empty
+    /// for a stop on the mainline or with no decided exit.
+    pub approach_chains: Vec<ExitChain>,
 }
 
 impl Default for Stop {
@@ -313,6 +331,9 @@ impl Default for Stop {
             curation: "curated".to_string(),
             parking_spaces: 0,
             vehicle_access: DEFAULT_VEHICLE_ACCESS.to_string(),
+            exit_ref: String::new(),
+            interchange_mi: None,
+            approach_chains: Vec::new(),
         }
     }
 }
@@ -324,7 +345,24 @@ impl Stop {
     /// take it. A stop a rig cannot enter is worse than no stop at all: it
     /// burns driving hours and can strand someone with no legal alternative.
     pub fn accessible_to(&self, bobtail: bool) -> bool {
-        vehicle_access_allows(&self.vehicle_access, bobtail)
+        vehicle_access_allows(self.effective_vehicle_access(), bobtail)
+    }
+
+    /// The access level this stop's own record supports: the recorded value,
+    /// screened for the assumed `tractor_trailer` default on a convenience
+    /// station the map typed as a travel center. See
+    /// `world_constants::screened_vehicle_access`; this is what the runtime
+    /// road stop carries, so announcements, exit arming, rest planning and
+    /// the tablet all read the same answer.
+    pub fn effective_vehicle_access(&self) -> &str {
+        screened_vehicle_access(
+            &self.name,
+            &self.stop_type,
+            &self.parking,
+            self.parking_spaces,
+            &self.services,
+            &self.vehicle_access,
+        )
     }
 
     pub fn label(&self) -> &'static str {
@@ -425,12 +463,14 @@ pub fn lane_word(n: i64) -> String {
         .unwrap_or_else(|| n.to_string())
 }
 
-/// Real OSM lane count over `[start_mi, end_mi)` in the leg's native (a->b)
-/// direction. `lanes` follows OSM semantics: on a divided-carriageway `oneway`
-/// way it is the count in that direction; on an undivided two-way it is the
-/// total both ways. `lanes_forward` / `lanes_backward` are the directional
-/// split when OSM tags it (0 = absent). Baked by `tools/bake_lane_segments.py`;
-/// the runtime never sees a raw OSM string.
+/// Real OSM lane count over `[start_mi, end_mi)`, mileposts in the leg's
+/// native (a->b) direction. `lanes` follows OSM semantics: on a
+/// divided-carriageway `oneway` way it is the count in that direction; on an
+/// undivided two-way it is the total both ways. `lanes_forward` /
+/// `lanes_backward` are the directional split when OSM tags it (0 = absent),
+/// relative to the direction the OSM WAY was drawn in, which the bake never
+/// compared with the leg's -- see [`LaneSegment::your_side`]. Baked by
+/// `tools/bake_lane_segments.py`; the runtime never sees a raw OSM string.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct LaneSegment {
     pub start_mi: f64,
@@ -447,20 +487,35 @@ impl LaneSegment {
         self.oneway
     }
 
-    /// Lanes in the driver's direction of travel.
-    pub fn your_side(&self, forward: bool) -> i64 {
-        if forward && self.lanes_forward != 0 {
-            return self.lanes_forward;
-        }
-        if !forward && self.lanes_backward != 0 {
-            return self.lanes_backward;
-        }
+    /// Lanes in the driver's direction of travel, whichever way the truck
+    /// drives the leg.
+    ///
+    /// On an undivided road with an uneven split -- a two-lane highway with a
+    /// passing lane one way, `lanes=3` with `lanes:forward=2` -- this is the
+    /// SMALLER side, in both directions. OSM's forward means the way the way
+    /// was drawn, and the bake stored it without checking that against the
+    /// leg, so on about half of those stretches the truck was handed the
+    /// oncoming traffic's passing lane, and full lane keeping pulled out into
+    /// it to pass (player report, 2026-10-13: "the cruise control swerves you
+    /// right into oncoming cars"). Until a bake records which way each way
+    /// runs, the truck is never given a lane that may be theirs; what that
+    /// costs is the real passing lane on the stretches where it is ours.
+    pub fn your_side(&self) -> i64 {
         if self.oneway {
             // A divided carriageway: the tagged count is already one direction.
             return self.lanes;
         }
-        // Undivided two-way: split the total, floor at one lane your side.
-        (self.lanes.div_euclid(2)).max(1)
+        let split = match (self.lanes_forward, self.lanes_backward) {
+            (0, 0) => None,
+            (forward, 0) => Some((forward, self.lanes - forward)),
+            (0, backward) => Some((self.lanes - backward, backward)),
+            (forward, backward) => Some((forward, backward)),
+        };
+        match split {
+            Some((forward, backward)) => forward.min(backward).max(1),
+            // Undivided two-way: split the total, floor at one lane your side.
+            None => (self.lanes.div_euclid(2)).max(1),
+        }
     }
 }
 
@@ -544,6 +599,11 @@ impl Default for TrafficVolumeSample {
 /// the wider set stays available to answer "what is near me" at any distance
 /// (a town eleven miles ahead is the honest answer on an empty interstate).
 /// Zone and point landmarks are on the route by construction and leave it 0.
+///
+/// `directions` is which way along the leg the callout is heard, in the
+/// stops' vocabulary. A billboard faces one way and its copy says "ahead" or
+/// "next exit", so a placed billboard is heard only forward unless the data
+/// says otherwise; everything else is heard both ways. Empty means both.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Landmark {
     pub name: String,
@@ -552,6 +612,13 @@ pub struct Landmark {
     pub kind: String,
     pub spoken: String,
     pub off_mi: f64,
+    pub directions: Vec<String>,
+}
+
+impl Landmark {
+    pub fn applies_to_direction(&self, forward: bool) -> bool {
+        self.directions.is_empty() || applies_to_direction(&self.directions, forward)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -797,25 +864,6 @@ pub struct LocalApproach {
     pub turn_segments: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct LocalGeometrySegment {
-    pub road: String,
-    pub miles: f64,
-    pub cue: String,
-    pub speed_mph: f64,
-}
-
-impl Default for LocalGeometrySegment {
-    fn default() -> Self {
-        LocalGeometrySegment {
-            road: String::new(),
-            miles: 0.0,
-            cue: String::new(),
-            speed_mph: 25.0,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct LocalGeometry {
     pub target_id: String,
@@ -939,21 +987,20 @@ mod tests {
             lanes: 3,
             ..Default::default()
         };
-        assert_eq!(undivided.your_side(true), 1);
+        assert_eq!(undivided.your_side(), 1);
         let divided = LaneSegment {
             lanes: 3,
             oneway: true,
             ..Default::default()
         };
-        assert_eq!(divided.your_side(false), 3);
+        assert_eq!(divided.your_side(), 3);
         let split = LaneSegment {
             lanes: 5,
             lanes_forward: 3,
             lanes_backward: 2,
             ..Default::default()
         };
-        assert_eq!(split.your_side(true), 3);
-        assert_eq!(split.your_side(false), 2);
+        assert_eq!(split.your_side(), 2);
         assert_eq!(lane_word(2), "two");
         assert_eq!(lane_word(11), "11");
     }

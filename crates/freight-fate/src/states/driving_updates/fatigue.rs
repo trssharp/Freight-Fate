@@ -4,7 +4,7 @@ use ff_core::models::enforcement;
 use ff_core::speech_pacing::{EventPriority, SpeechCategory};
 
 use crate::app::{GameContext, SayEvent};
-use crate::states::base::Key;
+use crate::bindings::Action;
 use crate::states::driving::DrivingState;
 use crate::states::driving_core::*;
 
@@ -15,14 +15,9 @@ impl DrivingState {
         let moving = self.trip.truck.speed_mph() > 5.0;
         let mode = ctx.settings.hos_mode.clone();
 
-        // A self-serve bobtail is the driver's own personal conveyance, off
-        // duty by FMCSA's own rule. A carrier-ASSIGNED reposition is the
-        // opposite: dispatch sent the truck there for the carrier's benefit,
-        // which is on-duty driving like any other move (ROADMAP: "Company
-        // drivers get ASSIGNED repositions").
-        if self.job.bobtail && !self.job.assigned {
-            hos_mut_of(ctx).off_duty(gm);
-        } else if moving {
+        // Traveling to find work is commercial repositioning, including
+        // self-serve bobtail runs. Stopped time remains on duty.
+        if moving {
             hos_mut_of(ctx).drive(gm);
         } else {
             hos_mut_of(ctx).on_duty(gm); // the 14-hour window runs even while parked
@@ -53,6 +48,10 @@ impl DrivingState {
         }
         self.trip.hos_violation = !hos::HOS_NON_ENFORCED_MODES.contains(&mode.as_str())
             && hos_of(ctx).in_violation(&mode);
+        if moving && self.hazard_deadline.is_none() {
+            self.warn_last_hos_stop(ctx);
+            self.maybe_hos_planning_hint(ctx);
+        }
 
         let night = is_night(self.trip.local_hour());
         let now_h = self.absolute_game_hour(ctx, None);
@@ -203,10 +202,10 @@ impl DrivingState {
         // counts as a reaction, so a held trigger does too.
         let pad_reacted = ctx.controller.active()
             && (ctx.controller.steering().abs() > 0.0 || ctx.controller.brake() > 0.05);
-        let reacted = ctx.input.is_pressed(Key::Left)
-            || ctx.input.is_pressed(Key::Right)
-            || ctx.input.is_pressed(Key::Down)
-            || ctx.input.is_pressed(Key::B)
+        let reacted = ctx.bindings.pressed(&ctx.input, Action::SteerLeft)
+            || ctx.bindings.pressed(&ctx.input, Action::SteerRight)
+            || ctx.bindings.pressed(&ctx.input, Action::Brake)
+            || ctx.bindings.pressed(&ctx.input, Action::EmergencyBrake)
             || pad_reacted;
         if reacted {
             self.resolve_microsleep(ctx, false);
@@ -270,6 +269,9 @@ impl DrivingState {
                 SayEvent::new().category(SpeechCategory::Safety),
             );
         }
+        // A second run-off on top of a serious violation just suspended the
+        // CDL: the drive ends here instead of carrying on.
+        self.end_drive_if_licence_pulled(ctx);
     }
 
     /// Book a run-off-road fatigue event and say what it cost.
@@ -277,7 +279,7 @@ impl DrivingState {
     /// Falling asleep at the wheel is not a scrape: 49 CFR 392.3 forbids
     /// driving impaired by fatigue, and to a carrier this is a preventable
     /// safety incident. The first one costs standing; from the second on it
-    /// is a violation the licence answers for.
+    /// is a violation the license answers for.
     pub fn record_fatigue_event(&mut self, ctx: &mut GameContext) -> String {
         if ctx.profile.is_none() || self.enforcement_bypassed(ctx) {
             return String::new();
@@ -300,8 +302,8 @@ impl DrivingState {
         self.trip.truck.set_parking_brake();
         self.place_out_of_service(ctx);
         format!(
-            "Out of service for fatigue, {:.0} hours off duty. It is now {}. Hours of service \
-             reset, and the delivery deadline kept counting.",
+            "Out of service for fatigue, {:.0} hours off duty. It is now {}. Driving and duty \
+             clocks reset, and the delivery deadline kept counting.",
             enforcement::FATIGUE_OUT_OF_SERVICE_HOURS,
             clock_text(self.trip.local_hour())
         )

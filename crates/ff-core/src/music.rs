@@ -7,9 +7,11 @@
 //! `music/tables.rs` (the track pools) and `music/pools.rs` (host breaks,
 //! station maps, the duration index); this file is the selection logic.
 
+mod expansion;
 mod pools;
 mod tables;
 
+pub use expansion::NIGHT_LINE_VOCAL_TRACKS;
 use pools::TRACKS_BY_KEY;
 pub use pools::*;
 pub use tables::*;
@@ -78,6 +80,9 @@ pub trait MenuMusicProfile {
     fn active_truck_key(&self) -> String;
     fn name(&self) -> String;
     fn current_city(&self) -> String;
+    /// `profile.business_status`: company driver, leased owner-operator or
+    /// independent authority. The synthesized ladder splits on it.
+    fn business_status(&self) -> String;
 }
 
 /// True when the loaded career's clock currently reads night.
@@ -91,6 +96,28 @@ fn profile_is_night(profile: Option<&dyn MenuMusicProfile>) -> bool {
         Some(profile) => is_night(profile.game_hours() % 24.0),
     }
 }
+
+/// The ambience under the main menu, picked by the career it would load the
+/// way the music is: a truck stop lot after dark; by day, the yard where an
+/// owner-operator's own truck waits, or the dispatch office a company driver
+/// (or a new driver signing on) reports to.
+pub fn select_menu_ambience(profile: Option<&dyn MenuMusicProfile>) -> &'static str {
+    let [night_lot, yard, dispatch_office] = MENU_AMBIENCE;
+    match profile {
+        Some(_) if profile_is_night(profile) => night_lot,
+        Some(p) if crate::models::business_constants::is_owner_operator(&p.business_status()) => {
+            yard
+        }
+        _ => dispatch_office,
+    }
+}
+
+/// Every bed [`select_menu_ambience`] can pick.
+pub const MENU_AMBIENCE: [&str; 3] = [
+    "ambient/menu_night_lot",
+    "ambient/menu_yard",
+    "ambient/menu_dispatch_office",
+];
 
 /// Choose a menu bed: the night theme after dark, else the milestone bed.
 pub fn select_menu_music(profile: Option<&dyn MenuMusicProfile>) -> String {
@@ -229,12 +256,19 @@ pub fn select_drive_music(
         .expect("the drive pools are never empty")
 }
 
+/// The length of `key` if it can be known without audio: the shipped
+/// catalog or a synthesized piece (composed, not rendered). Anything else,
+/// such as a player file, is measured by the playing stream instead.
+pub fn known_track_duration_s(key: &str) -> Option<f64> {
+    if let Some(info) = TRACKS_BY_KEY.get(key) {
+        return Some(info.duration_s);
+    }
+    crate::music_synth::duration_s(key)
+}
+
 /// Best-known duration for slow playlist rotation.
 pub fn music_track_duration_s(track: &str) -> f64 {
-    TRACKS_BY_KEY
-        .get(track)
-        .map(|info| info.duration_s)
-        .unwrap_or(60.0)
+    known_track_duration_s(track).unwrap_or(60.0)
 }
 
 /// A stable shuffled track order for one station on one trip.
@@ -273,6 +307,7 @@ mod tests {
         total_miles: f64,
         owned_trucks: Vec<String>,
         truck: String,
+        business_status: String,
     }
 
     impl FakeProfile {
@@ -285,6 +320,7 @@ mod tests {
                 level: 1,
                 owned_trucks: vec!["rig".to_string()],
                 truck: "rig".to_string(),
+                business_status: crate::models::business_constants::COMPANY_DRIVER.to_string(),
                 ..Default::default()
             }
         }
@@ -314,6 +350,9 @@ mod tests {
         }
         fn current_city(&self) -> String {
             self.current_city.clone()
+        }
+        fn business_status(&self) -> String {
+            self.business_status.clone()
         }
     }
 
@@ -427,6 +466,29 @@ mod tests {
     }
 
     #[test]
+    fn test_menu_ambience_follows_the_clock_and_the_business() {
+        let mut company = FakeProfile::named("Rookie");
+        company.game_hours = 12.0;
+        assert_eq!(
+            select_menu_ambience(Some(&company)),
+            "ambient/menu_dispatch_office"
+        );
+
+        let mut owner = FakeProfile::named("Owner");
+        owner.game_hours = 12.0;
+        owner.business_status =
+            crate::models::business_constants::INDEPENDENT_AUTHORITY.to_string();
+        assert_eq!(select_menu_ambience(Some(&owner)), "ambient/menu_yard");
+
+        // After dark everyone is at the truck stop, whatever they drive for.
+        owner.game_hours = 23.0;
+        assert_eq!(select_menu_ambience(Some(&owner)), "ambient/menu_night_lot");
+
+        // No career yet: a new driver signing on at dispatch.
+        assert_eq!(select_menu_ambience(None), "ambient/menu_dispatch_office");
+    }
+
+    #[test]
     fn test_drive_music_sequence_is_stable_pool_for_trip_and_separates_day_night() {
         let route = FakeRoute;
         let day = select_drive_music_sequence(&route, 12345, 13.0, "");
@@ -454,7 +516,7 @@ mod tests {
 
     #[test]
     fn test_jazz_pool_exists_and_ships_assets() {
-        assert_eq!(JAZZ_TRACKS.len(), 7);
+        assert_eq!(JAZZ_TRACKS.len(), 15);
         assert_eq!(station_playlist("jazz"), JAZZ_TRACKS.as_slice());
     }
 

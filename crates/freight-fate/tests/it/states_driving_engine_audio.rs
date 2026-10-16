@@ -31,24 +31,31 @@ use freight_fate::audio::{
 };
 use freight_fate::playtest::harness::{PlaytestHarness, StartDelivery};
 use freight_fate::states::driving_core::shut_down_engine;
-use freight_fate::states::driving_updates::{SHIFT_END_CLUNK_VOLUME, SHIFT_LOAD_CAP};
+use freight_fate::states::driving_updates::{
+    JAKE_RATE_MAX, SHIFT_END_CLUNK_VOLUME, SHIFT_LOAD_CAP,
+};
 
 // -- the recording backend --------------------------------------------------------------
 
 /// What the backend was asked to do, in order.
+///
+/// Shared with `states_driving_engine_lean.rs`, which watches the two pans
+/// through the same recording backend rather than growing a second copy.
 #[derive(Default)]
-struct Calls {
-    played: Vec<(String, f64)>,
+pub(super) struct Calls {
+    pub(super) played: Vec<(String, f64)>,
     /// `play_bank(base, volume)`, kept apart from `played` the way Python's
     /// two separate stubs did.
     banks: Vec<(String, f64)>,
     /// `("start", channel, key, volume)` / `("vol", channel, volume)` /
     /// `("stop", channel)`, flattened into one ordered log the way the Python
     /// cases collected them.
-    loops: Vec<LoopCall>,
+    pub(super) loops: Vec<LoopCall>,
     reverse: Vec<&'static str>,
     engine_rpm: Vec<(f64, f64)>,
-    engine_pan: Vec<f64>,
+    pub(super) engine_pan: Vec<f64>,
+    /// `set_loop_pan(channel, pan)`: the road bed carries lane position now.
+    pub(super) loop_pans: Vec<(u32, f64)>,
     /// `set_engine_duck(duck)`: the shift-gap disengage, in order.
     ducks: Vec<f64>,
     engine_running: bool,
@@ -58,16 +65,17 @@ struct Calls {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum LoopCall {
+pub(super) enum LoopCall {
     Start(u32, String, f64),
     Volume(u32, f64),
+    Rate(u32, f64),
     Stop(u32),
 }
 
-type Log = Rc<RefCell<Calls>>;
+pub(super) type Log = Rc<RefCell<Calls>>;
 
-struct TrackingAudio {
-    log: Log,
+pub(super) struct TrackingAudio {
+    pub(super) log: Log,
 }
 
 impl Audio for TrackingAudio {
@@ -136,7 +144,15 @@ impl Audio for TrackingAudio {
             .loops
             .push(LoopCall::Volume(channel, volume));
     }
-    fn set_loop_pan(&mut self, _channel: u32, _pan: f64) {}
+    fn set_loop_pan(&mut self, channel: u32, pan: f64) {
+        self.log.borrow_mut().loop_pans.push((channel, pan));
+    }
+    fn set_loop_rate(&mut self, channel: u32, rate: f64) {
+        self.log
+            .borrow_mut()
+            .loops
+            .push(LoopCall::Rate(channel, rate));
+    }
     fn stop_loop_with(&mut self, channel: u32, _fade_ms: u32) {
         self.log.borrow_mut().loops.push(LoopCall::Stop(channel));
     }
@@ -482,6 +498,218 @@ fn test_jake_growl_follows_stage_rpm_and_cuts_through_shifts() {
     );
 }
 
+/// Agent drive, Silverthorne to Edwards (2026-09-24): the jake bed restarted
+/// dozens of times in a row, one start per throttle pulse. The gap is still
+/// silent; the loop is held through it and comes back up, not restarted.
+#[test]
+fn test_a_jake_gap_holds_the_loop_instead_of_restarting_it() {
+    let (mut harness, log) = a_drive("Jake Gap");
+    harness.with_drive(|drive, _| {
+        let truck = drive.truck_mut();
+        truck.set_air_ready(false);
+        truck.start_engine();
+        truck.transmission.automatic = true;
+        truck.transmission.gear = 8;
+        truck.velocity_mps = 20.0;
+        truck.throttle = 0.0;
+        truck.engine_brake_stage = 2;
+        truck.rpm = 2000.0;
+    });
+    log.borrow_mut().loops.clear();
+    for frame in 0..40 {
+        let throttle = if (frame / 5) % 2 == 1 { 0.5 } else { 0.0 };
+        harness.with_drive(move |drive, _| drive.truck_mut().throttle = throttle);
+        update_audio(&mut harness, 0.05);
+    }
+    let calls = loops(&log);
+    let starts = calls
+        .iter()
+        .filter(|call| matches!(call, LoopCall::Start(CH_JAKE, _, _)))
+        .count();
+    assert_eq!(starts, 1, "{calls:#?}");
+    assert!(!calls.contains(&LoopCall::Stop(CH_JAKE)), "{calls:#?}");
+    assert!(
+        calls.contains(&LoopCall::Volume(CH_JAKE, 0.0)),
+        "the gap is silent"
+    );
+
+    // Switched off for good, it stops.
+    harness.with_drive(|drive, _| {
+        drive.truck_mut().throttle = 0.0;
+        drive.truck_mut().engine_brake_stage = 0;
+    });
+    for _ in 0..60 {
+        update_audio(&mut harness, 0.05);
+    }
+    assert!(loops(&log).contains(&LoopCall::Stop(CH_JAKE)));
+}
+
+/// A stage change is a change of level on the loop already playing, never a
+/// new start: the owner heard the engine-brake sound "looping" down I-70 as
+/// the retarder walked 3, 2, 1, 2 (2026-09-24).
+#[test]
+fn test_a_jake_stage_change_turns_the_loop_rather_than_restarting_it() {
+    let (mut harness, log) = a_drive("Jake Stages");
+    harness.with_drive(|drive, _| {
+        let truck = drive.truck_mut();
+        truck.set_air_ready(false);
+        truck.start_engine();
+        truck.transmission.automatic = true;
+        truck.transmission.gear = 8;
+        truck.velocity_mps = 20.0;
+        truck.throttle = 0.0;
+        truck.engine_brake_stage = 3;
+        truck.rpm = 1600.0;
+    });
+    log.borrow_mut().loops.clear();
+    for stage in [3, 2, 1, 2, 3, 1, 3] {
+        harness.with_drive(move |drive, _| drive.truck_mut().engine_brake_stage = stage);
+        for _ in 0..10 {
+            update_audio(&mut harness, 0.05);
+        }
+    }
+    let calls = loops(&log);
+    let starts = calls
+        .iter()
+        .filter(|call| matches!(call, LoopCall::Start(CH_JAKE, _, _)))
+        .count();
+    assert_eq!(starts, 1, "{calls:#?}");
+    assert!(!calls.contains(&LoopCall::Stop(CH_JAKE)), "{calls:#?}");
+}
+
+/// The last playback rate set on the jake channel, if any.
+fn jake_rate(log: &Log) -> Option<f64> {
+    loops(log).into_iter().rev().find_map(|call| match call {
+        LoopCall::Rate(CH_JAKE, rate) => Some(rate),
+        _ => None,
+    })
+}
+
+#[test]
+fn test_jake_pitch_follows_the_revs_so_a_manual_driver_can_hear_the_shift_point() {
+    // One 1600 rpm cut stands for every band, so the growl used to hold one
+    // note however the revs moved. Now it is re-pitched from that native
+    // speed every frame: a gear run down toward the shift point falls in
+    // pitch, and the downshift brings it back up (tester ask, 2026-09-14).
+    let (mut harness, log) = a_drive("Jake Pitch");
+    harness.with_drive(|drive, _| {
+        let truck = drive.truck_mut();
+        truck.set_air_ready(false);
+        truck.start_engine();
+        truck.transmission.automatic = false;
+        truck.transmission.gear = 8;
+        truck.velocity_mps = 20.0;
+        truck.throttle = 0.0;
+        truck.engine_brake_stage = 3;
+        truck.rpm = 1600.0;
+    });
+    log.borrow_mut().loops.clear();
+    update_audio(&mut harness, 0.0);
+    assert!(jake_start(&log).is_some(), "the growl started");
+    assert!(
+        close(jake_rate(&log).unwrap(), 1.0),
+        "{:?}",
+        jake_rate(&log)
+    );
+
+    // Revs falling in the same gear: the note falls with them.
+    log.borrow_mut().loops.clear();
+    harness.with_drive(|drive, _| drive.truck_mut().rpm = 1200.0);
+    update_audio(&mut harness, 0.0);
+    assert!(
+        close(jake_rate(&log).unwrap(), 0.75),
+        "{:?}",
+        jake_rate(&log)
+    );
+
+    // The downshift lands the revs high again: the note climbs.
+    harness.with_drive(|drive, _| drive.truck_mut().rpm = 2000.0);
+    update_audio(&mut harness, 0.0);
+    assert!(
+        close(jake_rate(&log).unwrap(), 1.25),
+        "{:?}",
+        jake_rate(&log)
+    );
+
+    // Just above the jake floor it still tracks; past redline the pitch
+    // stops at the clamp rather than sliding into tape territory.
+    harness.with_drive(|drive, _| drive.truck_mut().rpm = 960.0);
+    update_audio(&mut harness, 0.0);
+    assert!(
+        close(jake_rate(&log).unwrap(), 0.6),
+        "{:?}",
+        jake_rate(&log)
+    );
+    harness.with_drive(|drive, _| drive.truck_mut().rpm = 2400.0);
+    update_audio(&mut harness, 0.0);
+    assert!(
+        close(jake_rate(&log).unwrap(), JAKE_RATE_MAX),
+        "{:?}",
+        jake_rate(&log)
+    );
+}
+
+#[test]
+fn test_manual_shift_clunks_at_the_lever_and_again_when_the_gear_takes() {
+    // Automatic shifts are kachunk -- sigh -- kachunk; a manual one used to
+    // be a single clunk at the lever and silence when the clutch came back
+    // in (tester ask, 2026-09-14). The second clunk waits for the gear to
+    // actually take: clutch in, lever time over.
+    let (mut harness, log) = a_drive("Manual Clunk");
+    harness.with_drive(|drive, _| {
+        let truck = drive.truck_mut();
+        truck.set_air_ready(false);
+        truck.start_engine();
+        truck.transmission.automatic = false;
+        truck.transmission.gear = 4;
+        truck.velocity_mps = 12.0;
+        truck.rpm = 1500.0;
+        truck.transmission.clutch = 1.0; // pedal down
+    });
+    log.borrow_mut().banks.clear();
+    harness.with_drive(|drive, ctx| drive.manual_shift(ctx, 5));
+    assert_eq!(
+        log.borrow().banks.as_slice(),
+        &[("vehicle/shift_manual".to_string(), 1.0)],
+        "the lever clunk, at full level"
+    );
+
+    // Clutch still down through the lever time: nothing engages, nothing
+    // plays.
+    log.borrow_mut().banks.clear();
+    update_audio(&mut harness, 0.0);
+    assert!(log.borrow().banks.is_empty(), "{:#?}", log.borrow().banks);
+
+    // Clutch back in and the lever time up: the gear takes.
+    harness.with_drive(|drive, _| {
+        drive.truck_mut().transmission.clutch = 0.0;
+        drive.truck_mut().transmission.shift_timer = 0.0;
+    });
+    update_audio(&mut harness, 0.0);
+    assert_eq!(
+        log.borrow().banks.as_slice(),
+        &[("vehicle/shift_manual".to_string(), SHIFT_END_CLUNK_VOLUME)],
+        "the engagement clunk, softer"
+    );
+
+    // Once only.
+    log.borrow_mut().banks.clear();
+    update_audio(&mut harness, 0.0);
+    assert!(log.borrow().banks.is_empty(), "{:#?}", log.borrow().banks);
+
+    // A shift taken to neutral engages nothing, so it owes nothing.
+    harness.with_drive(|drive, _| {
+        drive.truck_mut().transmission.clutch = 1.0;
+        drive.manual_engage_clunk_pending = true;
+        drive.truck_mut().transmission.gear = 0;
+        drive.truck_mut().transmission.clutch = 0.0;
+        drive.truck_mut().transmission.shift_timer = 0.0;
+    });
+    log.borrow_mut().banks.clear();
+    update_audio(&mut harness, 0.0);
+    assert!(log.borrow().banks.is_empty(), "{:#?}", log.borrow().banks);
+}
+
 /// The key the jake channel was last started on, if it was started.
 fn jake_start(log: &Log) -> Option<String> {
     loops(log).into_iter().find_map(|call| match call {
@@ -676,32 +904,99 @@ fn joint_plays(log: &Log) -> Vec<f64> {
 }
 
 #[test]
-fn test_engine_pan_tracks_lane_position_each_audio_frame_and_resets_for_full() {
-    let (mut harness, log) = a_drive("Engine lane pan");
-    for mode in ["partial", "off", "full"] {
-        harness.app.ctx.settings.lane_keeping = mode.into();
-        for (offset, expected) in [
-            (0.0, 0.0),
-            (0.65, 0.65),
-            (-0.4, -0.4),
-            (2.0, 1.0),
-            (-2.0, -1.0),
-        ] {
-            harness.with_drive(|drive, _| drive.lane.offset = offset);
-            update_audio(&mut harness, 1.0 / 60.0);
-            assert_eq!(
-                log.borrow().engine_pan.last().copied(),
-                Some(if mode == "full" { 0.0 } else { expected })
-            );
-        }
-    }
+fn test_the_engine_carries_the_guide_and_the_road_bed_carries_the_seat() {
+    // Owner ruling 2026-09-18: the steering guide moved off the road bed and
+    // onto the engine, and the lane-position readout took the bed in exchange.
+    // The two must not blur -- the engine says where to GO, the bed says where
+    // the truck IS, and the pans point opposite ways when the truck is
+    // drifting, which is exactly what makes them tellable apart.
+    let (mut harness, log) = a_drive("Engine guide pan");
+    harness.app.ctx.settings.lane_departure_warning = true;
     for mode in ["partial", "off"] {
         harness.app.ctx.settings.lane_keeping = mode.into();
-        harness.with_drive(|drive, _| drive.lane.offset = 0.75);
-        update_audio(&mut harness, 0.0);
-        assert_eq!(log.borrow().engine_pan.last(), Some(&0.75));
-        harness.app.ctx.settings.lane_keeping = "full".into();
-        update_audio(&mut harness, 0.0);
-        assert_eq!(log.borrow().engine_pan.last(), Some(&0.0));
+        harness.with_drive(|drive, _| {
+            // Rolling: the guide only wakes on a truck actually driving.
+            drive.trip.truck.engine_on = true;
+            drive.trip.truck.velocity_mps = 55.0 / 2.23694;
+            drive.lane.offset = 0.8; // well past DRIFT_WAKE, toward the right
+            drive.engine_guide_pan_applied = Some(0.0);
+            drive.road_pan_applied = Some(0.0);
+        });
+        log.borrow_mut().engine_pan.clear();
+        log.borrow_mut().loop_pans.clear();
+        // The guide slews rather than snapping, so give it road to lean over.
+        for _ in 0..120 {
+            harness.with_drive(|drive, ctx| drive.update_lane_guidance_audio(ctx, 1.0 / 60.0));
+        }
+
+        let guide = log
+            .borrow()
+            .engine_pan
+            .last()
+            .copied()
+            .unwrap_or_else(|| panic!("{mode}: the engine was never panned"));
+        assert!(
+            guide < -0.1,
+            "{mode}: drifting right, the engine must lean LEFT to be followed \
+             back to centre; got {guide}"
+        );
+        let seat = log
+            .borrow()
+            .loop_pans
+            .last()
+            .copied()
+            .unwrap_or_else(|| panic!("{mode}: the road bed was never panned"));
+        assert!(
+            seat.1 > 0.1,
+            "{mode}: the bed reports where the truck IS, which is right of \
+             centre; got {seat:?}"
+        );
     }
+
+    // Full lane keeping holds the lane itself, so there is no DRIFT to
+    // report and both channels come back to centre. A turn still leans there
+    // -- the owner's 2026-09-18 ruling -- which `turn_guide` covers on its
+    // own; this fixture's road is straight.
+    harness.app.ctx.settings.lane_keeping = "full".into();
+    harness.with_drive(|drive, _| {
+        drive.engine_guide_pan_applied = Some(0.5); // so a write back to centre shows
+        drive.road_pan_applied = Some(0.5);
+    });
+    log.borrow_mut().engine_pan.clear();
+    log.borrow_mut().loop_pans.clear();
+    // Long enough for the lean to SLEW home rather than snap: easing back is
+    // the behaviour, so the test has to give it the road to do it in.
+    for _ in 0..120 {
+        harness.with_drive(|drive, ctx| drive.update_lane_guidance_audio(ctx, 1.0 / 60.0));
+    }
+    assert_eq!(log.borrow().engine_pan.last().copied(), Some(0.0));
+    assert_eq!(log.borrow().loop_pans.last().map(|p| p.1), Some(0.0));
+}
+
+#[test]
+fn test_the_engine_pan_is_the_guide_and_not_the_lane_position() {
+    // The engine's pan belongs to the guide now. It used to be set straight
+    // from lane.offset as a position readout, which would fight the guide for
+    // the same channel and leave whichever ran last in charge.
+    let (mut harness, log) = a_drive("Engine pan ownership");
+    harness.app.ctx.settings.lane_keeping = "off".into();
+    harness.app.ctx.settings.lane_departure_warning = true;
+    harness.with_drive(|drive, _| {
+        drive.trip.truck.engine_on = true;
+        drive.trip.truck.velocity_mps = 55.0 / 2.23694;
+        drive.lane.offset = 0.75; // drifted well right
+    });
+    log.borrow_mut().engine_pan.clear();
+    update_audio(&mut harness, 1.0 / 60.0);
+    let pan = log
+        .borrow()
+        .engine_pan
+        .last()
+        .copied()
+        .expect("the guide pans the engine from the audio frame");
+    assert!(
+        pan <= 0.0,
+        "drifted right, the guide must lean left or sit centred, never mirror \
+         the offset back as a position readout; got {pan}"
+    );
 }

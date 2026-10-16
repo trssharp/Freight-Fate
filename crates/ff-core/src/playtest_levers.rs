@@ -155,7 +155,9 @@ pub fn resolve_city_forgiving(world: &World, city: &str) -> String {
     }
 }
 
-fn apply_city<C: LeverContext + ?Sized>(ctx: &mut C, city: &str) -> Vec<String> {
+/// Move a parked career to `city` with no miles driven (the city lever; the
+/// agent server's scenario tool reuses it).
+pub fn apply_city<C: LeverContext + ?Sized>(ctx: &mut C, city: &str) -> Vec<String> {
     let key = resolve_city_forgiving(ctx.world(), city);
     if !ctx.world().cities.contains_key(&key) {
         return vec![format!(
@@ -175,7 +177,10 @@ fn apply_city<C: LeverContext + ?Sized>(ctx: &mut C, city: &str) -> Vec<String> 
     )]
 }
 
-fn apply_clock<C: LeverContext + ?Sized>(ctx: &mut C, hour: f64) -> Vec<String> {
+/// Move the local clock forward to `hour`, logging the wait off duty and
+/// counting a ten-hour wait as a full break (the clock lever; the agent
+/// server's scenario tool reuses it).
+pub fn apply_clock<C: LeverContext + ?Sized>(ctx: &mut C, hour: f64) -> Vec<String> {
     let current_city = ctx.profile_mut().current_city.clone();
     let Ok(city_obj) = ctx.world().city(&current_city) else {
         return vec![

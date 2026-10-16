@@ -252,9 +252,12 @@ pub trait AudioBackend {
         self.play(key, volume, pan);
     }
     fn play(&mut self, _key: &str, _volume: f64, _pan: f64) {}
+    fn update_cue(&mut self, _key: &str, _volume: f64, _pan: f64) {}
+    fn stop_cue(&mut self, _key: &str) {}
     fn start_loop(&mut self, _channel: u32, _key: &str, _volume: f64, _fade_ms: u32) {}
     fn set_loop_volume(&mut self, _channel: u32, _volume: f64) {}
     fn set_loop_pan(&mut self, _channel: u32, _pan: f64) {}
+    fn set_loop_rate(&mut self, _channel: u32, _rate: f64) {}
     fn stop_loop(&mut self, _channel: u32, _fade_ms: u32) {}
     /// The `(key, gain)` sounding on a loop slot, for the facade's live
     /// jake re-voice (the Python facade read `_loops[CH_JAKE]`).
@@ -315,6 +318,10 @@ pub trait AudioBackend {
     }
     fn music_playing(&self) -> bool {
         false
+    }
+    /// How long the playing music track runs, when the stream can tell.
+    fn music_length_s(&self) -> Option<f64> {
+        None
     }
     fn stop_music(&mut self, _fade_ms: u32) {}
 

@@ -10,14 +10,16 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use ff_core::models::enforcement;
 use ff_core::models::solvency::money_text;
 use ff_core::pyfmt::{fmt_grouped, py_int};
+use ff_core::settings::ScoreDisplay;
 use serde_json::Value;
 
 use crate::app::GameContext;
 use crate::impl_state_for_menu;
 use crate::online_presence::{self, ProfileFetch};
-use crate::states::base::{Menu, MenuCore, MenuItem};
+use crate::states::base::{Menu, MenuCore, MenuItem, SimpleMenuState};
 
 use super::board::updated_text;
 use super::support::{menu_default_enter, online_transport, run_worker, Mailbox};
@@ -80,6 +82,20 @@ fn safety_record_text(record: &Value) -> String {
             "major offenses",
         ),
     ];
+    // Public by owner ruling 2026-09-24 (FMCSA publishes inspection
+    // out-of-service results); the reason behind an order stays private.
+    if let Some(orders) = num(record, "outOfServiceOrders") {
+        parts.push(counted(
+            orders,
+            "out-of-service order",
+            "out-of-service orders",
+        ));
+    }
+    // A crash on the accident register (49 CFR 390.15), such as a rollover:
+    // read when the site sends it, like the out-of-service count.
+    if let Some(crashes) = num(record, "crashes") {
+        parts.push(counted(crashes, "crash", "crashes"));
+    }
     if let Some(claims) = num(record, "cargoClaims") {
         parts.push(counted(claims, "cargo claim", "cargo claims"));
     }
@@ -105,7 +121,7 @@ fn safety_record_text(record: &Value) -> String {
 
 /// The spoken rows for a profile the site sent, in the design's order. Back
 /// is not among them; the screen adds it.
-pub fn profile_rows(profile: &Value) -> Vec<String> {
+pub fn profile_rows(profile: &Value, score_display: ScoreDisplay) -> Vec<String> {
     let mut rows = Vec::new();
     let driver = profile.get("driver").cloned().unwrap_or(Value::Null);
     rows.push(text(&driver, "displayName").unwrap_or_else(|| "A driver".to_string()));
@@ -132,6 +148,14 @@ pub fn profile_rows(profile: &Value) -> Vec<String> {
 
     if let Some(name) = text(snapshot, "saveName") {
         rows.push(format!("Current career: {name}"));
+    }
+    // A career that is over says so before the employment it no longer has.
+    if snapshot
+        .get("careerEnded")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        rows.push("Career ended: CDL disqualified for life".to_string());
     }
     if let Some(employment) =
         text(snapshot, "businessIdentity").or_else(|| text(snapshot, "employmentStatus"))
@@ -195,7 +219,10 @@ pub fn profile_rows(profile: &Value) -> Vec<String> {
         rows.push(format!("Net worth: {}", money_text(n)));
     }
     if let Some(n) = num(snapshot, "reputation") {
-        rows.push(format!("Reputation: {} out of 100", whole(n)));
+        rows.push(format!(
+            "Reputation: {}",
+            enforcement::reputation_text(n, score_display)
+        ));
     }
     if let Some(Value::Array(endorsements)) = snapshot.get("endorsements") {
         let names: Vec<String> = endorsements
@@ -225,14 +252,51 @@ fn achievement_rows(profile: &Value) -> Vec<String> {
         whole(count)
     )];
     if let Some(Value::Array(recent)) = profile.get("recentAchievements") {
-        rows.extend(
-            recent
-                .iter()
-                .filter_map(|item| text(item, "label"))
-                .map(|label| format!("Recent achievement: {label}")),
-        );
+        // The site sends what the badge was for beside its name; a row
+        // without one (an older server) still reads as the name alone.
+        rows.extend(recent.iter().filter_map(|item| {
+            let label = text(item, "label")?;
+            Some(match text(item, "description") {
+                Some(description) if !description.trim().is_empty() => {
+                    format!("Recent achievement: {label}. {}", description.trim())
+                }
+                _ => format!("Recent achievement: {label}"),
+            })
+        }));
     }
     rows
+}
+
+/// The places a driver has delivered to, one line per state with its cities,
+/// in the site's order. `None` when the site sent no list (no shared career,
+/// or a snapshot from before the list existed), so the screen offers no row.
+pub fn places_rows(profile: &Value) -> Option<Vec<String>> {
+    let places = profile.get("snapshot")?.get("visitedPlaces")?.as_array()?;
+    let rows: Vec<String> = places
+        .iter()
+        .filter_map(|place| {
+            let state = text(place, "state")?;
+            let cities: Vec<String> = match place.get("cities") {
+                Some(Value::Array(cities)) => cities
+                    .iter()
+                    .filter_map(|city| city.as_str().map(str::trim))
+                    .filter(|city| !city.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+                _ => Vec::new(),
+            };
+            Some(if cities.is_empty() {
+                state
+            } else {
+                format!("{state}: {}", cities.join(", "))
+            })
+        })
+        .collect();
+    Some(if rows.is_empty() {
+        vec!["No deliveries yet.".to_string()]
+    } else {
+        rows
+    })
 }
 
 /// The last few road-journal lines.
@@ -387,7 +451,7 @@ impl Menu for DriverProfileState {
         menu_default_enter(self, ctx);
     }
 
-    fn build_items(&mut self, _ctx: &mut GameContext) -> Vec<MenuItem<Self>> {
+    fn build_items(&mut self, ctx: &mut GameContext) -> Vec<MenuItem<Self>> {
         self.absorb();
         let speak = |s: &mut Self, ctx: &mut GameContext| s.speak_current(ctx);
         let mut items: Vec<MenuItem<Self>> = Vec::new();
@@ -399,8 +463,19 @@ impl Menu for DriverProfileState {
                 items.push(MenuItem::new("Checking the profile", speak));
             }
             Some(ProfileFetch::Profile(profile)) => {
-                for row in profile_rows(profile) {
+                let mut places = places_rows(profile);
+                for row in profile_rows(profile, ctx.settings.score_display) {
+                    // The list opens from the row after the count it backs.
+                    let after = row.starts_with("Cities visited:");
                     items.push(MenuItem::new(row, speak));
+                    if after {
+                        if let Some(lines) = places.take() {
+                            items.push(places_item(lines));
+                        }
+                    }
+                }
+                if let Some(lines) = places {
+                    items.push(places_item(lines));
                 }
             }
             Some(other) => {
@@ -431,3 +506,11 @@ impl Menu for DriverProfileState {
 }
 
 impl_state_for_menu!(DriverProfileState);
+
+/// The row that opens a driver's places visited as a list to review.
+fn places_item(lines: Vec<String>) -> MenuItem<DriverProfileState> {
+    MenuItem::new("Places visited", move |_s: &mut DriverProfileState, ctx| {
+        ctx.push_state(SimpleMenuState::readout("Places visited", lines.clone()));
+    })
+    .help("Open the list of states this driver has delivered to, each with its cities.")
+}

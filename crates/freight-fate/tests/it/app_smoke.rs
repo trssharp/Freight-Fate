@@ -76,10 +76,10 @@ fn a_headless_smoke_run_boots_five_frames_and_exits_cleanly() {
     // The real main menu greets the player on entry, as it does in Python.
     let first = &app.main_lines()[0];
     assert!(
-        first.starts_with("Welcome to Freight Fate, version "),
+        first.starts_with("Freight Fate "),
         "unexpected first line: {first}"
     );
-    assert!(first.contains("An audio trucking adventure across America."));
+    assert!(!first.contains("An audio trucking adventure across America."));
 }
 
 #[test]
@@ -169,10 +169,7 @@ fn test_full_game_flow_headless() {
     app.push_state(MainMenuState::new());
     assert!(is::<MainMenuState>(&app));
     assert_eq!(app.visible_lines()[0], "Freight Fate");
-    let welcome = format!(
-        "Welcome to Freight Fate, version {}.",
-        updater::spoken_version(version())
-    );
+    let welcome = format!("Freight Fate {}.", updater::spoken_version(version()));
     assert!(app.main_lines().iter().any(|line| line.contains(&welcome)));
 
     // navigate to "New career" and select it
@@ -251,9 +248,8 @@ fn test_full_game_flow_headless() {
     // very key the drive below presses next.
     assert!(!departure.contains("Departing now"), "{departure}");
     assert!(departure.contains("Engine off."), "{departure}");
-    assert!(!departure.contains("Legal HOS plan"), "{departure}");
-    assert!(!departure.contains("Fuel-capable stops"), "{departure}");
-    assert!(!departure.contains("Parking notes"), "{departure}");
+    assert!(!departure.contains("Break stops:"), "{departure}");
+    assert!(!departure.contains("Fuel stops:"), "{departure}");
 
     // start the engine and drive the whole trip with simulated input
     key(&mut app, Key::E);
@@ -405,7 +401,7 @@ fn test_garage_upgrade_and_truck_purchase_flow() {
         let p = profile_mut(&mut app);
         p.business_status = LEASED_OWNER_OPERATOR.to_string();
         p.owned_trucks = vec!["rig".to_string()];
-        p.money = 200_000.0;
+        p.set_money(200_000.0);
         p.path()
     };
     let reloaded = |path: &std::path::Path| Profile::load(path).expect("the save reloads");
@@ -428,10 +424,10 @@ fn test_garage_upgrade_and_truck_purchase_flow() {
     key(&mut app, Key::Return);
     assert_eq!(profile(&app).upgrades.get("engine_tune"), Some(&2));
     assert_eq!(reloaded(&save_path).upgrades.get("engine_tune"), Some(&2));
-    let money_after_tiers = profile(&app).money;
+    let money_after_tiers = profile(&app).money();
     key(&mut app, Key::Return);
     assert_eq!(profile(&app).upgrades.get("engine_tune"), Some(&2));
-    assert_eq!(profile(&app).money, money_after_tiers);
+    assert_eq!(profile(&app).money(), money_after_tiers);
     assert!(
         current_label::<UpgradeShopState>(&app).contains("owned"),
         "{}",
@@ -445,14 +441,14 @@ fn test_garage_upgrade_and_truck_purchase_flow() {
     assert!(is::<TruckShopState>(&app));
 
     move_to::<TruckShopState>(&mut app, "Heavy hauler");
-    let money_before = profile(&app).money;
+    let money_before = profile(&app).money();
     key(&mut app, Key::Return);
     assert_eq!(profile(&app).truck, "heavy_hauler");
     assert!(profile(&app)
         .owned_trucks
         .iter()
         .any(|k| k == "heavy_hauler"));
-    assert_eq!(profile(&app).money, money_before - 52_000.0);
+    assert_eq!(profile(&app).money(), money_before - 52_000.0);
     let saved = reloaded(&save_path);
     assert_eq!(saved.truck, "heavy_hauler");
     assert!(saved.owned_trucks.iter().any(|k| k == "heavy_hauler"));
@@ -463,10 +459,10 @@ fn test_garage_upgrade_and_truck_purchase_flow() {
     );
 
     // switch back to the standard rig (already owned, no charge)
-    let money_before = profile(&app).money;
+    let money_before = profile(&app).money();
     select::<TruckShopState>(&mut app, "Standard rig");
     assert_eq!(profile(&app).truck, "rig");
-    assert_eq!(profile(&app).money, money_before);
+    assert_eq!(profile(&app).money(), money_before);
     assert_eq!(reloaded(&save_path).truck, "rig");
 }
 
@@ -548,7 +544,7 @@ fn test_pause_and_abandon_returns_to_city() {
 
     key(&mut app, Key::Escape);
     assert!(is::<PauseMenuState>(&app));
-    let money = profile(&app).money;
+    let money = profile(&app).money();
     select::<PauseMenuState>(&mut app, "Abandon job");
     // The abandon now needs a Yes/No confirmation that lands on No.
     assert!(is::<AbandonJobConfirmationState>(&app));
@@ -559,7 +555,7 @@ fn test_pause_and_abandon_returns_to_city() {
     key(&mut app, Key::Down); // arrow to Yes
     key(&mut app, Key::Return);
     assert!(is::<CityMenuState>(&app));
-    assert_eq!(profile(&app).money, money - 500.0);
+    assert_eq!(profile(&app).money(), money - 500.0);
     assert_eq!(profile(&app).current_city, origin);
 }
 
@@ -571,13 +567,13 @@ fn test_abandon_prompt_no_returns_to_pause_menu() {
     key(&mut app, Key::Escape);
     assert!(is::<PauseMenuState>(&app));
     let pause = app.state().expect("the pause menu");
-    let money = profile(&app).money;
+    let money = profile(&app).money();
     let active_trip = profile(&app).active_trip.clone();
     select::<PauseMenuState>(&mut app, "Abandon job");
     assert!(is::<AbandonJobConfirmationState>(&app));
     // Enter on the default "No" cancels and returns to the pause menu.
     key(&mut app, Key::Return);
     assert!(std::rc::Rc::ptr_eq(&app.state().expect("a state"), &pause));
-    assert_eq!(profile(&app).money, money);
+    assert_eq!(profile(&app).money(), money);
     assert_eq!(profile(&app).active_trip, active_trip);
 }

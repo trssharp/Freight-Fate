@@ -12,7 +12,7 @@ use freight_fate::app::testing::TestApp;
 use freight_fate::app::SharedState;
 use freight_fate::net::testing::FakeTransport;
 use freight_fate::net::NetError;
-use freight_fate::states::base::{Key, Menu};
+use freight_fate::states::base::{Key, Menu, SimpleMenuState};
 use freight_fate::states::online_hub::OnlineHubState;
 use freight_fate::states::online_states::{profile_rows, DriverProfileState, DriversOnlineState};
 use serde_json::{json, Value};
@@ -49,7 +49,7 @@ fn full_profile() -> Value {
             "damageFreeRate": 99.0,
             "safetyRecord": {
                 "citations": 2, "seriousViolations": 0, "majorOffenses": 0,
-                "cargoClaims": 1, "carrierTerminations": 0, "repossessions": 0,
+                "outOfServiceOrders": 1, "cargoClaims": 1, "carrierTerminations": 0, "repossessions": 0,
             },
             "statesVisited": 12,
             "citiesVisited": 40,
@@ -63,7 +63,8 @@ fn full_profile() -> Value {
         "presence": {"activity": "Driving", "detail": "I-80 near Reno", "updatedAt": NOW_MS},
         "achievementCount": 14,
         "recentAchievements": [
-            {"achievementKey": "a", "label": "First Delivery", "earnedAt": 1},
+            {"achievementKey": "a", "label": "First Delivery", "earnedAt": 1,
+             "description": "The first load signed for and delivered."},
             {"achievementKey": "b", "label": "Night Owl", "earnedAt": 2},
         ],
         "events": [{"eventId": "e1", "summary": "Delivered produce to Reno on time."}],
@@ -87,7 +88,7 @@ fn rows(app: &TestApp, shared: &SharedState) -> Vec<String> {
 #[test]
 fn test_the_rows_follow_the_designs_spoken_order_one_fact_each() {
     assert_eq!(
-        profile_rows(&full_profile())
+        profile_rows(&full_profile(), ff_core::settings::ScoreDisplay::Both)
             .into_iter()
             .map(|row| row.replace(&updated_phrase(), "updated"))
             .collect::<Vec<_>>(),
@@ -105,17 +106,17 @@ fn test_the_rows_follow_the_designs_spoken_order_one_fact_each() {
             "Lifetime miles: 45,679",
             "On time: 97 percent",
             "Damage free: 99 percent",
-            "Safety record: 2 citations, 0 serious violations, 0 major offenses, 1 cargo claim, \
-             0 carrier terminations, 0 repossessions",
+            "Safety record: 2 citations, 0 serious violations, 0 major offenses, \
+             1 out-of-service order, 1 cargo claim, 0 carrier terminations, 0 repossessions",
             "States visited: 12",
             "Cities visited: 40",
             "Longest haul: 1,200 miles",
             "Lifetime career earnings: 123,456 dollars",
             "Net worth: 9,999 dollars",
-            "Reputation: 78 out of 100",
+            "Reputation: Well regarded. 78 out of 100.",
             "Endorsements: Hazmat, Tanker",
             "Achievements across every career: 14",
-            "Recent achievement: First Delivery",
+            "Recent achievement: First Delivery. The first load signed for and delivered.",
             "Recent achievement: Night Owl",
             "Road journal: Delivered produce to Reno on time.",
         ]
@@ -138,7 +139,7 @@ fn test_a_driver_with_nothing_shared_yet_reads_as_empty_not_broken() {
         "events": [],
     });
     assert_eq!(
-        profile_rows(&profile),
+        profile_rows(&profile, ff_core::settings::ScoreDisplay::Both),
         vec![
             "New Driver",
             "Off duty",
@@ -150,10 +151,25 @@ fn test_a_driver_with_nothing_shared_yet_reads_as_empty_not_broken() {
 }
 
 #[test]
+fn test_a_site_that_does_not_send_orders_reads_the_record_without_them() {
+    let mut profile = full_profile();
+    profile["snapshot"]["safetyRecord"]
+        .as_object_mut()
+        .expect("a record")
+        .remove("outOfServiceOrders");
+    let listed = profile_rows(&profile, ff_core::settings::ScoreDisplay::Both);
+    let record = listed
+        .iter()
+        .find(|r| r.starts_with("Safety record"))
+        .expect("a safety record row");
+    assert!(!record.contains("out-of-service"), "{record}");
+}
+
+#[test]
 fn test_net_worth_is_left_out_until_every_part_of_it_is_known() {
     let mut profile = full_profile();
     profile["snapshot"]["netWorthComplete"] = json!(false);
-    let listed = profile_rows(&profile);
+    let listed = profile_rows(&profile, ff_core::settings::ScoreDisplay::Both);
     assert!(
         !listed.iter().any(|r| r.starts_with("Net worth")),
         "{listed:?}"
@@ -341,4 +357,50 @@ fn test_your_profile_on_the_online_menu_opens_your_own() {
     with_state::<DriverProfileState, _>(&top, |s| {
         assert_eq!(s.driver_id(), me.driver_id);
     });
+}
+
+#[test]
+fn test_places_visited_opens_from_the_row_after_the_city_count() {
+    let mut app = TestApp::new();
+    let mut profile = full_profile();
+    profile["snapshot"]["visitedPlaces"] = json!([
+        {"state": "Illinois", "cities": ["Chicago", "Rockford"]},
+        {"state": "Nevada", "cities": ["Reno"]},
+    ]);
+    let transport = FakeTransport::replying(profile);
+    let _guard = install_transport(transport.clone());
+    let shared = open_profile(&mut app, "road-star-1234", None, false);
+    tick(&mut app, &shared);
+
+    let listed = rows(&app, &shared);
+    let count = listed
+        .iter()
+        .position(|r| r == "Cities visited: 40")
+        .expect("the city count is listed");
+    assert_eq!(listed[count + 1], "Places visited", "{listed:?}");
+
+    move_to::<DriverProfileState>(&mut app, &shared, "Places visited");
+    press(&mut app, Key::Return);
+    app.ctx.run_deferred();
+    let top = app.state().expect("the list is open");
+    assert_eq!(
+        labels::<SimpleMenuState>(&top, &app.ctx),
+        ["Illinois: Chicago, Rockford", "Nevada: Reno", "Back"]
+    );
+}
+
+#[test]
+fn test_a_profile_without_the_places_list_offers_no_row_for_it() {
+    // A snapshot from before the site sent the list: the counts stand alone.
+    let mut app = TestApp::new();
+    let transport = FakeTransport::replying(full_profile());
+    let _guard = install_transport(transport.clone());
+    let shared = open_profile(&mut app, "road-star-1234", None, false);
+    tick(&mut app, &shared);
+    let listed = rows(&app, &shared);
+    assert!(
+        listed.iter().any(|r| r == "Cities visited: 40"),
+        "{listed:?}"
+    );
+    assert!(!listed.iter().any(|r| r == "Places visited"), "{listed:?}");
 }

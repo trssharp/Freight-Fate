@@ -30,6 +30,7 @@ use ff_core::sim::enforcement_posts::{
 };
 use ff_core::sim::traffic_manager::TrafficVehicle;
 use ff_core::sim::trip_models::RoadStop;
+use freight_fate::states::base::State;
 
 use freight_fate::app::testing::{AudioLog, TestApp};
 use freight_fate::states::driving::DrivingState;
@@ -410,7 +411,7 @@ fn test_tableau_audio_defers_while_the_players_own_stop_is_active() {
 #[test]
 fn test_a_post_that_already_caught_the_player_never_also_runs_its_tableau() {
     // Once this post has had its own look at the player, its tableau story --
-    // "a bear has somebody stopped" -- no longer makes sense.
+    // "a trooper has somebody stopped" -- no longer makes sense.
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, "Presence");
     let log = app.record_audio();
@@ -618,13 +619,13 @@ fn test_speeding_with_no_post_watching_costs_nothing() {
     let mut drive = a_drive(&mut app, "Leadfoot");
     drive.trip.posts = Vec::new();
     let _log = app.record_audio();
-    let money_before = profile_of(&app.ctx).money;
+    let money_before = profile_of(&app.ctx).money();
 
     watch_speed(&mut drive, &mut app, 20.0);
 
     assert!(drive.pull_over.is_none());
     assert_eq!(drive.speeding_tickets, 0);
-    assert_eq!(profile_of(&app.ctx).money, money_before);
+    assert_eq!(profile_of(&app.ctx).money(), money_before);
 }
 
 #[test]
@@ -634,13 +635,13 @@ fn test_debug_off_mode_never_pulls_you_over() {
     one_post_watching_everything(&mut drive, 1.0);
     app.ctx.settings.hos_mode = "debug_off".to_string();
     let _log = app.record_audio();
-    let money_before = profile_of(&app.ctx).money;
+    let money_before = profile_of(&app.ctx).money();
 
     watch_speed(&mut drive, &mut app, 20.0);
 
     assert!(drive.pull_over.is_none());
     assert_eq!(drive.speeding_tickets, 0);
-    assert_eq!(profile_of(&app.ctx).money, money_before);
+    assert_eq!(profile_of(&app.ctx).money(), money_before);
 }
 
 #[test]
@@ -827,12 +828,10 @@ fn test_the_same_road_twice_produces_the_same_outcome() {
 #[test]
 fn test_scale_notice_lookahead_sample_covers_the_real_sentence() {
     // The spoken lead is sized from a sample; it must not undershoot the real
-    // wording with a long stop name and the longest control phrases.
+    // wording with a long stop name.
     let real = concat!(
         "Open weigh station ahead in two miles, Northbound Platte River ",
-        "Port of Entry. All trucks must pull in. Signal for the scale ",
-        "exit with right bumper plus D-pad down. Stopped at the scale, ",
-        "press right bumper plus D-pad down to check in."
+        "Port of Entry. All trucks must pull in."
     );
     assert!(
         ramp_arrival_grace_seconds(SCALE_NOTICE_SAMPLE, 0.0)
@@ -999,7 +998,7 @@ fn test_reminder_fires_once_when_still_fast_with_no_scale_exit_armed() {
     let mut drive = a_drive(&mut app, "Jerry");
     let (scale, _) = with_scale(&mut drive, 10.0, 11.0, true);
     let key = format!("weigh:{}:{:.1}", scale.name, scale.at_mi);
-    drive.weigh_station_notice_key = key.clone();
+    drive.weigh_station_noticed.insert(key.clone());
     drive.trip.truck.velocity_mps = mph_to_mps(45.0);
     app.clear_speech();
 
@@ -1011,11 +1010,11 @@ fn test_reminder_fires_once_when_still_fast_with_no_scale_exit_armed() {
     let reminders: Vec<String> = app
         .event_lines()
         .into_iter()
-        .filter(|line| line.starts_with("Weigh station in "))
+        .filter(|line| line.starts_with("Ontario Scale in "))
         .collect();
     assert_eq!(
         reminders,
-        vec!["Weigh station in half a mile. Signal for the scale exit.".to_string()]
+        vec!["Ontario Scale in half a mile. Signal for the scale exit.".to_string()]
     );
 }
 
@@ -1029,7 +1028,7 @@ fn test_reminder_speaks_the_road_actually_left() {
     let mut drive = a_drive(&mut app, "Jerry");
     let (scale, _) = with_scale(&mut drive, 10.0, 11.0, true);
     let key = format!("weigh:{}:{:.1}", scale.name, scale.at_mi);
-    drive.weigh_station_notice_key = key.clone();
+    drive.weigh_station_noticed.insert(key.clone());
     drive.trip.truck.velocity_mps = mph_to_mps(45.0);
     drive.trip.position_mi = scale.at_mi - 0.15;
     app.clear_speech();
@@ -1039,11 +1038,11 @@ fn test_reminder_speaks_the_road_actually_left() {
     let reminders: Vec<String> = app
         .event_lines()
         .into_iter()
-        .filter(|line| line.starts_with("Weigh station in "))
+        .filter(|line| line.starts_with("Ontario Scale in "))
         .collect();
     assert_eq!(
         reminders,
-        vec!["Weigh station in a quarter mile. Signal for the scale exit.".to_string()]
+        vec!["Ontario Scale in a quarter mile. Signal for the scale exit.".to_string()]
     );
 }
 
@@ -1053,7 +1052,7 @@ fn test_reminder_stays_quiet_once_the_scale_exit_is_armed() {
     let mut drive = a_drive(&mut app, "Jerry");
     let (scale, _) = with_scale(&mut drive, 10.0, 11.0, true);
     let key = format!("weigh:{}:{:.1}", scale.name, scale.at_mi);
-    drive.weigh_station_notice_key = key.clone();
+    drive.weigh_station_noticed.insert(key.clone());
     drive.trip.truck.velocity_mps = mph_to_mps(45.0);
     drive.exit_stop = Some(scale.clone());
     drive.exit_signal_on = true;
@@ -1070,7 +1069,7 @@ fn test_reminder_stays_quiet_below_the_bypass_speed() {
     let mut drive = a_drive(&mut app, "Jerry");
     let (scale, _) = with_scale(&mut drive, 10.0, 11.0, true);
     let key = format!("weigh:{}:{:.1}", scale.name, scale.at_mi);
-    drive.weigh_station_notice_key = key.clone();
+    drive.weigh_station_noticed.insert(key.clone());
     drive.trip.truck.velocity_mps = mph_to_mps(10.0);
     app.clear_speech();
 
@@ -1086,7 +1085,7 @@ fn test_a_green_transponder_verdict_retires_the_reminder() {
     let mut drive = a_drive(&mut app, "Jerry");
     let (scale, _) = with_scale(&mut drive, 10.0, 11.0, true);
     let key = format!("weigh:{}:{:.1}", scale.name, scale.at_mi);
-    drive.weigh_station_notice_key = key.clone();
+    drive.weigh_station_noticed.insert(key.clone());
     drive.trip.truck.velocity_mps = mph_to_mps(45.0);
     drive
         .weigh_station_transponder_verdict
@@ -1122,10 +1121,6 @@ fn test_rest_key_at_speed_defers_to_the_open_scale() {
     let spoken = app.event_lines().join(" ");
     assert!(spoken.contains("Weigh station first"), "{spoken}");
     assert!(spoken.contains("All trucks must stop"), "{spoken}");
-    assert!(
-        spoken.contains("Rest planning waits until you are past the scale"),
-        "{spoken}"
-    );
     assert_eq!(
         drive.trip.planned_stop_key.as_deref(),
         Some(plaza.key().as_str())
@@ -1294,7 +1289,7 @@ fn test_a_signaled_speed_valid_open_scale_enters_its_ramp() {
     drive.trip.truck.velocity_mps = mph_to_mps(33.0);
     drive.exit_stop = Some(scale.clone());
     drive.exit_signal_on = true;
-    drive.exit_lane_alignment = EXIT_LANE_READY;
+    drive.exit_lane_entered = true;
 
     drive.update_exit(&mut app.ctx, 0.02, 0.1);
 
@@ -1307,12 +1302,50 @@ fn test_a_signaled_speed_valid_open_scale_enters_its_ramp() {
 }
 
 #[test]
+fn test_a_scale_taken_at_the_taper_is_not_crossed_again_on_the_way_out() {
+    // Steered into the exit lane where it opened, 300 feet short of the gore.
+    // The ramp holds the highway odometer, so the truck rejoined short of the
+    // scale, crossed it pulling away, and was charged with bypassing the
+    // scale it had just checked in at.
+    let mut app = TestApp::new();
+    let mut drive = a_drive(&mut app, "Taper Scale");
+    let (scale, _) = with_scale(&mut drive, 10.0, 11.0, true);
+    drive.trip.position_mi = scale.at_mi - EXIT_TAPER_MI;
+    drive.trip.truck.velocity_mps = mph_to_mps(40.0);
+    drive.exit_stop = Some(scale.clone());
+    drive.exit_signal_on = true;
+    drive.exit_lane_entered = true;
+    drive.exit_taper_said = true;
+
+    drive.update_exit(&mut app.ctx, 0.02, 0.1);
+
+    assert_eq!(
+        drive.ramp_stop.as_ref().map(RoadStop::key),
+        Some(scale.key())
+    );
+    assert!(drive.trip.position_mi >= scale.at_mi);
+
+    // Checked in, back on the road, and past 15 pulling away.
+    drive.ramp_mi = None;
+    drive.ramp_stop = None;
+    let previous = drive.trip.position_mi;
+    drive.trip.position_mi += 0.01;
+    drive.trip.truck.velocity_mps = mph_to_mps(25.0);
+    drive.check_weigh_station_enforcement(&mut app.ctx, previous);
+
+    assert!(!drive
+        .enforcement_events
+        .contains(&drive.weigh_station_key(&scale)));
+    assert!(drive.pull_over.is_none());
+}
+
+#[test]
 fn test_a_scale_ramp_uses_real_time_so_the_driver_can_stop_at_the_bar() {
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, "Scale Clock");
     let (scale, _) = with_scale(&mut drive, 10.0, 11.0, true);
     drive.ramp_stop = Some(scale);
-    drive.ramp_mi = Some(RAMP_LENGTH_MI);
+    drive.ramp_mi = Some(0.5);
     drive.ramp_control.clear();
 
     drive.update_exit(&mut app.ctx, 0.0, 0.1);
@@ -1338,7 +1371,7 @@ fn test_facility_stopping_assistance_brakes_for_a_scale_entrance() {
     assert!(app
         .event_lines()
         .iter()
-        .any(|line| line.contains("Facility stopping assistance taking the pedals")));
+        .any(|line| line.contains("Slowing for the entrance.")));
 }
 
 #[test]
@@ -1361,7 +1394,7 @@ fn test_facility_stopping_assistance_does_not_coast_to_a_stop_short_of_the_scale
     assert!(app
         .event_lines()
         .iter()
-        .any(|line| line.contains("Facility stopping assistance taking the pedals")));
+        .any(|line| line.contains("Slowing for the entrance.")));
     const { assert!(FACILITY_LANE_ROLL_MPH == 12.0) };
     const { assert!(ARRIVAL_FINAL_CREEP_MI == 200.0 / 5280.0) };
 }
@@ -1501,6 +1534,7 @@ fn test_the_safety_record_line_says_a_band_and_never_a_trade_acronym() {
     {
         let profile = app.ctx.profile.as_mut().expect("a profile");
         profile.driving_record.citations = 5;
+        profile.driving_record.citation_times = vec![0.0; 5];
         profile.driving_record.serious_violations = vec![0.0; 5];
         profile.career.reputation = 10.0;
     }
@@ -1541,6 +1575,7 @@ fn test_a_clean_record_is_waved_through_and_a_dirty_one_is_not() {
     {
         let profile = app.ctx.profile.as_mut().expect("a profile");
         profile.driving_record.citations = 5;
+        profile.driving_record.citation_times = vec![0.0; 5];
         profile.driving_record.serious_violations = vec![0.0; 5];
         profile.career.reputation = 10.0;
     }
@@ -1714,4 +1749,21 @@ fn test_overweight_cargo_is_a_real_check_and_red_lights_the_scale() {
     assert!(drive.cargo_is_overweight());
     let verdict = drive.roll_transponder_verdict(&scale, "weigh:heavy");
     assert_eq!(verdict, "red");
+}
+
+#[test]
+fn test_leaving_the_drive_mid_stop_releases_the_siren() {
+    // The siren's own dead-man's switch only ticks from inside update(), so
+    // it can never time itself out once the state stops running -- leaving
+    // to the menu (or a save load, which exits the same way) mid pull-over
+    // used to leave it playing until the game closed.
+    let mut app = TestApp::new();
+    let mut drive = a_drive(&mut app, "Presence");
+    drive.pull_over = Some(PULL_OVER_LIGHTS.to_string());
+    drive.hold_stop_siren(&mut app.ctx);
+    assert!(drive.siren.active);
+
+    State::exit(&mut drive, &mut app.ctx);
+
+    assert!(!drive.siren.active);
 }

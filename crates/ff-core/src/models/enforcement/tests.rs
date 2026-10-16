@@ -21,6 +21,7 @@ use serde_json::json;
 use super::*;
 use crate::models::solvency::test_profile::FakeProfile;
 use crate::models::solvency::REPOSSESSION_FLOOR;
+use crate::settings::ScoreDisplay;
 
 const DAY: f64 = 24.0;
 
@@ -127,7 +128,14 @@ fn test_every_fine_is_anchored_to_the_real_penalty_it_names() {
     // The amounts themselves, so a rebalance is a deliberate edit here too.
     assert_eq!(UNSAFE_DAMAGE_FINE, 2300.0); // FMCSA unsafe conditions: 2,304
     assert_eq!(WEIGH_STATION_BYPASS_FINE, 1800.0); // CA/NY pass 1,000 on a first offense
-    assert_eq!(CHAIN_LAW_FINE, 580.0); // Colorado: 500 plus a 79-dollar surcharge
+    assert_eq!(CHAIN_LAW_FINE, 580.0); // UNVERIFIED placeholder outside CO, OR and WY
+    assert_eq!(chain_law_fine(Some("CO")), 579.0);
+    assert_eq!(chain_law_fine(Some("WY")), 250.0);
+    assert_eq!(CHAIN_CLOSURE_FINE_WY, 750.0);
+    assert_eq!(chain_law_fine(Some("OR")), 880.0);
+    assert_eq!(chain_law_fine(Some("CA")), CHAIN_LAW_FINE);
+    assert_eq!(chain_law_fine(None), CHAIN_LAW_FINE);
+    assert_eq!(CHAIN_BLOCKING_FINE_CO, 1157.0);
     assert_eq!(FOLLOWING_TOO_CLOSE_FINE, 600.0); // a 383.51 Table 2 serious violation
     assert_eq!(LANE_MISUSE_FINE, 500.0); // Virginia's highway safety corridor figure
     assert_eq!(LIGHTS_FINE, 350.0);
@@ -308,6 +316,29 @@ fn test_a_clean_driver_sees_the_board_they_have_always_seen() {
 }
 
 #[test]
+fn test_trust_band_follows_the_rounded_score_the_player_hears() {
+    assert_eq!(trust_band(39.4), TRUST_GUARDED);
+    assert_eq!(trust_band(39.5), TRUST_FULL);
+    assert_eq!(trust_band(39.7), TRUST_FULL);
+    assert_eq!(trust_band(27.4), TRUST_POOR);
+    assert_eq!(trust_band(27.7), TRUST_GUARDED);
+    assert_eq!(trust_band(15.4), TRUST_LAST_CHANCE);
+    assert_eq!(trust_band(15.7), TRUST_POOR);
+    for rep in [39.4, 39.5, 39.7, 27.7, 15.7] {
+        let word = reputation_band_word(rep);
+        let band = trust_band(rep);
+        // Band words and trust bands share their edges at 40, 28 and 16.
+        let expected = match word {
+            "Unproven" | "Established" | "Well regarded" | "Outstanding" => TRUST_FULL,
+            "Shaky" => TRUST_GUARDED,
+            "Damaged" => TRUST_POOR,
+            _ => TRUST_LAST_CHANCE,
+        };
+        assert_eq!(band, expected, "reputation {rep}");
+    }
+}
+
+#[test]
 fn test_dispatch_trust_slides_the_whole_way_down() {
     let steps: Vec<i64> = [50.0, 40.0, 25.0, 5.0]
         .into_iter()
@@ -356,7 +387,7 @@ fn the_trust_ladder_matches_the_python_tables() {
     assert_eq!(
         trust_text(30.0),
         "Dispatch trust: guarded. Dispatch is holding back some of the freight and \
-         fewer refusals. Clean on-time runs rebuild it."
+         allows fewer refusals. Clean on-time runs rebuild it."
     );
     assert_eq!(board_reputation_note(50.0), "");
     assert_eq!(board_reputation_note(20.0), trust_text(20.0));
@@ -365,6 +396,83 @@ fn the_trust_ladder_matches_the_python_tables() {
         TRUST_POOR
     );
     assert_eq!(worst_band(&[TRUST_FULL]), TRUST_FULL);
+}
+
+#[test]
+fn reputation_words_round_before_banding_and_never_overlap_trust_words() {
+    for (score, word) in [
+        (-1.0, "Ruined"),
+        (15.49, "Ruined"),
+        (15.5, "Damaged"),
+        (27.49, "Damaged"),
+        (27.5, "Shaky"),
+        (39.49, "Shaky"),
+        (39.5, "Unproven"),
+        (50.0, "Unproven"),
+        (59.49, "Unproven"),
+        (59.5, "Established"),
+        (74.5, "Established"),
+        (74.6, "Well regarded"),
+        (89.49, "Well regarded"),
+        (89.6, "Outstanding"),
+        (101.0, "Outstanding"),
+    ] {
+        assert_eq!(reputation_band_word(score), word);
+    }
+    for word in [
+        "Outstanding",
+        "Well regarded",
+        "Established",
+        "Unproven",
+        "Shaky",
+        "Damaged",
+        "Ruined",
+    ] {
+        assert!(![TRUST_FULL, TRUST_GUARDED, TRUST_POOR, TRUST_LAST_CHANCE].contains(&word));
+    }
+}
+
+#[test]
+fn score_display_formats_reputation_and_trust_honestly() {
+    assert_eq!(
+        reputation_text(62.0, ScoreDisplay::Both),
+        "Established. 62 out of 100."
+    );
+    assert_eq!(
+        reputation_text(62.0, ScoreDisplay::Percent),
+        "62 out of 100."
+    );
+    assert_eq!(
+        reputation_text(62.0, ScoreDisplay::Description),
+        "Established."
+    );
+    let mut service = profile();
+    service.reputation = 85.0;
+    assert!(
+        dispatch_trust_line_with_display(&service, ScoreDisplay::Both)
+            .starts_with("Dispatch trust: full. Reputation 85 out of 100.")
+    );
+    assert!(
+        dispatch_trust_line_with_display(&service, ScoreDisplay::Percent)
+            .starts_with("Dispatch trust: full. Reputation 85 out of 100.")
+    );
+    assert_eq!(
+        trust_text_with_display(85.0, ScoreDisplay::Percent),
+        trust_text_with_display(85.0, ScoreDisplay::Both)
+    );
+    assert!(
+        dispatch_trust_line_with_display(&service, ScoreDisplay::Description)
+            .starts_with("Dispatch trust: full.")
+    );
+    let mut debt = service;
+    debt.money = -5_000.0;
+    for mode in [
+        ScoreDisplay::Both,
+        ScoreDisplay::Percent,
+        ScoreDisplay::Description,
+    ] {
+        assert!(!dispatch_trust_line_with_display(&debt, mode).contains("out of 100"));
+    }
 }
 
 // --- persistence and retroactivity -----------------------------------------
@@ -430,9 +538,16 @@ fn test_standing_is_said_plainly_and_names_the_next_consequence() {
     assert!(text.contains("one serious violation"));
     assert!(text.contains("60 days"));
     assert!(!text.to_lowercase().contains("strike")); // that noun belongs to the per-trip counter
-    assert_eq!(
-        text,
-        "Record: one serious violation. One more before your CDL is suspended for 60 days."
+                                                      // The license half is unchanged; the carrier's review now speaks after it.
+    assert!(
+        text.starts_with(
+            "Record: one serious violation. One more before your CDL is suspended for 60 days. "
+        ),
+        "{text}"
+    );
+    assert!(
+        text.ends_with("One more serious violation and the carrier lets you go."),
+        "{text}"
     );
 }
 
@@ -482,10 +597,7 @@ fn the_spoken_standing_lines_match_the_python_f_strings() {
     );
     assert_eq!(
         suspension_refusal_line(&p),
-        format!(
-            "You cannot take this job while your CDL is disqualified. It clears {clears}. \
-             Escape goes back to the board."
-        )
+        format!("You cannot take this job while your CDL is disqualified. It clears {clears}.")
     );
     // A calendar offset moves the spoken date.
     p.calendar_offset_days = 3.0;
@@ -505,8 +617,7 @@ fn the_spoken_standing_lines_match_the_python_f_strings() {
     );
     assert_eq!(
         suspension_refusal_line(&p),
-        "You cannot take driving work with a lifetime CDL disqualification. Escape goes \
-         back to the terminal."
+        "You cannot take driving work with a lifetime CDL disqualification."
     );
 
     let mut clean = profile();
@@ -516,11 +627,53 @@ fn the_spoken_standing_lines_match_the_python_f_strings() {
     clean.record_mut().major_offenses.push(0.0);
     clean.record_mut().serious_violations.push(0.0);
     clean.record_mut().serious_violations.push(0.0);
-    assert_eq!(
-        standing_text(&clean),
-        "Record: two serious violations, one major offense. One more major offense \
-         disqualifies your CDL for life."
+    let text = standing_text(&clean);
+    assert!(
+        text.starts_with(
+            "Record: two serious violations, one major offense. One more major offense \
+             disqualifies your CDL for life."
+        ),
+        "{text}"
     );
+    // Two serious violations in the window is also the carrier's termination
+    // floor, and the line says so after the license half.
+    assert!(
+        text.ends_with("The carrier ends your employment at the next terminal."),
+        "{text}"
+    );
+}
+
+/// Reported 2026-09-29: with live weather driving the calendar, a suspension
+/// said it cleared on a day already gone. The date was counted on the
+/// career's own calendar while every other date the player heard was real.
+#[test]
+fn the_clear_date_counts_from_the_calendar_the_player_hears() {
+    use crate::sim::season::{date_text, real_clock_game_hours, real_weekday_name};
+    let mut p = real_profile();
+    p.game_hours = 2000.0; // a career calendar in early June
+    p.driving_record.record_serious_violation(p.game_hours);
+    p.driving_record.record_serious_violation(p.game_hours);
+    p.live_calendar = true;
+    let cleared = real_clock_game_hours(None) + 60.0 * DAY;
+    // The weekday is the real one: the live clock keeps the day of the year,
+    // not 2001's weekdays (seasonal audit, 2026-10-01).
+    let expected = format!(
+        "{}, {}",
+        real_weekday_name(cleared, None),
+        date_text(cleared)
+    );
+    let clears = clears_text(&p);
+    assert!(clears.starts_with(&expected), "{clears} vs {expected}");
+
+    // A year-long disqualification lands on today's own date; the year is
+    // what tells the two apart.
+    let mut q = profile();
+    q.game_hours = 100.0;
+    q.record_mut().record_major_offense(100.0);
+    let today = date_text(q.calendar_now_hours());
+    let clears = clears_text(&q);
+    assert!(clears.contains(&today), "{clears}");
+    assert!(clears.ends_with(", next year"), "{clears}");
 }
 
 #[test]
@@ -554,13 +707,17 @@ fn test_debt_alone_holds_the_iron_back_even_with_a_spotless_record() {
 
 #[test]
 fn test_a_suspended_licence_holds_the_seat_but_an_old_violation_does_not() {
-    // Violations reach the band through reputation; only a suspension pins it.
+    // The LICENCE band only moves on a suspension. A lone serious violation
+    // reaches the band another way now -- the carrier's record review, which
+    // holds at guarded and names its own end date (owner, 2026-09-12) -- and
+    // the license band stays out of it until the second one suspends the CDL.
     let mut p = profile();
     let hours = p.game_hours;
     p.record_mut().record_serious_violation(hours);
     assert!(!p.record().suspended(hours));
     assert_eq!(licence_band(&p), TRUST_FULL);
-    assert_eq!(standing_band(&p), TRUST_FULL);
+    assert_eq!(standing_band(&p), TRUST_GUARDED);
+    assert_eq!(standing_cause(&p), CAUSE_RECORD);
 
     p.record_mut().record_serious_violation(hours); // second: suspended
     assert!(p.record().suspended(hours));
@@ -596,14 +753,17 @@ fn test_the_way_back_names_the_cause_rather_than_promising_clean_runs() {
     // The whole line, with the trust clause and the slower-experience clause.
     let line = dispatch_trust_line(&both);
     assert!(line.starts_with(trust_band_text(standing_band(&both))));
-    assert!(line.contains("career experience comes in more slowly"));
-    assert_eq!(dispatch_trust_line(&profile()), trust_text(50.0));
+    assert!(line.contains("While dispatch trust is"));
+    assert_eq!(
+        dispatch_trust_line(&profile()),
+        "Dispatch trust: full. Reputation 50 out of 100. You get the whole board."
+    );
     // A hold clause from the fleet rides between the way back and the rate.
     let mut held = profile();
     held.money = -5_000.0;
     held.hold_clause = "The yard is holding your truck.".to_string();
     assert!(dispatch_trust_line(&held)
-        .contains("The yard is holding your truck. While your dispatch trust is"));
+        .contains("The yard is holding your truck. While dispatch trust is"));
 }
 
 #[test]
@@ -659,7 +819,7 @@ fn test_a_held_back_truck_names_the_earned_tier_the_cause_and_the_way_out() {
 
     let mut p = real_profile();
     p.career.xp = 387_000.0;
-    p.money = -5_000.0;
+    p.set_money(-5_000.0);
     let verbose = equipment_hold_text(&p, false);
     let terse = equipment_hold_text(&p, true);
     for text in [&verbose, &terse] {
@@ -713,7 +873,7 @@ fn test_the_slowdown_is_said_in_words_and_never_as_a_number() {
     for band in ["guarded", "poor", "last chance"] {
         let sentence = xp_rate_clause(band);
         let clause = xp_rate_settlement_clause(band);
-        assert!(sentence.contains(band) && sentence.contains("more slowly"));
+        assert!(sentence.contains(band) && sentence.contains("comes slower"));
         assert!(clause.contains(band) && clause.contains("slower rate"));
         for text in [&sentence, &clause] {
             let scrubbed = text.replace("experience", "e");
@@ -785,3 +945,265 @@ fn test_a_fine_a_load_cannot_cover_stays_owed_and_is_said_so() {
 // `test_waiting_out_the_suspension_gives_the_licence_back` is live in `crates/freight-fate/tests/states_city.rs`.
 
 // `test_a_floor_reputation_company_driver_loses_the_carrier` is live in `crates/freight-fate/tests/states_city.rs`.
+
+// --- the carrier's record review and the insurer's surcharge ----------------
+//
+// Owner ask, 2026-09-12: citations and serious violations "did not seem to
+// mean anything". They scaled fines and scale odds, silently. Now the carrier
+// reviews the window (49 CFR 391.25), the insurer surcharges it, and both are
+// said.
+
+fn cite(p: &mut FakeProfile, times: i64, at: f64) {
+    for _ in 0..times {
+        p.record_mut().record_citation_at(200.0, at);
+    }
+}
+
+#[test]
+fn a_record_over_the_review_floor_holds_a_company_driver_at_guarded() {
+    let mut p = profile();
+    p.game_hours = 400.0 * DAY;
+    cite(&mut p, 3, 300.0 * DAY);
+    // Three is the floor, not over it.
+    assert_eq!(record_band(&p), TRUST_FULL);
+    assert_eq!(standing_band(&p), TRUST_FULL);
+    cite(&mut p, 1, 350.0 * DAY);
+    assert_eq!(record_band(&p), TRUST_GUARDED);
+    assert_eq!(standing_band(&p), TRUST_GUARDED);
+    assert_eq!(standing_cause(&p), CAUSE_RECORD);
+    let way_back = standing_way_back(&p);
+    assert!(
+        way_back.contains("Your driving record is what is holding it"),
+        "{way_back}"
+    );
+    assert!(
+        way_back.contains("four citations in the last year"),
+        "{way_back}"
+    );
+    assert!(way_back.contains("keeps it there until"), "{way_back}");
+    // The consequence line counts down to the termination floor.
+    let said = record_consequence_text(&p);
+    assert!(said.contains("holds your equipment back"), "{said}");
+    assert!(
+        said.contains("Two more citations and the carrier lets you go."),
+        "{said}"
+    );
+    assert!(!carrier_termination_due(&p));
+}
+
+#[test]
+fn one_serious_violation_in_the_window_is_over_the_review_floor() {
+    let mut p = profile();
+    p.game_hours = 400.0 * DAY;
+    p.record_mut().record_serious_violation(390.0 * DAY);
+    assert_eq!(record_band(&p), TRUST_GUARDED);
+    assert_eq!(standing_cause(&p), CAUSE_RECORD);
+    assert!(record_consequence_text(&p)
+        .contains("One more serious violation and the carrier lets you go."));
+}
+
+#[test]
+fn six_citations_in_three_years_end_the_employment() {
+    let mut p = profile();
+    p.game_hours = 400.0 * DAY;
+    cite(&mut p, 6, 380.0 * DAY);
+    assert_eq!(record_band(&p), TRUST_POOR);
+    assert!(carrier_termination_due(&p));
+    assert!(record_consequence_text(&p).contains("ends your employment"));
+    // At the fleet of last resort there is nowhere further down: kept on
+    // sufferance, and told so.
+    p.carrier_key = LAST_CHANCE_CARRIER_KEY.to_string();
+    assert!(!carrier_termination_due(&p));
+    assert_eq!(record_band(&p), TRUST_POOR);
+    assert!(record_consequence_text(&p).contains("sufferance"));
+}
+
+#[test]
+fn the_window_empties_and_the_hold_lets_go() {
+    let mut p = profile();
+    p.game_hours = 400.0 * DAY;
+    cite(&mut p, 4, 380.0 * DAY);
+    assert_eq!(record_band(&p), TRUST_GUARDED);
+    let ages_out = p
+        .driving_record()
+        .unwrap()
+        .window_clears_at(p.game_hours, |c, s| c + s > 0)
+        .expect("something is in the window");
+    assert!((ages_out - (380.0 + REVIEW_WINDOW_DAYS as f64) * DAY).abs() < 1e-6);
+    p.game_hours = ages_out + 1.0;
+    assert_eq!(record_band(&p), TRUST_FULL);
+    assert_eq!(standing_text(&p), "Record: clean.");
+}
+
+/// The hold lifts when the record is back under the floor, not when its
+/// oldest entry leaves: a citation on day 10 and a serious violation on day
+/// 100 hold the review until the serious one ages out (2026-09-28).
+#[test]
+fn the_hold_lifts_when_the_record_is_back_under_the_floor() {
+    let mut p = profile();
+    p.game_hours = 120.0 * DAY;
+    cite(&mut p, 1, 10.0 * DAY);
+    p.record_mut().serious_violations.push(100.0 * DAY);
+    assert_eq!(record_band(&p), TRUST_GUARDED);
+    let lifts = p
+        .driving_record()
+        .unwrap()
+        .window_clears_at(p.game_hours, |c, s| {
+            c > CARRIER_REVIEW_CITATIONS || s >= CARRIER_REVIEW_SERIOUS
+        })
+        .expect("the review holds");
+    assert!((lifts - (100.0 + REVIEW_WINDOW_DAYS as f64) * DAY).abs() < 1e-6);
+    p.game_hours = (10.0 + REVIEW_WINDOW_DAYS as f64) * DAY + 1.0;
+    assert_eq!(
+        record_band(&p),
+        TRUST_GUARDED,
+        "the citation leaving is not it"
+    );
+    p.game_hours = lifts + 1.0;
+    assert_eq!(record_band(&p), TRUST_FULL);
+}
+
+#[test]
+fn legacy_citations_without_a_time_never_count_against_the_window() {
+    let mut p = profile();
+    p.game_hours = 400.0 * DAY;
+    for _ in 0..10 {
+        p.record_mut().record_citation(200.0);
+    }
+    assert_eq!(p.driving_record().unwrap().citations, 10);
+    assert_eq!(
+        p.driving_record()
+            .unwrap()
+            .citations_in_window(p.game_hours),
+        0
+    );
+    assert_eq!(record_band(&p), TRUST_FULL);
+    assert_eq!(record_insurance_surcharge(&p), 1.0);
+    assert_eq!(standing_text(&p), "Record: clean.");
+}
+
+#[test]
+fn the_record_review_is_a_company_driver_matter_and_the_surcharge_an_owner_operators() {
+    use crate::models::business_constants::{INDEPENDENT_AUTHORITY, LEASED_OWNER_OPERATOR};
+    let mut owner = profile();
+    owner.business_status = LEASED_OWNER_OPERATOR.to_string();
+    owner.game_hours = 400.0 * DAY;
+    cite(&mut owner, 4, 380.0 * DAY);
+    owner.record_mut().record_serious_violation(390.0 * DAY);
+    assert_eq!(record_band(&owner), TRUST_FULL);
+    assert!(!carrier_termination_due(&owner));
+    // 1 + 4 x 0.10 + 1 x 0.35
+    assert_eq!(record_insurance_surcharge(&owner), 1.75);
+    let said = record_consequence_text(&owner);
+    assert!(
+        said.starts_with("Insurance surcharge: 75 percent until "),
+        "{said}"
+    );
+    owner.business_status = INDEPENDENT_AUTHORITY.to_string();
+    assert_eq!(record_insurance_surcharge(&owner), 1.75);
+
+    let mut company = profile();
+    company.game_hours = owner.game_hours;
+    cite(&mut company, 4, 380.0 * DAY);
+    assert_eq!(record_insurance_surcharge(&company), 1.0);
+}
+
+#[test]
+fn the_insurance_surcharge_never_passes_double() {
+    use crate::models::business_constants::LEASED_OWNER_OPERATOR;
+    let mut owner = profile();
+    owner.business_status = LEASED_OWNER_OPERATOR.to_string();
+    owner.game_hours = 400.0 * DAY;
+    cite(&mut owner, 14, 380.0 * DAY);
+    assert_eq!(record_insurance_surcharge(&owner), INSURANCE_SURCHARGE_MAX);
+    assert!(record_consequence_text(&owner).contains(": 100 percent"));
+}
+
+#[test]
+fn the_record_line_counts_recent_citations_and_says_what_they_cost() {
+    let mut p = profile();
+    p.game_hours = 400.0 * DAY;
+    cite(&mut p, 2, 380.0 * DAY);
+    // Under the floor: counted, nothing more.
+    assert_eq!(standing_text(&p), "Record: two citations in the last year.");
+    cite(&mut p, 2, 390.0 * DAY);
+    let line = standing_text(&p);
+    assert!(
+        line.starts_with("Record: four citations in the last year."),
+        "{line}"
+    );
+    assert!(
+        line.contains("The carrier's record review holds your equipment back"),
+        "{line}"
+    );
+    // A serious violation keeps its own clause and its own next-step tail.
+    p.record_mut().record_serious_violation(395.0 * DAY);
+    let line = standing_text(&p);
+    assert!(
+        line.contains("four citations in the last year, one serious violation."),
+        "{line}"
+    );
+    assert!(
+        line.contains("One more before your CDL is suspended for 60 days."),
+        "{line}"
+    );
+}
+
+#[test]
+fn a_career_saved_before_the_review_existed_starts_it_from_the_first_load() {
+    // Staging, 2026-09-12: two testers carry serious violations inside the
+    // window, one of them six. Under the review as first written, both were
+    // due for termination on their first terminal visit of the new build,
+    // over offenses they served through the license ladder at the time.
+    use crate::models::profile::Profile;
+    // The round trip reads the save directory for the signing key; pin a
+    // throwaway one for this thread, the way the profile tests do.
+    let tmp = tempfile::tempdir().expect("a temp dir");
+    let previous = crate::settings::paths::set_thread_data_dir(Some(tmp.path().join("data")));
+    let mut p = real_profile();
+    p.game_hours = 400.0 * DAY;
+    p.driving_record.record_serious_violation(390.0 * DAY);
+    p.driving_record.record_serious_violation(395.0 * DAY);
+    p.driving_record.record_citation_at(200.0, 396.0 * DAY);
+    let mut saved = p.to_dict();
+    let record = saved
+        .get_mut("driving_record")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("a record");
+    record.remove("review_started_h");
+    record.remove("citation_times");
+
+    let loaded = Profile::from_dict(&saved);
+    assert_eq!(loaded.driving_record.review_started_h, 400.0 * DAY);
+    // The license ladder still sees both: the CDL is suspended as before.
+    assert_eq!(
+        loaded.driving_record.serious_in_window(loaded.game_hours),
+        2
+    );
+    assert!(loaded.driving_record.suspended(loaded.game_hours));
+    // The carrier's review and the insurer see none of it.
+    assert_eq!(
+        loaded
+            .driving_record
+            .serious_in_review_window(loaded.game_hours),
+        0
+    );
+    assert_eq!(record_band(&loaded), TRUST_FULL);
+    assert!(!record_past_termination_floor(
+        &loaded.driving_record,
+        loaded.game_hours
+    ));
+    assert_eq!(record_insurance_surcharge(&loaded), 1.0);
+
+    // From here on, everything counts: the next serious violation is the
+    // first the review knows about.
+    let mut on = loaded;
+    on.game_hours += 10.0 * DAY;
+    on.driving_record.record_serious_violation(on.game_hours);
+    assert_eq!(on.driving_record.serious_in_review_window(on.game_hours), 1);
+    assert_eq!(record_band(&on), TRUST_GUARDED);
+    // And a save that carries the field keeps it through a round trip.
+    let again = Profile::from_dict(&on.to_dict());
+    assert_eq!(again.driving_record.review_started_h, 400.0 * DAY);
+    crate::settings::paths::set_thread_data_dir(previous);
+}

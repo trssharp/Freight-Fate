@@ -1,9 +1,10 @@
 //! Standing physical conditions: hot brakes, the destination approach
 //! assist, the traction states, and the chain law.
 
-use ff_core::models::enforcement::CHAIN_LAW_FINE;
+use ff_core::models::enforcement::{chain_law_fine, CHAIN_CARRY_FINE_CO};
 use ff_core::pyfmt::fmt_grouped;
 use ff_core::pyrandom::PyRandom;
+use ff_core::sim::vehicle::MIN_STOPPING_DECEL_MPS2;
 use ff_core::speech_pacing::{EventPriority, SpeechCategory};
 
 use crate::app::{GameContext, SayEvent};
@@ -81,8 +82,8 @@ impl DrivingState {
         // parked while the truck is on the ramp: the harness showed it reading
         // 3.200 mi with the truck crawling yards from the market, so the cap
         // came out at 215 mph and the assist waved the truck through. The
-        // arrival lives on the ramp instead -- ramp_mi counts down from
-        // RAMP_LENGTH_MI to the stop, and the dock opens when it reaches zero
+        // arrival lives on the ramp instead -- ramp_mi counts down from the
+        // ramp's own length to the stop, and the dock opens when it reaches zero
         // at docking speed; anything faster is a blown stop and the driver is
         // told they drove past (owner, three runs, 2026-08-19/20).
         //
@@ -125,7 +126,15 @@ impl DrivingState {
             // fought, and a foot on the brake wins outright.
             self.destination_arrival_active = false;
             if let Some(ramp_mi) = self.ramp_mi.filter(|mi| *mi > 0.0) {
-                let (limit_mph, _) = self.trip.speed_limit_at(self.trip.position_mi);
+                // The street's limit past the bar, never the mainline's: the
+                // milepost holds at the gore while the truck is on the ramp,
+                // so the limit "here" was the interstate's, and the assist
+                // wound a truck leaving a stop bar toward 70 on the way into
+                // town (every-assist audit, 2026-09-24). With no street zone
+                // to read, the facility access limit stands in.
+                let limit_mph = self
+                    .street_limit_past_bar_mph()
+                    .unwrap_or(ff_core::sim::trip_models::FACILITY_ACCESS_LIMIT_MPH);
                 let target_mph = limit_mph.max(FACILITY_LANE_ROLL_MPH);
                 self.hold_approach_speed_with(
                     ramp_mi * 1609.344,
@@ -135,22 +144,54 @@ impl DrivingState {
             }
             return;
         }
-        let remaining_mi =
-            if self.ramp_mi.is_some() && ramp_is_facility && !ramp_continues_to_destination_streets
-            {
-                self.ramp_mi
-            } else if !self.trip.finished
-                && self.trip.is_facility_approach_route()
-                && !self.trip.outbound
-            {
-                Some(self.trip.remaining_miles())
-            } else {
-                None
-            };
+        let on_facility_ramp =
+            self.ramp_mi.is_some() && ramp_is_facility && !ramp_continues_to_destination_streets;
+        let remaining_mi = if on_facility_ramp {
+            self.ramp_mi
+        } else if !self.trip.finished
+            && self.trip.is_facility_approach_route()
+            && !self.trip.outbound
+        {
+            Some(self.trip.remaining_miles())
+        } else {
+            None
+        };
         let Some(remaining_mi) = remaining_mi else {
             self.destination_arrival_active = false;
             return;
         };
+        // THE STREETS' CORNERS ARE THE KEEPER'S. On a facility's own street
+        // route the arrival is the final shed to the gate and nothing else;
+        // a judged corner still ahead belongs to the speed keeper, which
+        // slows for it. Latching with one ahead priced the stop at the gate
+        // and ignored the corner: the assist took the pedals at 48 mph with
+        // an 11 mph left turn a sixth of a mile on, paused the keeper that
+        // would have slowed for it, and sailed past the turn; once the truck
+        // was back on the approach the latch held a walk for the last
+        // quarter mile and the truck never reached the yard until the
+        // driver switched the assist off (tester, Elkhart Manufacturing
+        // Plant, 2026-10-14). So no latch while a corner is ahead, and a
+        // latch already made -- a truck put back before a corner -- lets go
+        // and hands the keeper back.
+        let on_streets = !on_facility_ramp && self.ramp_mi.is_none();
+        if on_streets {
+            let position = self.trip.position_mi;
+            let corner_ahead = self
+                .turn_cue_in_play_read()
+                .is_some_and(|cue| cue.at_mi > position);
+            if corner_ahead {
+                if self.destination_arrival_active {
+                    self.destination_arrival_active = false;
+                    self.destination_assist_brake = 0.0;
+                    if self.speed_control_paused_at_stop {
+                        // The arrival's pause is held until departure; this
+                        // one ends as soon as the truck is rolling.
+                        self.speed_control_transit_pause = true;
+                    }
+                }
+                return;
+            }
+        }
         // No margin held back, deliberately. Stopping short is not a safer
         // version of stopping: the dock opens at the END of the ramp, so a
         // truck halted two hundred feet shy of it with the brake held is a
@@ -183,7 +224,18 @@ impl DrivingState {
         // the comfort rate, not the firmer rate the servo below will brake at:
         // triggering on the firm rate meant starting at the last metre that
         // could possibly work, and a throttle still decaying ate the margin.
-        let a = APPROACH_DECEL_MPS2;
+        // NET OF THE SURGE. A tank the liquid can move in gives some of the
+        // rate back at the worst moment, so a profile priced at the dry-van
+        // comfort rate starts too late and arrives over the number. The
+        // penalty is the truck's own -- a property of the tank and how full
+        // it is, which is why a stopping distance built on it is a number the
+        // driver can learn -- and the ramp bar has used it since it was
+        // written. It reaches the facility arrival here for the same reason
+        // every CDL manual gives: with a liquid load you brake earlier
+        // (owner, 2026-09-20; FMCSA Cargo Tank Incidents Study on partial
+        // loads and surge).
+        let a = (APPROACH_DECEL_MPS2 - self.trip.truck.surge_decel_penalty_mps2())
+            .max(MIN_STOPPING_DECEL_MPS2);
         let lag = APPROACH_ASSIST_REACTION_S;
         let cap_mps = -a * lag + ((a * lag).powi(2) + 2.0 * a * remaining_m).sqrt();
         if !self.destination_arrival_active {
@@ -217,12 +269,12 @@ impl DrivingState {
             // an assist that is not working, and is the likeliest reason it
             // was reported three times as "it did not stop me".
             //
-            // Unless the terminal release already named it: "Facility stopping
-            // assistance is taking you to the entrance" a second earlier, then
-            // this, is the same handoff announced twice.
+            // Unless the terminal release already armed the pull-ahead: the
+            // truck moving off the bar is that handoff, and saying it here
+            // too announced it twice.
             if !self.approach_pull_ahead {
                 ctx.say_event_with(
-                    "Facility stopping assistance taking the pedals to the entrance.",
+                    "Slowing for the entrance.",
                     SayEvent::queued()
                         .priority(EventPriority::Route)
                         .category(SpeechCategory::Confirmation),
@@ -269,7 +321,14 @@ impl DrivingState {
         // control -- a scale, a freeway-to-freeway ramp, or the dice -- that
         // is the top of the ramp, and the truck crawled the whole half mile
         // at 12 with the lane posted at 15 or more (owner, 2026-09-03).
-        if self.ramp_mi.is_some() && ramp_is_facility && remaining_mi > ARRIVAL_FINAL_CREEP_MI {
+        // And the facility's own streets the same way: the stretch from the
+        // last corner to the gate is road too. Without this a street arrival
+        // fell through to the bare gate creep below, and any truck under the
+        // stop profile when the latch fired -- slowed for the last corner,
+        // or put back on the approach -- coasted down to two miles an hour
+        // and walked the rest of the way in (the same crawl the ramp lost
+        // on 2026-09-03, still alive on the streets).
+        if (on_facility_ramp || on_streets) && remaining_mi > ARRIVAL_FINAL_CREEP_MI {
             let (hold_mph, lane) = self.facility_lane_hold_mph(remaining_m);
             // Road, not a gate: the pedal that runs a chain ramp up to its
             // limit, unless the hold is down at the walk anyway.
@@ -299,7 +358,13 @@ impl DrivingState {
     /// half says which of the two the hold is.
     fn facility_lane_hold_mph(&mut self, remaining_m: f64) -> (f64, LaneHold) {
         let (posted_mph, _) = self.trip.speed_limit_at(self.trip.position_mi);
-        let lane_mph = posted_mph.min(self.armed_ramp_mph(None));
+        // On the facility's streets there is no ramp advisory to cap it;
+        // the street's own posted number is the lane's.
+        let lane_mph = if self.ramp_mi.is_some() {
+            posted_mph.min(self.armed_ramp_mph(None))
+        } else {
+            posted_mph
+        };
         let creep = ARRIVAL_CREEP_MPH / 2.23694;
         let profile_mph =
             (creep * creep + 2.0 * APPROACH_DECEL_MPS2 * remaining_m.max(0.0)).sqrt() * 2.23694;
@@ -412,6 +477,10 @@ impl DrivingState {
         if self.trip.truck.brake > 0.0 || self.trip.truck.parking_brake {
             return;
         }
+        let tr = &self.trip.truck.transmission;
+        if !tr.automatic && (tr.clutch > 0.5 || tr.shifting() || tr.in_neutral()) {
+            return; // the driver is shifting; throttle would only rev the engine
+        }
         let pedal = self.trip.truck.hold_throttle() + ARRIVAL_CREEP_THROTTLE_GAIN * (creep - v);
         self.trip.truck.throttle = self
             .trip
@@ -422,11 +491,17 @@ impl DrivingState {
 
     /// Whether this delivery's ramp hands off to a street chain rather than
     /// ending at the gate (see `destination_street_chain_ahead`).
+    ///
+    /// A road stop with its own streets from the exit to its lot continues
+    /// the same way (`begin_stop_chain`).
     pub(crate) fn ramp_continues_to_destination_streets(&mut self, ctx: &GameContext) -> bool {
-        self.ramp_stop
-            .as_ref()
-            .is_some_and(|stop| stop.stop_type == "delivery_destination")
-            && self.destination_street_chain_ahead(ctx)
+        match self.ramp_stop.clone() {
+            Some(stop) if stop.stop_type == "delivery_destination" => {
+                self.destination_street_chain_ahead(ctx)
+            }
+            Some(stop) => self.stop_chain_route(&stop).is_some(),
+            None => false,
+        }
     }
 
     /// Whether facility stopping assistance can take the truck on from the
@@ -438,6 +513,13 @@ impl DrivingState {
     /// release stays the driver's. A driver who braked the pull-ahead off has
     /// said no for this ramp.
     pub(crate) fn approach_pull_ahead_available(&mut self, ctx: &GameContext) -> bool {
+        if self.on_street_control() {
+            // A light or sign on the streets: the speed keeper is what drives
+            // on from it, so the same promise needs the keeper.
+            return ctx.settings.destination_approach_assist
+                && ctx.settings.speed_keeper
+                && !self.approach_pull_ahead_canceled;
+        }
         if !ctx.settings.destination_approach_assist
             || self.ramp_stop.is_none()
             || self.approach_pull_ahead_canceled
@@ -456,8 +538,13 @@ impl DrivingState {
         self.destination_assist_brake = 0.0;
         // ROUTE, not the ambient default: an automation just released the
         // pedals (the automation-handoff rule, 2026-08-20).
+        let whither = if self.ramp_continues_to_destination_streets(ctx) {
+            "onto the streets"
+        } else {
+            "to the entrance"
+        };
         ctx.say_event_with(
-            "Facility stopping assistance released; pull ahead to the entrance.",
+            format!("Pull ahead {whither}."),
             SayEvent::queued()
                 .priority(EventPriority::Route)
                 .category(SpeechCategory::Confirmation),
@@ -490,8 +577,18 @@ impl DrivingState {
         if self.trip.truck.chains_just_snapped {
             self.trip.truck.chains_just_snapped = false;
             ctx.say_event_with(
-                "A tire chain let go. The set is scrap; you are running on rubber again.",
-                SayEvent::new().category(SpeechCategory::Money),
+                "A tire chain broke and is flailing. Slow down and pull over to check it.",
+                SayEvent::new().category(SpeechCategory::Safety),
+            );
+        }
+        if self.trip.truck.chains_on
+            && self.trip.truck.chain_wear_pct >= CHAIN_SLAP_WARN_PCT
+            && !self.chain_slap_said
+        {
+            self.chain_slap_said = true;
+            ctx.say_event_with(
+                "A chain is slapping the fender. Stop soon and tighten it.",
+                SayEvent::new().category(SpeechCategory::Safety),
             );
         }
         let chains_fast =
@@ -499,8 +596,8 @@ impl DrivingState {
         if chains_fast && !self.chains_fast_active {
             ctx.say_event_with(
                 format!(
-                    "The chains are hammering the pavement at this speed. Keep it under \
-                     {CHAIN_SAFE_MPH:.0}."
+                    "Too fast for chains. Keep under {}.",
+                    ctx.settings.speed_text(CHAIN_SAFE_MPH)
                 ),
                 SayEvent::new().category(SpeechCategory::Coaching),
             );
@@ -523,19 +620,16 @@ impl DrivingState {
         let Some(area) = self.trip.chain_law_area_at(self.trip.position_mi) else {
             return;
         };
-        let compliant =
-            self.trip.truck.chains_on || (level == 1 && self.trip.truck.tire_type == TIRE_WINTER);
-        if compliant {
+        // Winter tires never excuse a semi, except at Wyoming Level 1;
+        // Colorado's Level 1 leaves a tandem-drive truck unchained
+        // (`rig_compliant_at`).
+        if self.trip.rig_compliant_at(self.trip.position_mi) {
             return;
         }
         let key = (area as i64, level);
         if !self.chain_law_warned.contains(&key) {
             self.chain_law_warned.insert(key);
-            let need = if level >= 2 {
-                "chains"
-            } else {
-                "winter-rated tires or chains"
-            };
+            let need = self.trip.chain_law_need_at(self.trip.position_mi);
             ctx.say_event_with(
                 format!("Rolling into an active chain law without {need}."),
                 SayEvent::new().category(SpeechCategory::Navigation),
@@ -548,29 +642,178 @@ impl DrivingState {
         self.chain_law_cited.insert(key);
         let mut rng =
             PyRandom::new_from_str(&format!("{}:chain-law:{area}:{level}", self.trip_seed));
-        if rng.random() >= CHAIN_LAW_CHECKPOINT_CHANCE {
+        let state = self.trip.state_code_at(self.trip.position_mi);
+        if rng.random() >= chain_law_checkpoint_chance(state.as_deref()) {
             return;
         }
         let zone = self.trip.in_construction_zone();
         let fine = citation_fine(
-            CHAIN_LAW_FINE,
+            chain_law_fine(state.as_deref()),
             career_citations(profile_of(ctx)),
             zone,
             None,
         );
         let money = {
             let p = profile_mut_of(ctx);
-            p.money -= fine;
-            p.money
+            p.spend(fine);
+            p.money()
         };
         self.ticket_fines_paid += fine;
+        // On the record like every other citation: this one was charged and
+        // spoken but never booked, so a career of chain-law tickets still
+        // read as a clean safety record (owner report, 2026-09-12). Not a
+        // serious violation under 49 CFR 383.51 Table 2, so no ladder text.
+        self.log_enforcement(
+            ctx,
+            fine,
+            false,
+            false,
+            &format!("No chains under a level {level} chain law"),
+        );
         ctx.audio.play("ui/error");
+        // A real checkpoint doesn't fine and wave you on: California
+        // prohibits entering a control without devices (13 CCR 1072(h)) and
+        // screening stops every truck. With a set aboard, the truck is held
+        // on the apron until it is on (`update_chain_checkpoint_hold`).
+        let aboard = profile_of(ctx).chains_owned() && self.trip.truck.chain_wear_pct < 100.0;
+        let after = if aboard {
+            self.hold_at_chain_checkpoint(ctx);
+            "You can't go on until your chains are on. Put them on from the pause menu."
+        } else {
+            "You have no chains aboard. Buy a set at the next garage."
+        };
         // A citation is money, not an act-now warning: ROUTE's never-dropped
         // queue instead of an interrupt that could erase one.
         ctx.say_event_with(
             format!(
-                "Chain checkpoint. An officer waves you onto the scale apron and writes a \
-                 chain-law citation, {} dollars.{} You have {} dollars.",
+                "Chain checkpoint. An officer stops you and writes a chain-law citation, {} \
+                 dollars.{} {after} You have {} dollars.",
+                fmt_grouped(fine, 0),
+                construction_zone_fine_clause(zone),
+                fmt_grouped(money, 0)
+            ),
+            SayEvent::queued()
+                .priority(EventPriority::Route)
+                .category(SpeechCategory::Money),
+        );
+    }
+
+    /// Stop the truck on the checkpoint apron with the parking brake set.
+    pub fn hold_at_chain_checkpoint(&mut self, ctx: &mut GameContext) {
+        self.chain_checkpoint_hold = true;
+        let truck = &mut self.trip.truck;
+        truck.velocity_mps = 0.0;
+        truck.throttle = 0.0;
+        truck.brake = 1.0;
+        truck.set_parking_brake();
+        self.cancel_cruise_for_parking_brake(ctx);
+    }
+
+    /// Keep a held truck on the apron until its chains are on, or the law
+    /// lifts. Releasing the brake to drive off sets it again and says why.
+    pub fn update_chain_checkpoint_hold(&mut self, ctx: &mut GameContext) {
+        if !self.chain_checkpoint_hold {
+            return;
+        }
+        if self.trip.truck.chains_on || self.trip.chain_law_level() == 0 {
+            self.chain_checkpoint_hold = false;
+            if self.trip.truck.chains_on {
+                ctx.say_event_with(
+                    "Chains on. The officer waves you back onto the highway.",
+                    SayEvent::new().category(SpeechCategory::Navigation),
+                );
+            }
+            return;
+        }
+        if !self.trip.truck.parking_brake || self.trip.truck.velocity_mps > 0.0 {
+            self.hold_at_chain_checkpoint(ctx);
+            ctx.say_event_with(
+                "Held at the chain checkpoint. Put your chains on from the pause menu.",
+                SayEvent::new().category(SpeechCategory::Navigation),
+            );
+        }
+    }
+
+    /// Colorado's carry rule: no chains aboard on a carry corridor's
+    /// mountain run from September 1 to May 31 is its own citation, whatever
+    /// the weather (CSP chain-law page; 100 plus 32, CDOT freight fact sheet,
+    /// Aug 2026). Warned once on entry, rolled once past the run's midpoint
+    /// at the same seeded checkpoint chance as the chain law.
+    pub fn update_chain_carry(&mut self, ctx: &mut GameContext) {
+        let at = self.trip.position_mi;
+        if self.trip.truck.speed_mph() < 3.0 {
+            return;
+        }
+        // Once a season, kept in the profile so a quit and resume or the
+        // next drive doesn't say it again.
+        let season = self
+            .trip
+            .current_career_hours()
+            .map(ff_core::sim::trip_models::mt_chain_season_id);
+        if season.is_some()
+            && profile_of(ctx).mt_chain_warned_season() != season
+            && self.trip.on_mt_chain_carry_run(at)
+            && !(profile_of(ctx).chains_owned() && self.trip.truck.chain_wear_pct < 100.0)
+        {
+            profile_mut_of(ctx).set_mt_chain_warned_season(season.unwrap_or_default());
+            ctx.say_event_with(
+                "Montana requires trucks to carry chains from October 1 to April 30. You have \
+                 none.",
+                SayEvent::new().category(SpeechCategory::Navigation),
+            );
+        }
+        if !self.trip.on_co_chain_carry_corridor(at) {
+            return;
+        }
+        let aboard = profile_of(ctx).chains_owned() && self.trip.truck.chain_wear_pct < 100.0;
+        if aboard {
+            return;
+        }
+        if !self.chain_carry_warned {
+            self.chain_carry_warned = true;
+            ctx.say_event_with(
+                "Colorado requires chains aboard on this road from September 1 to May 31. You \
+                 have none.",
+                SayEvent::new().category(SpeechCategory::Navigation),
+            );
+        }
+        let Some(area) = self.trip.chain_law_area_at(at) else {
+            return;
+        };
+        let (start, end) = self.trip.chain_law_areas[area];
+        if self.chain_carry_rolled || at < (start + end) / 2.0 {
+            return;
+        }
+        self.chain_carry_rolled = true;
+        let mut rng = PyRandom::new_from_str(&format!("{}:chain-carry:{area}", self.trip_seed));
+        if rng.random() >= CHAIN_LAW_CHECKPOINT_CHANCE {
+            return;
+        }
+        let zone = self.trip.in_construction_zone();
+        let fine = citation_fine(
+            CHAIN_CARRY_FINE_CO,
+            career_citations(profile_of(ctx)),
+            zone,
+            None,
+        );
+        let money = {
+            let p = profile_mut_of(ctx);
+            p.spend(fine);
+            p.money()
+        };
+        self.ticket_fines_paid += fine;
+        self.log_enforcement(
+            ctx,
+            fine,
+            false,
+            false,
+            "No chains aboard on a Colorado chain-carry corridor",
+        );
+        ctx.audio.play("ui/error");
+        ctx.say_event_with(
+            format!(
+                "Chain check. No chains aboard on a mountain corridor in chain season. Citation, \
+                 {} dollars.{} You have {} dollars.",
                 fmt_grouped(fine, 0),
                 construction_zone_fine_clause(zone),
                 fmt_grouped(money, 0)

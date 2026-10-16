@@ -42,12 +42,12 @@ fn test_owner_operator_needs_the_purchased_subscription_not_just_level() {
     // starting money already covers the signup fee
     assert!(ok && reasons.is_empty());
 
-    p.money = 0.0;
+    p.set_money(0.0);
     let (ok, reasons) = weigh_station_transponder_eligibility(&p);
     assert!(!ok);
     assert!(reasons[0].contains("dollars"), "{:?}", reasons[0]);
 
-    p.money = 100_000.0;
+    p.set_money(100_000.0);
     p.weigh_station_transponder = true;
     assert!(has_weigh_station_transponder(&p));
     let (ok, reasons) = weigh_station_transponder_eligibility(&p);
@@ -68,10 +68,10 @@ fn test_transponder_settlement_charge_only_when_subscribed() {
         12.0,
     );
 
-    let plain = owner_operator_charges(&job, 1000.0, false);
+    let plain = owner_operator_charges(&job, 1000.0, false, 1.0);
     assert!(!plain.iter().any(|c| c.label.contains("transponder")));
 
-    let with_sub = owner_operator_charges(&job, 1000.0, true);
+    let with_sub = owner_operator_charges(&job, 1000.0, true, 1.0);
     let charge = with_sub
         .iter()
         .find(|c| c.label.contains("transponder"))
@@ -83,11 +83,13 @@ fn test_transponder_settlement_charge_only_when_subscribed() {
 
     // Own-authority settlement carries the same reserve, threaded the same way.
     let owned: [&str; 0] = [];
-    let authority_plain = independent_authority_charges_for_trailers(&job, 1000.0, &owned, false);
+    let authority_plain =
+        independent_authority_charges_for_trailers(&job, 1000.0, &owned, false, 1.0);
     assert!(!authority_plain
         .iter()
         .any(|c| c.label.contains("transponder")));
-    let authority_with_sub = independent_authority_charges_for_trailers(&job, 1000.0, &owned, true);
+    let authority_with_sub =
+        independent_authority_charges_for_trailers(&job, 1000.0, &owned, true, 1.0);
     assert!(authority_with_sub
         .iter()
         .any(|c| c.label.contains("transponder")));

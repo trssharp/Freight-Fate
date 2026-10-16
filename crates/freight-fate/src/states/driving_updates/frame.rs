@@ -1,11 +1,11 @@
 //! The frame loop itself (`DrivingUpdateMixin.update`), the safety-call
 //! re-speak, and the retarder transcript trace.
 
-use ff_core::sim::season::real_clock_game_hours;
 use ff_core::speech_pacing::{EventPriority, SpeechCategory};
 
 use crate::app::{GameContext, SayEvent, TRANSCRIPT_TARGET};
 use crate::audio::CH_BRAKE;
+use crate::bindings::Action;
 use crate::states::base::Key;
 use crate::states::driving::DrivingState;
 use crate::states::driving_core::*;
@@ -40,15 +40,14 @@ impl DrivingState {
         self.critical_respeak_at = None;
         let ahead = curve.start_mi - self.trip.position_mi;
         let speed = self.trip.truck.speed_mph();
-        if ahead <= 0.0 || speed <= curve.advisory_mph as f64 + PACENOTE_MARGIN_MPH {
+        let floor = (curve.advisory_mph as f64 + PACENOTE_MARGIN_MPH)
+            .min(self.trip.bend_costs_above_mph(&curve));
+        if ahead <= 0.0 || speed <= floor {
             return;
         }
-        let pan = if curve.direction == 'L' {
-            -PACENOTE_CUE_PAN
-        } else {
-            PACENOTE_CUE_PAN
-        };
-        ctx.audio.play_with("vehicle/curve_bink", 0.9, pan);
+        // The pacenote speaks; the chime that preceded it does not (owner,
+        // 2026-09-18). The spoken call carries the side and the number, and
+        // the engine's lean carries the shape.
         let text = self.pacenote_text(ctx, &curve, ahead, speed);
         let mut opts = SayEvent::new().category(SpeechCategory::Navigation);
         // The refreshed call checks the bend before speaking; the rescue
@@ -111,6 +110,8 @@ impl DrivingState {
         ctx.update_music_rotation(dt);
         self.refresh_live_facts();
         self.trace_engine_brake();
+        // The curve call prices a bend by who holds the lane in it.
+        self.trip.lane_steers = Self::lane_steers(ctx);
         // A fresh loaded run out of a chain-capable origin starts on the
         // facility's streets. Decided on the first tick, never on a resume:
         // from_snapshot marks the check done and re-enters a chain itself.
@@ -120,26 +121,8 @@ impl DrivingState {
                 self.begin_departure_chain(ctx, true);
             }
         }
-        // Pacing can be changed from the pause menu mid-trip. Entering Real
-        // time also moves the independent spoken clock to now, while the
-        // career, deadline, and HOS clocks keep their elapsed totals.
-        if ctx.settings.time_scale == 1.0 && self.trip.time_scale != 1.0 {
-            let elapsed_h = self.trip.game_minutes / 60.0;
-            let real_hours = real_clock_game_hours(None);
-            profile_mut_of(ctx).sync_calendar_to(real_hours - elapsed_h);
-            ctx.save_profile();
-            let local_hour = real_hours.rem_euclid(24.0);
-            let reference_now = local_hour - self.trip.current_timezone().offset_h;
-            let start_hour = (reference_now - elapsed_h).rem_euclid(24.0);
-            self.trip.start_hour = start_hour;
-            self.trip.traffic_manager.start_hour = start_hour;
-            if self.trip.weather.game_hours.is_some() {
-                self.trip.weather.game_hours =
-                    Some(profile_of(ctx).calendar_game_hours() + elapsed_h);
-            }
-        }
-        // Keep the trip's clock compression in step with the setting.
-        self.trip.time_scale = ctx.settings.time_scale;
+        // A pace change from the pause menu waits for the truck to stop.
+        self.update_pace_change(ctx, dt);
         let tuning = tuning_for_time_scale(self.trip.time_scale);
         self.trip.hazard_scale =
             hos::hazard_scale(&ctx.settings.hos_mode) * tuning.hazard_frequency;
@@ -161,6 +144,7 @@ impl DrivingState {
             }
         }
         self.sync_weather_source(ctx);
+        self.sync_weather_alerts(ctx);
         let ramp = dt * 2.2;
         self.brake_lockout_cue_timer = (self.brake_lockout_cue_timer - dt).max(0.0);
         // Controller triggers/clutch are analog held positions blended in below;
@@ -172,9 +156,9 @@ impl DrivingState {
             0.0
         };
         let pad_brake = if pad_on { ctx.controller.brake() } else { 0.0 };
-        let key_up = ctx.input.is_pressed(Key::Up);
-        let mut key_down = ctx.input.is_pressed(Key::Down);
-        let b_held = ctx.input.is_pressed(Key::B);
+        let key_up = ctx.bindings.pressed(&ctx.input, Action::Accelerate);
+        let mut key_down = ctx.bindings.pressed(&ctx.input, Action::Brake);
+        let b_held = ctx.bindings.pressed(&ctx.input, Action::EmergencyBrake);
         // A latched brake reads as held right here, so everything
         // downstream -- the reverse gesture, cruise cancel, the hazard's
         // brake answer -- sees one truth. Microsleeps stay on the raw
@@ -270,12 +254,50 @@ impl DrivingState {
         // held floor on top of that.
         let braking_ramp =
             (key_down && !backing) || (accelerating && self.trip.truck.velocity_mps < -0.1);
+        // The floor an assist is holding right now. The ramp decays the
+        // pedal toward zero every frame the driver is not braking, and the
+        // assists re-press their application further down the frame, so the
+        // PHYSICS felt a steady pedal -- but the air model charges by the
+        // RISE, and it saw 0.09 climb back to 0.20 sixty times a second. One
+        // held snub was billed as six applications a second, which is the
+        // Aberdeen stranding (2026-09-18) surviving its own fix one layer
+        // down and stranding Albany Company Yard the same way (approach
+        // sweep, 2026-09-20). A pedal an assist is holding is not a pedal
+        // the driver let go of, so the decay stops there. Their own brake
+        // key still cancels the assist, which is what drops the floor.
+        //
+        // The ramp terminal's servo was left out, and it is the one that
+        // presses AFTER physics runs: the truck felt 0.09 of a 0.20 stop,
+        // slowed at 0.43 m/s2 against the 0.6 planned, reached a stop bar at
+        // 15 mph and had to slam the rest (agent drive into Abilene,
+        // 2026-09-23). Only while it still has a terminal to stop at: a press
+        // left over once the ramp is behind the truck held it on its brakes.
+        let ramp_terminal_brake = if self.terminal_live() && !self.ramp_terminal_done {
+            self.ramp_assist_brake
+        } else {
+            0.0
+        };
+        // The exit assists' deceleration-lane servo, by the same rule. It
+        // stands itself down (to zero) the frame the lane is behind the truck.
+        let decel_lane_brake = if self.in_deceleration_lane() {
+            self.decel_lane_brake
+        } else {
+            0.0
+        };
+        let assist_floor = self
+            .keeper_snub
+            .max(self.aeb_brake)
+            .max(self.destination_assist_brake)
+            .max(ramp_terminal_brake)
+            .max(decel_lane_brake)
+            .max(self.curve_servo.as_ref().map_or(0.0, |servo| servo.brake))
+            .clamp(0.0, 1.0);
         {
             let t = &mut self.trip.truck;
             if braking_ramp {
                 t.brake = 1.0f64.min(t.brake + ramp * 1.5);
             } else {
-                t.brake = 0.0f64.max(t.brake - ramp * 3.0);
+                t.brake = assist_floor.max(t.brake - ramp * 3.0);
             }
             if pad_brake > 0.05 && !backing {
                 t.brake = t.brake.max(pad_brake);
@@ -409,7 +431,13 @@ impl DrivingState {
                 SayEvent::new().category(SpeechCategory::Confirmation),
             );
         }
+        if self.trip.truck.transmission.automatic && self.trip.truck.speed_mph().abs() > 1.0 {
+            self.drove_automatic = true;
+        }
 
+        // The clutch is fixed on Shift, read as the key itself: the held-key
+        // tracker sees the key before any modifier flag, and the harness holds
+        // it the same way.
         let clutch_pressed = ctx.input.is_pressed(Key::LShift) || ctx.input.is_pressed(Key::RShift);
         let mut clutch_val: f64 = if clutch_pressed { 1.0 } else { 0.0 };
         if pad_on {
@@ -420,13 +448,31 @@ impl DrivingState {
         } else {
             0.0
         };
-        let clutch_disengaged =
-            self.trip.truck.transmission.clutch > 0.5 || self.trip.truck.transmission.shifting();
+        // Neutral on a manual is a disengaged clutch too: nothing reaches the
+        // wheels, so cruise and the keeper only raced the engine.
+        let clutch_disengaged = self.trip.truck.transmission.clutch > 0.5
+            || self.trip.truck.transmission.shifting()
+            || (!self.trip.truck.transmission.automatic
+                && self.trip.truck.transmission.in_neutral());
         self.update_lane(ctx, dt);
+        // `update_lane` can complete a held-wheel crossing. Mirror that
+        // discrete result before cruise reads the traffic bubble: steering
+        // alone remains in the origin lane, while the crossing frame selects
+        // traffic in the lane the truck has actually entered. Tap changes
+        // retain their explicit destination intent below.
+        self.trip.traffic_manager.player_lane = self.lane.lane;
+        self.trip.traffic_manager.player_lane_target = self.lane_change_target;
         self.update_exit_preparation(ctx, dt);
         self.resume_speed_control_if_ready(ctx, braking);
+        self.apply_chain_speed_cap(ctx);
         self.update_cruise(ctx, dt, braking, hand_accelerating, clutch_disengaged);
         self.update_keeper(ctx, dt, braking, hand_accelerating, clutch_disengaged);
+        // The keeper's held snub, for the same reason and by the same rule:
+        // `update_keeper` returns early on an overridden or shifting frame,
+        // and the input ramp above has already bled the pedal it left behind
+        // -- so without this the one application is re-made, and re-charged,
+        // every time round. See apply_keeper_snub.
+        self.apply_keeper_snub();
         // The hazard assist's held application belongs here with the other
         // assists' floors, ahead of the physics -- see apply_hazard_brake.
         // update_hazard, which decides it, runs at the end of the frame.
@@ -439,7 +485,7 @@ impl DrivingState {
         // while the assist's own bookkeeping said 0.40. Every earlier fix to
         // this assist tuned a number against a pedal the truck never felt.
         self.update_destination_approach_assist(ctx);
-        // Curve speed assistance's approach servo, for the same reason: its
+        // Curve assistance's approach servo, for the same reason: its
         // pedal has to be set where the physics will see it, and after cruise
         // and the keeper so the max it applies is the one that stands.
         self.update_curve_speed_servo(ctx);
@@ -467,13 +513,41 @@ impl DrivingState {
             was_low_air,
             was_spring_brake,
         );
+        self.check_low_fuel_warning(ctx);
+        self.check_fuel_range_warning(ctx);
         if was_on && !self.trip.truck.engine_on {
             ctx.audio.engine_stop();
             if self.trip.truck.stalled {
-                let text = format!(
-                    "Engine stalled. Press {} to restart.",
-                    ctx.control_hint("engine")
-                );
+                let tr = &self.trip.truck.transmission;
+                // A manual only stalls in fourth or taller, and restarting it
+                // there with the clutch out stalls it again the next frame.
+                // Shifting up from there only goes taller, so the line routes
+                // through neutral, which needs no clutch, then up into first.
+                // The pad has no neutral: it steps down to first on the
+                // clutch instead (2026-09-28).
+                let text = if tr.automatic || tr.in_neutral() {
+                    format!(
+                        "Engine stalled. Press {} to restart.",
+                        ctx.control_hint("engine")
+                    )
+                } else if ctx.controller.device() == ff_core::input_hints::CONTROLLER {
+                    format!(
+                        "Engine stalled. Hold {}, press {} to restart, and shift down to first \
+                         with {} before letting the clutch out.",
+                        ctx.control_hint("clutch"),
+                        ctx.control_hint("engine"),
+                        ctx.control_name(Action::ShiftDown)
+                    )
+                } else {
+                    format!(
+                        "Engine stalled. Press {} for neutral and {} to restart, then hold {} \
+                         and press {} for first gear.",
+                        ctx.control_hint("neutral"),
+                        ctx.control_hint("engine"),
+                        ctx.control_hint("clutch"),
+                        ctx.control_hint("gear_first")
+                    )
+                };
                 ctx.say_event_with(text, SayEvent::new().category(SpeechCategory::Safety));
             } else if self.trip.truck.fuel_gal <= 0.0 {
                 self.handle_out_of_fuel(ctx);
@@ -484,12 +558,6 @@ impl DrivingState {
         // change; the setter only re-renders cues when the choice actually flips.
         self.trip.set_imperial(ctx.settings.imperial_units);
         let pos_before = self.trip.position_mi;
-        // Same-lane traffic checks and spoken relative lanes follow the
-        // player's discrete lane, so mirror it before the trip advances.
-        self.trip.traffic_manager.player_lane = self.lane.lane;
-        // And while a tap-change is underway, lead selection follows the
-        // lane it is moving into instead -- see TrafficManager.lead_vehicle.
-        self.trip.traffic_manager.player_lane_target = self.lane_change_target;
         // Tell the trip model which stop's exit is signaled or on the ramp so its
         // plan-cancelled warning can tell a driver who is taking the exit from one
         // who blew past it. Set before trip.update (which runs check_stops) and
@@ -500,25 +568,58 @@ impl DrivingState {
         // On the ramp the highway odometer holds and the ramp consumes the
         // movement instead; the trip records how far the truck rolled either way.
         self.trip.on_ramp = self.ramp_mi.is_some();
+        // The yard is announced when the truck has turned into it, not when
+        // it rolls over the driveway's milepost on its way past the turn.
+        self.trip.yard_entry_held = self.driveway_turn_pending();
         for event in self.trip.update(dt) {
             self.handle_trip_event(ctx, &event);
         }
         if self.selected_stop_key.is_some()
             && self.trip.planned_stop_key != self.selected_stop_key
             && self.ramp_stop.is_none()
+            && self.stop_chain.is_none()
         {
             // The trip model canceled a passed plan. Do not leave explicit
             // intent or its stopping assist armed for a later optional exit.
             self.clear_selected_stop_intent();
         }
+        // Real seconds, before the crossing is judged against them. Only
+        // seconds the cab was free: a hazard or a stop after the reminder
+        // spends time the driver could not use to take the exit.
+        if !self.enforcement_busy() {
+            self.weigh_station_reminder_age_s += dt;
+        }
+        if self
+            .trip
+            .scale_reminder_hold_mi
+            .is_some_and(|mi| self.trip.position_mi >= mi)
+        {
+            // Past the gore even if a busy cab kept the scale check from
+            // running this frame: the real-time hold ends at the scale.
+            self.trip.scale_reminder_hold_mi = None;
+        }
         self.check_weigh_station_enforcement(ctx, pos_before);
+        self.update_scale_reannounce(ctx);
         self.check_unsafe_damage_enforcement(ctx);
         self.check_destination_exit(ctx);
         self.check_gate_approach_warning(ctx, dt);
         self.update_turn_commitment(ctx, dt);
         let moved_mi = self.trip.last_moved_mi;
+        // Advance and announce an already-active signal before adjudicating
+        // this frame's stop-bar crossing. Otherwise a yellow-to-red boundary
+        // uses the previous phase even though the real-time clock has moved.
+        let ramp_was_active = self.ramp_mi.is_some();
+        self.update_ramp_light(ctx, dt);
         self.update_exit_with_input(ctx, moved_mi, dt, hand_accelerating);
+        if !ramp_was_active && self.ramp_mi.is_some() {
+            // An exit can create its terminal above. Announce its seeded
+            // starting phase now without charging this frame's time twice.
+            self.update_ramp_light(ctx, 0.0);
+        }
         self.update_departure_ramp(ctx, moved_mi);
+        self.bound_departure_merge_recovery(moved_mi, dt);
+        // Every clock pin is settled for the frame by here.
+        self.trace_clock_override(dt);
         // Immediately after the exit watch, which is what turns a signaled
         // scale exit into a ramp. Only now can a scale crossing be told apart
         // from a check-in.
@@ -527,9 +628,9 @@ impl DrivingState {
         // distance it counts back is the distance the trip actually lost.
         self.update_wrong_way(ctx, dt);
         // After the trip has moved the truck and stepped the bubble, so the
-        // crossing this reads is the one that just happened.
-        self.update_traffic_passes(ctx, dt);
-        // Right after the passes, and for the same reason: the lane the driver
+        // voices sit where the vehicles are this frame.
+        self.update_traffic_sounds(ctx, dt);
+        // Right after the voices, and for the same reason: the lane the driver
         // moved out of is only open once the bubble has been stepped.
         self.update_lane_gap(ctx, dt);
 
@@ -537,7 +638,6 @@ impl DrivingState {
         self.update_audio(ctx, dt);
         self.update_announcements(ctx, dt);
         self.update_ambient_events(ctx, dt);
-        self.update_ramp_light(ctx, dt);
         self.update_critical_respeak(ctx, dt);
         self.update_hazard(ctx, dt);
         self.update_grade_advisory(ctx);
@@ -561,6 +661,8 @@ impl DrivingState {
         self.update_brake_heat_cue(ctx, dt);
         self.update_traction_cues(ctx);
         self.update_chain_law(ctx);
+        self.update_chain_checkpoint_hold(ctx);
+        self.update_chain_carry(ctx);
         // The destination approach assist used to run here -- after the
         // physics step, which is why its brake never reached the truck. It
         // now runs with the other assists' pedal floors, ahead of t.update().
@@ -572,6 +674,9 @@ impl DrivingState {
             if self.departure_chain {
                 // End of the origin's streets: merge onto the highway trip.
                 self.finish_departure_chain(ctx);
+            } else if self.stop_chain.is_some() {
+                // At a road stop's lot, off its own streets.
+                self.handle_stop_chain_end(ctx);
             } else if self.phase == DRIVE_PHASE_PICKUP {
                 self.handle_pickup_gate(ctx);
             } else if self.ramp_mi.is_some() {
@@ -597,7 +702,22 @@ impl DrivingState {
         live::set_position_mi(self.trip.position_mi);
         live::set_speed_mph(self.trip.truck.speed_mph());
         live::set_hazard_active(self.hazard_deadline.is_some());
+        live::set_move_lockout(if !self.trip.truck.engine_on {
+            live::LOCKOUT_ENGINE_OFF
+        } else if !self.trip.truck.air_ready() {
+            live::LOCKOUT_AIR
+        } else if self.trip.truck.parking_brake {
+            live::LOCKOUT_PARKING_BRAKE
+        } else {
+            0
+        });
         live::set_arrival_menu_open(self.arrival_menu_open);
         live::set_gate_stop_prompted(self.arrival_full_stop_said);
+        live::set_on_ramp(self.ramp_mi.is_some());
+        live::set_ramp_holding(
+            self.ramp_mi.is_some()
+                && !self.ramp_terminal_done
+                && (self.ramp_waiting_at_sign || self.ramp_waiting_at_light),
+        );
     }
 }

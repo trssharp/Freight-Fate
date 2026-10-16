@@ -49,7 +49,7 @@ use crate::transcript_cruise_support::{
 };
 
 /// The line itself, verbatim, because a driver acts on it.
-const WARNING: &str = "Descent control cannot hold this grade. Apply service brakes.";
+const WARNING: &str = "Descent control can't hold this grade. Brake.";
 
 /// The owner drives compressed time and every assist on; so does this file.
 const TIME_SCALE: f64 = 10.0;
@@ -226,7 +226,7 @@ fn the_warning_stays_off_the_owners_i70_run() {
     let mut descents = 0usize;
     let mut braked_frames = 0usize;
     let mut was_active = false;
-    for _ in 0..40_000 {
+    for _ in 0..200_000 {
         let before = harness.app.speech().lines().len();
         frame(&mut harness, DT);
         let lines = harness.app.speech().lines();
