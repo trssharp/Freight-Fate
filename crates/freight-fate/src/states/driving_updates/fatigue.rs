@@ -50,6 +50,7 @@ impl DrivingState {
             && hos_of(ctx).in_violation(&mode);
         if moving && self.hazard_deadline.is_none() {
             self.warn_last_hos_stop(ctx);
+            self.maybe_hos_planning_hint(ctx);
         }
 
         let night = is_night(self.trip.local_hour());
@@ -268,6 +269,9 @@ impl DrivingState {
                 SayEvent::new().category(SpeechCategory::Safety),
             );
         }
+        // A second run-off on top of a serious violation just suspended the
+        // CDL: the drive ends here instead of carrying on.
+        self.end_drive_if_licence_pulled(ctx);
     }
 
     /// Book a run-off-road fatigue event and say what it cost.
@@ -275,7 +279,7 @@ impl DrivingState {
     /// Falling asleep at the wheel is not a scrape: 49 CFR 392.3 forbids
     /// driving impaired by fatigue, and to a carrier this is a preventable
     /// safety incident. The first one costs standing; from the second on it
-    /// is a violation the licence answers for.
+    /// is a violation the license answers for.
     pub fn record_fatigue_event(&mut self, ctx: &mut GameContext) -> String {
         if ctx.profile.is_none() || self.enforcement_bypassed(ctx) {
             return String::new();
@@ -298,8 +302,8 @@ impl DrivingState {
         self.trip.truck.set_parking_brake();
         self.place_out_of_service(ctx);
         format!(
-            "Out of service for fatigue, {:.0} hours off duty. It is now {}. Hours of service \
-             reset, and the delivery deadline kept counting.",
+            "Out of service for fatigue, {:.0} hours off duty. It is now {}. Driving and duty \
+             clocks reset, and the delivery deadline kept counting.",
             enforcement::FATIGUE_OUT_OF_SERVICE_HOURS,
             clock_text(self.trip.local_hour())
         )

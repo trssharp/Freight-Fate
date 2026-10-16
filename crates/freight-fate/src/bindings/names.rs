@@ -159,6 +159,26 @@ const PAD: &[(ControllerButton, &str, &str)] = &[
     (ControllerButton::Paddle3, "paddle_3", "paddle 3"),
     (ControllerButton::Paddle4, "paddle_4", "paddle 4"),
     (ControllerButton::Touchpad, "touchpad", "the touchpad"),
+    (
+        ControllerButton::RightStickUp,
+        "rstick_up",
+        "right stick up",
+    ),
+    (
+        ControllerButton::RightStickDown,
+        "rstick_down",
+        "right stick down",
+    ),
+    (
+        ControllerButton::RightStickLeft,
+        "rstick_left",
+        "right stick left",
+    ),
+    (
+        ControllerButton::RightStickRight,
+        "rstick_right",
+        "right stick right",
+    ),
 ];
 
 pub(super) fn pad_button_saved_name(button: ControllerButton) -> &'static str {

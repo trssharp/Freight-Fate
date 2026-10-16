@@ -1,4 +1,5 @@
-//! Gross-weight advice spoken before dispatch acceptance.
+//! Gross-weight advice spoken before dispatch acceptance: an overweight
+//! load only.
 
 use ff_core::models::jobs::Job;
 use ff_core::models::profile::Profile;
@@ -11,9 +12,12 @@ pub(super) fn load_weight_margin(p: &Profile, job: &Job) -> String {
     let mut truck = TruckState::new(proposed.truck_specs());
     truck.fuel_gal = proposed.truck_fuel_gal();
     let margin_kg = truck.gross_weight_margin_with_cargo_kg(job.weight_tons * KG_PER_TON);
-    let side = if margin_kg >= 0.0 { "under" } else { "over" };
+    // Under the limit is the normal case and says nothing.
+    if margin_kg >= 0.0 {
+        return String::new();
+    }
     format!(
-        "Load weight: {} pounds {side} the gross-weight limit with current fuel.",
+        "Load weight: {} pounds over the gross-weight limit with current fuel.",
         fmt_grouped(margin_kg.abs() / KG_PER_LB, 0)
     )
 }

@@ -76,7 +76,7 @@ impl Trip {
         let sample_offset = if forward { offset } else { leg.miles - offset };
         for seg in leg.lane_segments() {
             if seg.start_mi <= sample_offset && sample_offset <= seg.end_mi {
-                return Some((seg.your_side(forward), seg.divided()));
+                return Some((seg.your_side(), seg.divided()));
             }
         }
         None
@@ -161,14 +161,21 @@ impl Trip {
     /// in the lane. One reading for the lane-gap cue, the L key, and the
     /// hazard call's named side.
     pub fn lane_blocker_at(&self, mile: Option<f64>, lane_index: i64) -> Option<&TrafficVehicle> {
-        self.traffic_manager.vehicle_in_lane(
-            mile.unwrap_or(self.position_mi),
-            lane_index,
-            DODGE_CLEARANCE_AHEAD_MI + LANE_GAP_MARGIN_MI,
-            DODGE_CLEARANCE_BEHIND_MI + LANE_GAP_MARGIN_MI,
-            LANE_GAP_ACT_REAL_S * self.effective_time_scale() / 3600.0,
-            self.truck.speed_mph(),
-        )
+        let in_lane = |lane| {
+            self.traffic_manager.vehicle_in_lane(
+                mile.unwrap_or(self.position_mi),
+                lane,
+                DODGE_CLEARANCE_AHEAD_MI + LANE_GAP_MARGIN_MI,
+                DODGE_CLEARANCE_BEHIND_MI + LANE_GAP_MARGIN_MI,
+                LANE_GAP_ACT_REAL_S * self.effective_time_scale() / 3600.0,
+                self.truck.speed_mph(),
+            )
+        };
+        // A vehicle on the ramp beside the right lane is about to be in it,
+        // and joins the moment the truck is a safe gap away, which a truck
+        // over in the left lane always is. Left out, the right lane read open
+        // with a box truck alongside on the ramp (player report, 2026-10-13).
+        in_lane(lane_index).or_else(|| (lane_index == 0).then(|| in_lane(-1)).flatten())
     }
 
     /// Which of the truck's neighbouring lanes a dodge can go into right
@@ -194,6 +201,12 @@ impl Trip {
         OpenSide::from_sides(open(lane + 1), open(lane - 1))
     }
 
+    /// The lane answer for `side` at the truck's position, the open
+    /// neighbour named the way the L key names it.
+    pub fn open_side_spoken(&self, side: OpenSide) -> String {
+        side.spoken_from(self.traffic_manager.player_lane, self.lane_count_at(None))
+    }
+
     /// True when every mile of a work zone footprint -- taper included --
     /// has a second lane our side (tester report, Detroit-Mansfield,
     /// 2026-08-11).
@@ -207,6 +220,19 @@ impl Trip {
             mile += LANE_CLOSURE_SAMPLE_MI;
         }
         self.lane_count_at(Some(stop)) >= 2
+    }
+
+    /// The lowest posted limit across a span, sampled the way
+    /// `span_is_multilane` samples lanes. A work zone steps down from it.
+    pub fn lowest_limit_over(&self, start_mi: f64, end_mi: f64) -> f64 {
+        let stop = self.total_miles().min(start_mi.max(end_mi));
+        let mut mile = 0.0_f64.max(start_mi.min(stop));
+        let mut lowest = self.corridor_limit_at(stop);
+        while mile < stop {
+            lowest = lowest.min(self.corridor_limit_at(mile));
+            mile += LANE_CLOSURE_SAMPLE_MI;
+        }
+        lowest
     }
 
     /// The state the truck is in, or empty where the bake is silent.
@@ -432,9 +458,9 @@ impl Trip {
 
     pub fn ramp_advisory_at(&self, route_mile: f64) -> RampAdvisorySpeed {
         let interchange = self.interchange_with_direction_at(route_mile, 2.0);
-        let directional = interchange.is_some_and(|(ix, _)| ix.ramp_far_end == "motorway");
+        let directional = interchange.is_some_and(|(ix, _, _)| ix.ramp_far_end == "motorway");
         let calculated_mph = ramp_speed_mph(self.corridor_limit_at(route_mile), directional);
-        if let Some((ix, forward)) = interchange {
+        if let Some((ix, forward, _)) = interchange {
             let observed = if forward {
                 ix.ramp_advisory_mph_forward
             } else {
@@ -456,19 +482,55 @@ impl Trip {
         self.ramp_advisory_at(route_mile).mph()
     }
 
+    /// OSM-derived length in miles of the exit ramp nearest a route mile
+    /// (within 2 miles, like `ramp_advisory_at`), for this trip's direction
+    /// of travel; None when that exit has no baked length that way.
+    pub fn ramp_length_mi_at(&self, route_mile: f64) -> Option<f64> {
+        let (ix, forward, _) = self.interchange_with_direction_at(route_mile, 2.0)?;
+        let feet = if forward {
+            ix.ramp_length_ft_forward
+        } else {
+            ix.ramp_length_ft_backward
+        };
+        feet.map(|ft| ft / 5280.0)
+    }
+
+    /// The OSM node the exit ramp nearest a route mile ends at, for this
+    /// trip's direction of travel -- the key of the facility street chain
+    /// that starts there (`World::facility_exit_route`). None for a ramp
+    /// ending in a merge, or with no baked terminal that way.
+    pub fn ramp_terminal_node_at(&self, route_mile: f64) -> Option<i64> {
+        let (ix, forward, _) = self.interchange_with_direction_at(route_mile, 2.0)?;
+        if forward {
+            ix.ramp_terminal_node_forward
+        } else {
+            ix.ramp_terminal_node_backward
+        }
+    }
+
     /// The baked interchange nearest a route mile, or None.
     pub fn interchange_at(&self, route_mile: f64, tol_mi: f64) -> Option<&Interchange> {
         self.interchange_with_direction_at(route_mile, tol_mi)
-            .map(|(ix, _)| ix)
+            .map(|(ix, _, _)| ix)
+    }
+
+    /// The route mile of the baked interchange nearest `route_mile`: the
+    /// frame a stop's `interchange_mi` is in. The record's own `at_mi` is
+    /// counted from the start of its leg, and matches only on a first leg
+    /// driven forward.
+    pub fn interchange_mile_at(&self, route_mile: f64, tol_mi: f64) -> Option<f64> {
+        self.interchange_with_direction_at(route_mile, tol_mi)
+            .map(|(_, _, at)| at)
     }
 
     fn interchange_with_direction_at(
         &self,
         route_mile: f64,
         tol_mi: f64,
-    ) -> Option<(&Interchange, bool)> {
+    ) -> Option<(&Interchange, bool, f64)> {
         let mut best: Option<&Interchange> = None;
         let mut best_forward = true;
+        let mut best_at = 0.0;
         let mut best_dist = tol_mi;
         for (i, (start, leg)) in self
             .leg_starts
@@ -478,22 +540,23 @@ impl Trip {
         {
             let forward = self.route.cities[i] == leg.a;
             for ix in leg.interchanges() {
-                let offset = stop_offset_for_direction(ix.at_mi, leg.miles, forward);
-                let dist = (start + offset - route_mile).abs();
+                let at = start + stop_offset_for_direction(ix.at_mi, leg.miles, forward);
+                let dist = (at - route_mile).abs();
                 if dist <= best_dist {
                     best_dist = dist;
                     best = Some(ix);
                     best_forward = forward;
+                    best_at = at;
                 }
             }
         }
-        best.map(|ix| (ix, best_forward))
+        best.map(|ix| (ix, best_forward, best_at))
     }
 
     /// The live traffic speed of a congestion zone here, or None when it
     /// flows free right now.
     fn congestion_limit_now(&self, aadt: f64, lanes: i64, start_mi: f64) -> Option<f64> {
-        let ratio = congestion_ratio(aadt, self.current_hour(), lanes, self.is_weekend_now());
+        let ratio = congestion_ratio(aadt, self.local_hour(), lanes, self.is_weekend_now());
         congestion_limit_mph(ratio, self.corridor_limit_at(start_mi))
     }
 
@@ -677,10 +740,11 @@ impl Trip {
                 .unwrap_or("");
             format!("{toward_name}, {state}")
         };
-        format!(
-            "{dist}. On {} toward {toward_text}.{lane_part} {terrain_text}. {next_context}",
-            leg.highway
-        )
+        // Its own sentence, so a catalog has it whole when the lane and
+        // grade around it change.
+        let highway = &leg.highway;
+        let on_road = format!("On {highway} toward {toward_text}.");
+        format!("{dist}. {on_road}{lane_part} {terrain_text}. {next_context}")
     }
 
     /// Lane count in plain words for the road-status readout, or empty where
@@ -689,15 +753,18 @@ impl Trip {
         let Some((n, divided)) = self.lanes_at(None) else {
             return String::new();
         };
-        let lanes = format!(
-            "{} lane{} your side",
-            lane_word(n),
-            if n != 1 { "s" } else { "" }
-        );
         if divided {
-            format!("divided, {lanes}")
+            format!(
+                "divided, {} lane{} your side",
+                lane_word(n),
+                if n != 1 { "s" } else { "" }
+            )
         } else {
-            lanes
+            format!(
+                "{} lane{} your side",
+                lane_word(n),
+                if n != 1 { "s" } else { "" }
+            )
         }
     }
 
@@ -841,7 +908,8 @@ impl Trip {
         Zone::new(gate_start, total, FACILITY_GATE_LIMIT_MPH, "facility gate")
     }
 
-    /// 0 = no law, 1 = winter-rated tires or chains, 2 = chains required.
+    /// 0 = no law, 1 = Level 1 (cars may use winter tires; trucks chain,
+    /// except tandem-drive trucks in Colorado), 2 = chains on every truck.
     ///
     /// The sky the truck is under sets the floor; an active Weather Service
     /// warning for this stretch (a winter storm, a blizzard, an ice storm)
@@ -856,6 +924,72 @@ impl Trip {
         from_sky.max(crate::sim::real_weather_alerts::alerts_chain_law_level(
             &self.live_alerts,
         ))
+    }
+
+    /// Whether the rig must chain at this milepost under the active law
+    /// (`rig_must_chain`): every level in every state except Colorado
+    /// Level 1, which chains single-drive-axle trucks only.
+    pub fn rig_must_chain_at(&self, mile: f64) -> bool {
+        crate::sim::trip_models::rig_must_chain(
+            self.state_code_at(mile).as_deref(),
+            self.chain_law_level(),
+        )
+    }
+
+    /// The truck is on a Colorado chain-carry corridor's mountain run in
+    /// carry season (`CO_CHAIN_CARRY_CORRIDORS`), with the career calendar
+    /// known. Weather doesn't matter: the rule is to carry, not to chain.
+    pub fn on_co_chain_carry_corridor(&self, mile: f64) -> bool {
+        use crate::sim::trip_models::{in_co_chain_carry_season, CO_CHAIN_CARRY_CORRIDORS};
+        use chrono::Datelike;
+        let Some(hours) = self.current_career_hours() else {
+            return false;
+        };
+        let month = crate::sim::season::calendar_date(hours).month();
+        let highway = &self.route.legs[self.leg_at_mile(mile).0].highway;
+        self.chain_law_area_at(mile).is_some()
+            && self.state_code_at(mile).as_deref() == Some("CO")
+            && CO_CHAIN_CARRY_CORRIDORS.contains(&highway.as_str())
+            && in_co_chain_carry_season(month)
+    }
+
+    /// The truck is on a Montana chain-law area (the mountain run) between
+    /// October 1 and April 30 (`in_mt_chain_carry_season`).
+    pub fn on_mt_chain_carry_run(&self, mile: f64) -> bool {
+        use chrono::Datelike;
+        let Some(hours) = self.current_career_hours() else {
+            return false;
+        };
+        let month = crate::sim::season::calendar_date(hours).month();
+        self.chain_law_area_at(mile).is_some()
+            && self.state_code_at(mile).as_deref() == Some("MT")
+            && crate::sim::trip_models::in_mt_chain_carry_season(month)
+    }
+
+    /// Whether the truck meets the active chain law at this milepost: chains
+    /// on, or a law that doesn't chain the rig here (`rig_must_chain`).
+    /// Wyoming Level 1 asks for snow tires or chains (W.S. 31-5-956(e)), so
+    /// there winter tires count and all-season tires without chains don't.
+    pub fn rig_compliant_at(&self, mile: f64) -> bool {
+        let level = self.chain_law_level();
+        if self.truck.chains_on || level <= 0 {
+            return true;
+        }
+        let state = self.state_code_at(mile);
+        if state.as_deref() == Some("WY") && level == 1 {
+            return self.truck.tire_type == crate::sim::vehicle::TIRE_WINTER;
+        }
+        !crate::sim::trip_models::rig_must_chain(state.as_deref(), level)
+    }
+
+    /// The chain-law warning's missing equipment: "snow tires or chains" at
+    /// Wyoming Level 1, "chains" everywhere else.
+    pub fn chain_law_need_at(&self, mile: f64) -> &'static str {
+        if self.state_code_at(mile).as_deref() == Some("WY") && self.chain_law_level() == 1 {
+            "snow tires or chains"
+        } else {
+            "chains"
+        }
     }
 
     /// Index of the chain-law area containing this milepost, or None.
@@ -911,7 +1045,7 @@ impl Trip {
                 runs.push(LaneRun {
                     start_mi: s,
                     end_mi: e,
-                    lanes: MAX_DRIVABLE_LANES.min(seg.your_side(forward)),
+                    lanes: MAX_DRIVABLE_LANES.min(seg.your_side()),
                     divided: seg.divided(),
                 });
             }

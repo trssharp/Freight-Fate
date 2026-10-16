@@ -15,9 +15,6 @@ import time
 import urllib.request
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parent.parent / "src"
-sys.path.insert(0, str(SRC))
-
 TIMEOUT_S = 6.0
 USER_AGENT = "FreightFate/1.1 (connectivity probe; https://orinks.net)"
 
@@ -148,7 +145,10 @@ def main():
     probe("https://orinks.net/api/board", "orinks.net /api/board", expect_json=False)
     probe_tcp("https://orinks.net/api/players", "orinks.net /api/players")
     # Version / update check
-    probe("https://api.github.com/repos/Orinks/Freight-Fate/releases/latest", "GitHub releases API")
+    probe(
+        "https://api.github.com/repos/orinks-games/Freight-Fate/releases/latest",
+        "GitHub releases API",
+    )
 
     # ── Summary ───────────────────────────────────────────────────────────
     print()

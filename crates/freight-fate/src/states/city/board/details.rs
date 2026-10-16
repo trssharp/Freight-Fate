@@ -8,10 +8,15 @@ use ff_core::sim::timezones::{appointment_text, city_zone};
 use crate::app::{GameContext, SharedState};
 use crate::impl_state_for_menu;
 use crate::states::base::{Menu, MenuCore, MenuItem};
-use crate::states::city::{base_menu_current_help, profile};
+use crate::states::city::{
+    base_menu_current_help, profile, PICKUP_CHECK_IN_MIN, PICKUP_LOADING_MIN,
+};
 
 use super::weight::load_weight_margin;
-use super::{locked_reason, market_preview, settlement_for, trailer_note, JobBoardState};
+use super::{
+    locked_reason, market_preview, pay_basis_note, pickup_drive_hours, settlement_for,
+    trailer_note, JobBoardState,
+};
 
 /// Board line for a carrier-assigned reposition.
 fn describe_reposition(ctx: &GameContext, total: usize, job: &Job, index: Option<usize>) -> String {
@@ -20,12 +25,10 @@ fn describe_reposition(ctx: &GameContext, total: usize, job: &Job, index: Option
         None => String::new(),
     };
     format!(
-        "{prefix}Carrier-assigned reposition: drive empty to {}, {}. No cargo. Pays {} \
-         dollars, the empty-mile rate. The {} dispatch board opens on arrival.",
+        "{prefix}Reposition, empty, to {}, {}. Pays {} dollars.",
         job.spoken_destination(),
         ctx.settings.distance_text(job.distance_mi, false),
         fmt_grouped(job.pay, 0),
-        job.spoken_destination()
     )
 }
 
@@ -37,11 +40,12 @@ pub fn describe_job(ctx: &GameContext, total: usize, job: &Job, index: Option<us
     let p = profile(ctx);
     let business = settlement_for(p, job, true);
     let note = trailer_note(p, job);
-    let preview = format!(
-        "{} {}",
-        market_preview(&business),
-        load_weight_margin(p, job)
-    );
+    let weight = load_weight_margin(p, job);
+    let preview = if weight.is_empty() {
+        market_preview(&business)
+    } else {
+        format!("{} {weight}", market_preview(&business))
+    };
     let distance = ctx.settings.distance_text(job.distance_mi, false);
     let text = job.describe(&DescribeOptions {
         index,
@@ -66,7 +70,7 @@ pub fn describe_job(ctx: &GameContext, total: usize, job: &Job, index: Option<us
         .map(|route| ctx.settings.distance_text(route.miles(), false))
         .unwrap_or_else(|| "a drive".to_string());
     let waiting = format!(
-        "Load waiting in {}, {deadhead} deadhead first, paid at the empty-mile rate. ",
+        "Load in {}, {deadhead} deadhead first. ",
         job.spoken_origin()
     );
     match index {
@@ -129,12 +133,16 @@ impl JobDetailState {
             .city(&job.destination)
             .map(|city| city_zone(city))
             .unwrap_or(ff_core::sim::timezones::EASTERN);
+        // The delivery clock starts when the loaded truck leaves the shipper,
+        // after the drive there and the check-in and loading: a relayed
+        // load's deadhead can run longer than the deadline's slack.
+        let loaded_departure_h =
+            pickup_drive_hours(ctx, job) + (PICKUP_CHECK_IN_MIN + PICKUP_LOADING_MIN) / 60.0;
         let mut lines = vec![
             format!("Cargo: {}.", job.cargo.label),
             format!("Origin: {}.", job.origin_facility_text()),
             format!("Destination: {destination_text}."),
             format!("Distance: {}.", s.distance_text(job.distance_mi, false)),
-            load_weight_margin(p, job),
             format!(
                 "{}: {} dollars.",
                 pay_label(&p.business_status),
@@ -146,13 +154,20 @@ impl JobDetailState {
                 fmt_f(s.per_distance(dollars_per_mile), 2)
             ),
             format!(
-                "Deadline: {} hours, deliver by about {}.",
+                "Deadline {} hours after loading, about {}.",
                 fmt_f(job.deadline_game_h, 0),
-                appointment_text(p.game_hours, job.deadline_game_h, zone)
+                appointment_text(p.game_hours, loaded_departure_h + job.deadline_game_h, zone)
             ),
             format!("Equipment: {}.", job.equipment_text()),
-            format!("Trailer: {}", trailer_note(p, job)),
         ];
+        let weight = load_weight_margin(p, job);
+        if !weight.is_empty() {
+            lines.insert(4, weight);
+        }
+        let trailer = trailer_note(p, job);
+        if !trailer.is_empty() {
+            lines.push(format!("Trailer: {trailer}"));
+        }
         let locked = locked_reason(p, job);
         if !locked.is_empty() {
             lines.push(format!("Locked: {locked}"));
@@ -162,17 +177,13 @@ impl JobDetailState {
                 credentials_clause(job.cargo.credentials)
             ));
         }
-        lines.push(
-            "Route details happen after pickup: rest, fuel, tolls, weather, and stops.".to_string(),
-        );
         lines
     }
 
     fn reposition_detail_lines(&self, ctx: &GameContext) -> Vec<String> {
         let job = &self.job;
         vec![
-            "Carrier-assigned reposition: empty to a nearby city where freight is thicker."
-                .to_string(),
+            "Reposition, empty.".to_string(),
             format!(
                 "Destination: {}.",
                 ctx.world.spoken_city(&job.destination, Some(true))
@@ -186,8 +197,6 @@ impl JobDetailState {
                 fmt_grouped(job.pay, 0)
             ),
             "No cargo, no trailer program, no endorsement needed.".to_string(),
-            "Route details happen after accepting: rest, fuel, tolls, weather, and stops."
-                .to_string(),
         ]
     }
 }
@@ -203,7 +212,7 @@ impl Menu for JobDetailState {
 
     fn announce_entry(&mut self, ctx: &mut GameContext) {
         let current = self.current_text(ctx);
-        ctx.say(&format!("Job details. {JOB_DETAIL_INTRO_HELP} {current}"));
+        ctx.say(&format!("Job details. {current}"));
     }
 
     fn current_help(&self, ctx: &GameContext) -> String {
@@ -214,13 +223,21 @@ impl Menu for JobDetailState {
     }
 
     fn build_items(&mut self, ctx: &mut GameContext) -> Vec<MenuItem<Self>> {
+        let status = profile(ctx).business_status.clone();
+        let pay_line = format!("{}: ", pay_label(&status));
         let mut items: Vec<MenuItem<Self>> = self
             .detail_lines(ctx)
             .into_iter()
             .map(|line| {
+                // The pay line's help says what the listed amount is, which
+                // the board's entry line no longer explains.
+                let help = if !self.job.bobtail && line.starts_with(&pay_line) {
+                    pay_basis_note(&status)
+                } else {
+                    "Enter repeats this line."
+                };
                 let spoken = line.clone();
-                MenuItem::new(line, move |_s: &mut Self, ctx| ctx.say(&spoken))
-                    .help("Enter repeats this line.")
+                MenuItem::new(line, move |_s: &mut Self, ctx| ctx.say(&spoken)).help(help)
             })
             .collect();
         let locked = locked_reason(profile(ctx), &self.job);

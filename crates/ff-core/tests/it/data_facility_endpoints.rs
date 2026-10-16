@@ -22,9 +22,22 @@ fn test_facility_endpoint_data_covers_supported_facilities() {
     let data = read_json("facility_endpoints.json");
     let coverage = &data["coverage"];
 
-    assert_eq!(coverage["facilities"], 5037);
-    assert_eq!(coverage["source_backed"], 3198);
-    assert_eq!(coverage["fallback"], 1839);
+    // The counts move with every sweep (ROADMAP keeps their history), so what
+    // is checked is that they add up: every facility is sourced or a
+    // fallback, and every sourced row carries the screen's verdict.
+    let n = |v: &serde_json::Value| v.as_u64().unwrap();
+    assert!(n(&coverage["facilities"]) > 0);
+    assert_eq!(
+        n(&coverage["source_backed"]) + n(&coverage["fallback"]),
+        n(&coverage["facilities"])
+    );
+    let screen = &coverage["screen"];
+    assert_eq!(screen["not_screened"], 0);
+    assert_eq!(
+        n(&screen["passed"]) + n(&screen["refused"]),
+        n(&coverage["source_backed"])
+    );
+    assert!(n(&screen["trade_assumed"]) <= n(&screen["passed"]));
     assert_eq!(coverage["nearest_road_context"], 0);
     assert_eq!(coverage["turn_level_geometry"], 0);
     assert_eq!(coverage["gate_yard_dock_hints"], 0);
@@ -86,6 +99,20 @@ fn test_facility_endpoint_records_are_clean_and_honest() {
         if record["source_backed"].as_bool().unwrap() {
             assert!(!record["fallback"].as_bool().unwrap());
             assert_eq!(record["source_type"], "osm_facility_endpoint");
+            // The screen verdict rides in the row, so a railway line that
+            // found no replacement is never mistaken for a yard gate.
+            let verdict = record["endpoint_screen"].as_str().unwrap();
+            assert!(verdict == "passed" || verdict == "refused");
+            if verdict == "refused" {
+                assert!(!record["endpoint_screen_reason"]
+                    .as_str()
+                    .unwrap()
+                    .is_empty());
+            }
+            if let Some(kind) = record.get("match_kind") {
+                assert!(kind == "read" || kind == "assumed");
+            }
+            assert!(record["approach_miles"].as_f64().unwrap() <= 8.0);
             assert!(record["approach_miles"].as_f64().unwrap() > 0.0);
             assert_eq!(record["approach_road"], "local facility access road");
             assert!(record["source_note"]
@@ -96,7 +123,26 @@ fn test_facility_endpoint_records_are_clean_and_honest() {
             assert!(record["fallback"].as_bool().unwrap());
             assert!(!record["fallback_reason"].as_str().unwrap().is_empty());
             assert_eq!(record["source_type"], "representative_fallback");
-            assert_eq!(record["approach_miles"].as_f64().unwrap(), 0.0);
+            let estimated = record
+                .get("estimated")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if estimated {
+                // Estimated-near-city pins keep a real offset; they must not
+                // claim source-backed OSM at zero miles.
+                assert!(record["approach_miles"].as_f64().unwrap() > 0.0);
+                assert!(record["source_note"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Estimated-near-city"));
+                assert!(record["fallback_reason"]
+                    .as_str()
+                    .unwrap()
+                    .to_lowercase()
+                    .contains("estimated near city"));
+            } else {
+                assert_eq!(record["approach_miles"].as_f64().unwrap(), 0.0);
+            }
         }
     }
 }
@@ -104,21 +150,24 @@ fn test_facility_endpoint_records_are_clean_and_honest() {
 #[test]
 fn test_facility_route_prefers_source_backed_endpoint_when_available() {
     let world = world();
+    // A sourced endpoint with NO street chain (it sits a few blocks from the
+    // city anchor, under the chain floor). The Abilene energy terminal this
+    // used to pin gained a chain in the 2026-09-17 re-sweep.
     let facility = world
-        .facility_by_id("abilene:chemical_petroleum_terminal:abilene-energy-terminal")
+        .facility_by_id("muncie-in-us:cross_dock:muncie-cross-dock")
         .unwrap();
     let endpoint = world
-        .facility_endpoint("Abilene", &facility.id)
+        .facility_endpoint("muncie_in_us", &facility.id)
         .unwrap()
-        .expect("the Abilene energy terminal has an endpoint");
+        .expect("the Muncie cross-dock has an endpoint");
     let route = world
-        .facility_approach_route("Abilene", &facility.name)
+        .facility_approach_route("muncie_in_us", &facility.name)
         .unwrap();
 
     assert!(endpoint.source_backed);
     assert!((route.miles() - endpoint.approach_miles).abs() < 1e-9);
     let approach = world
-        .facility_approach("Abilene", &facility.name)
+        .facility_approach("muncie_in_us", &facility.name)
         .unwrap()
         .unwrap();
     assert_eq!(route.highways(), vec![approach.road.clone()]);

@@ -48,6 +48,7 @@ Windows and are worth writing down:
 Usage
 -----
     uv run python tools/curve_valhalla_facts.py --all
+    uv run python tools/curve_valhalla_facts.py --legs a:b,c:d
     uv run python tools/curve_valhalla_facts.py --state co --out facts.jsonl
 """
 
@@ -74,7 +75,7 @@ from world_source import load_world  # noqa: E402
 scs.CURVE_PAD_M = 150.0
 
 ROOT = Path(__file__).resolve().parent.parent
-CURVES = ROOT / "src" / "freight_fate" / "data" / "world_data" / "us" / "gameplay" / "curves.jsonl"
+CURVES = ROOT / "data" / "world_data" / "us" / "gameplay" / "curves.jsonl"
 
 # FOSSGIS runs a public, planet-wide Valhalla. It answers trace_attributes,
 # which means the whole tileset build is optional: a 400-point chunk of I-70
@@ -82,7 +83,7 @@ CURVES = ROOT / "src" / "freight_fate" / "data" / "world_data" / "us" / "gamepla
 # Default to the public one and let --url point at a local build instead.
 PUBLIC_URL = "https://valhalla1.openstreetmap.de/trace_attributes"
 LOCAL_URL = "http://localhost:8002/trace_attributes"
-USER_AGENT = "Freight-Fate map-matching (https://github.com/Orinks/Freight-Fate)"
+USER_AGENT = "Freight-Fate map-matching (https://github.com/orinks-games/Freight-Fate)"
 COSTING = "truck"  # the vehicle actually being routed, so its restrictions apply
 
 # What the truck actually is. Valhalla's truck costing defaults to 21.77
@@ -296,6 +297,7 @@ def main() -> int:
     group = ap.add_mutually_exclusive_group(required=True)
     group.add_argument("--all", action="store_true")
     group.add_argument("--state", help="comma-separated from-state codes")
+    group.add_argument("--legs", help="comma-separated leg ids (from:to)")
     ap.add_argument("--out", help=f"facts file to write (default {FACTS})")
     ap.add_argument("--url", default=PUBLIC_URL, help=f"matcher endpoint (default {PUBLIC_URL})")
     ap.add_argument("--local", action="store_true", help=f"shorthand for --url {LOCAL_URL}")
@@ -322,7 +324,8 @@ def main() -> int:
     print(f"matching against {url} (delay {delay}s between calls)")
 
     out_path = Path(args.out) if args.out else FACTS
-    wanted = None if args.all else {s.strip().lower() for s in args.state.split(",")}
+    wanted = None if args.all or args.legs else {s.strip().lower() for s in args.state.split(",")}
+    wanted_legs = {item.strip() for item in args.legs.split(",")} if args.legs else None
     world = load_world()
     cities = world["cities"]
     rows_by_leg = load_curve_rows()
@@ -337,6 +340,8 @@ def main() -> int:
         if wanted and code not in wanted:
             continue
         leg_id = f"{leg['from']}:{leg['to']}"
+        if wanted_legs is not None and leg_id not in wanted_legs:
+            continue
         rows = rows_by_leg.get(leg_id)
         if not rows:
             continue

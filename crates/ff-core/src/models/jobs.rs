@@ -14,7 +14,7 @@ use crate::models::save_migration::json_f64;
 use crate::models::start_options::pay_plan_for_key;
 use crate::models::trailers::{required_program_text, trailer_keys_for_cargo};
 use crate::pyfmt::{fmt_f, fmt_grouped, py_str_float, round_py_n};
-use crate::speech_text::typed_name;
+use crate::speech_text::{the_city, typed_name};
 
 mod board;
 mod deadline;
@@ -23,15 +23,16 @@ pub mod relay;
 #[cfg(test)]
 mod tests;
 
-pub use board::{JobBoard, OfferOptions};
+pub use board::{reachable_cities, JobBoard, OfferOptions};
 pub use deadline::{
     curve_ceilings, dispatch_deadline_hours, fair_active_deadline, minimum_pay_for_level, plan_hos,
-    required_hours, route_drive_hours, route_drive_hours_over, route_planning_limit,
-    route_required_hours, segment_hours, CurveBand, HosPlan, ACTIVE_TRIP_FAIRNESS_SLACK,
-    DEADLINE_AVG_MPH, DEADLINE_DISPATCH_MIN_SLACK_H, DEADLINE_DISPATCH_SLACK_RANGE,
-    DEADLINE_MIN_SEGMENT_MPH, DEADLINE_PLANNING_SPEED_FACTOR, DEADLINE_SAMPLE_MI,
-    DISPATCH_FLAT_MINIMUM_BY_LEVEL, HOOKUP_FEE, LONG_HAUL_MINIMUM_RATE_BY_LEVEL,
-    SHORT_HAUL_FULL_PREMIUM_MI, SHORT_HAUL_RATE_BY_LEVEL, SHORT_HAUL_TAPER_END_RATE_BY_LEVEL,
+    remaining_route_hos_plan, required_hours, route_drive_hours, route_drive_hours_over,
+    route_planning_limit, route_required_hours, segment_hours, CurveBand, HosPlan,
+    ACTIVE_TRIP_FAIRNESS_SLACK, DEADLINE_AVG_MPH, DEADLINE_DISPATCH_MIN_SLACK_H,
+    DEADLINE_DISPATCH_SLACK_RANGE, DEADLINE_MIN_SEGMENT_MPH, DEADLINE_PLANNING_SPEED_FACTOR,
+    DEADLINE_SAMPLE_MI, DISPATCH_FLAT_MINIMUM_BY_LEVEL, HOOKUP_FEE,
+    LONG_HAUL_MINIMUM_RATE_BY_LEVEL, SHORT_HAUL_FULL_PREMIUM_MI, SHORT_HAUL_RATE_BY_LEVEL,
+    SHORT_HAUL_TAPER_END_RATE_BY_LEVEL,
 };
 
 mod catalog;
@@ -54,7 +55,7 @@ pub fn facility_text(
     locality: &str,
 ) -> String {
     if location_type == "metro_market" || is_legacy_facility_name(city, location_name) {
-        return format!("the {city} metro freight market");
+        return format!("{} metro freight market", the_city(city));
     }
     let place = if !locality.is_empty() && !location_name.contains(locality) {
         format!(" near {locality}")
@@ -77,7 +78,7 @@ pub fn facility_offer_text(
     locality: &str,
 ) -> String {
     if location_type == "metro_market" || is_legacy_facility_name(city, location_name) {
-        return format!("the {city} metro freight market");
+        return format!("{} metro freight market", the_city(city));
     }
     let place = if !locality.is_empty() && !location_name.contains(locality) {
         format!(" near {locality}")
@@ -235,7 +236,7 @@ impl Job {
         };
         let condition = market_condition(self.market_mult);
         let market = if condition != "steady" {
-            format!(" Lane note: Market is {condition}.")
+            format!(" Market {condition}.")
         } else {
             String::new()
         };
@@ -249,36 +250,40 @@ impl Job {
         } else {
             format!(" Requires {}.", credentials_clause(self.cargo.credentials))
         };
-        let origin = format!("from {}", self.origin_offer_text());
-        let dest = format!("to {}", self.destination_offer_text());
+        // Whole sentences, so a catalog has each one with its words: the
+        // load, the pay and the deadline are each a line of their own.
+        let tons = fmt_f(self.weight_tons, 0);
+        let cargo = self.cargo.label;
+        let pickup = self.origin_offer_text();
+        let dropoff = self.destination_offer_text();
+        let load = format!("{tons} tons of {cargo} from {pickup} to {dropoff}.");
         let trailer = if opts.trailer_note.is_empty() {
             String::new()
         } else {
             format!(" {}", opts.trailer_note)
         };
-        let pay = opts.display_pay.unwrap_or(self.pay);
-        let pay_label = if opts.pay_label.is_empty() {
-            "Pays"
-        } else {
-            opts.pay_label
+        let pay = fmt_grouped(opts.display_pay.unwrap_or(self.pay), 0);
+        let pay_text = match opts.pay_label {
+            "" | "Pays" => format!("Pays {pay} dollars."),
+            "Carrier gross" => format!("Carrier gross {pay} dollars."),
+            "Direct gross" => format!("Direct gross {pay} dollars."),
+            "Gross revenue" => format!("Gross revenue {pay} dollars."),
+            other => format!("{other} {pay} dollars."),
         };
         let distance = if opts.distance_text.is_empty() {
             format!("{} miles", fmt_f(self.distance_mi, 0))
         } else {
             opts.distance_text.to_string()
         };
-        let rest = if self.deadline_covers_rest {
-            ", planned around the 10-hour rest your hours will force. "
+        let hours = fmt_f(self.deadline_game_h, 0);
+        let deadline = if self.deadline_covers_rest {
+            format!("Deadline {hours} hours, includes a 10-hour rest.")
         } else {
-            ". "
+            format!("Deadline {hours} hours.")
         };
+        let equipment = self.cargo.equipment_text();
         format!(
-            "{prefix}{} tons of {} {origin} {dest}. {distance}. {pay_label} {} dollars. Deadline {} hours{rest}Equipment: {}.{trailer}{preview}{market}{endorsement}",
-            fmt_f(self.weight_tons, 0),
-            self.cargo.label,
-            fmt_grouped(pay, 0),
-            fmt_f(self.deadline_game_h, 0),
-            self.cargo.equipment_text(),
+            "{prefix}{load} {distance}. {pay_text} {deadline} Equipment: {equipment}.{trailer}{preview}{market}{endorsement}"
         )
     }
 
@@ -651,6 +656,14 @@ pub const BASE_BOARD_OFFERS: usize = 5;
 // favored on the board.
 pub const SPECIALIZED_FREIGHT_LEVEL: i64 = 11;
 pub const SPECIALIZED_FREIGHT_WEIGHT: f64 = 1.25;
+// A driver who holds every credential a cargo class asks for is the driver
+// dispatch calls for it. Before 2026-09-16 the board offered a hazmat holder
+// 1.2 percent placarded and 0.25 percent bulk fuel map-wide (zero of 1,186
+// staging deliveries), so the course and background check never paid back.
+// The cargo weight multiplies at the shipper, and the shipper itself is
+// favoured when it ships something the driver is credentialed for.
+pub const HELD_CREDENTIAL_CARGO_WEIGHT: f64 = 4.0;
+pub const HELD_CREDENTIAL_FACILITY_BONUS: f64 = 1.5;
 pub const PREMIUM_LANE_LEVEL: i64 = 12;
 pub const PREMIUM_LANE_LONG_HAUL_BIAS: f64 = 0.5;
 

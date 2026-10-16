@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use ff_core::data::world_models::{Landmark, Leg};
+use ff_core::data::world_models::Leg;
 use ff_core::sim::trip::spoken_short_miles;
 use ff_core::sim::trip_models::leg_state_at;
 use ff_core::sim::trip_route_helpers::leg_heading;
@@ -63,6 +63,17 @@ pub struct HighwayFrame {
     pub native_offset: f64,
 }
 
+/// A town near the truck: straight-line miles to it, its position along the
+/// leg relative to the truck (native frame), how far off the road it sits,
+/// and its spoken name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NearbyTown {
+    pub away: f64,
+    pub along: f64,
+    pub off_mi: f64,
+    pub name: String,
+}
+
 impl DrivingState {
     /// `_speak_route_status()`.
     pub fn speak_route_status(&mut self, ctx: &mut GameContext) {
@@ -83,20 +94,29 @@ impl DrivingState {
         // heard "on I-90 West, 3 miles remaining" with a frozen countdown
         // while rolling city streets toward the gate (playtest 2026-07-22).
         // Both approach shapes answer with the gate distance instead.
+        if let Some(stop) = self.stop_chain.clone() {
+            // The streets to a road stop's lot count down to the lot.
+            self.say_local_status(ctx, &stop.spoken_name(), None, None);
+            return;
+        }
         if self.surface_chain {
             let target = format!("the gate at {}", self.approach_facility_text(ctx));
             self.say_local_status(ctx, &target, None, None);
             return;
         }
         if self.destination_exit_taken {
-            let target = self.approach_facility_text(ctx);
-            // The ramp's own countdown, never the frozen mainline remainder.
-            let ramp_left = self.ramp_mi;
+            let mut target = self.approach_facility_text(ctx);
+            if self.ramp_continues_to_destination_streets(ctx)
+                && self.surface_chain_route(ctx).is_some()
+            {
+                target = format!("the gate at {target}");
+            }
+            let left = self.gate_distance_mi(ctx);
             self.say_local_status(
                 ctx,
                 &target,
                 Some("off the highway, on the facility approach"),
-                ramp_left,
+                left,
             );
             return;
         }
@@ -189,6 +209,7 @@ impl DrivingState {
     pub fn on_local_streets(&self) -> bool {
         self.surface_chain
             || self.departure_chain
+            || self.stop_chain.is_some()
             || self.destination_exit_taken
             || self.trip.is_facility_approach_route()
     }
@@ -222,6 +243,54 @@ impl DrivingState {
         })
     }
 
+    /// The town nearest the truck on this leg, within `NEAREST_TOWN_MI`.
+    ///
+    /// Three kinds of town are on a leg, and the driver has heard all three
+    /// announced: the baked villages with their distance off the corridor,
+    /// the curated route towns the corridor passes through ("Passing Marion
+    /// on I-57"), and the leg's own two cities ("Passing Cleveland, Ohio").
+    /// Alt+3 used to read only the villages, so right after "Passing
+    /// Cleveland" it named some other village or said there was no town
+    /// (owner, 2026-09-16). Ranked by how far the town actually is, not by
+    /// how far along the road it sits: a place 200 feet ahead and five
+    /// miles off is further away than one two miles up the road and right
+    /// on it, and "nearest" has to mean nearest.
+    pub fn nearest_town(&self, ctx: &GameContext, frame: &HighwayFrame) -> Option<NearbyTown> {
+        let mut nearest: Option<NearbyTown> = None;
+        let mut consider = |name: String, at_mi: f64, off_mi: f64| {
+            if name.is_empty() {
+                return;
+            }
+            let along = at_mi - frame.native_offset;
+            let away = (along.powi(2) + off_mi.powi(2)).sqrt();
+            if nearest.as_ref().is_none_or(|found| away < found.away) {
+                nearest = Some(NearbyTown {
+                    away,
+                    along,
+                    off_mi,
+                    name,
+                });
+            }
+        };
+        for landmark in frame.leg.landmarks() {
+            if landmark.category == "village" {
+                consider(landmark.name.clone(), landmark.at_mi, landmark.off_mi);
+            }
+        }
+        for checkpoint in frame.leg.checkpoints() {
+            if checkpoint.checkpoint_type == "place" {
+                consider(checkpoint.name.clone(), checkpoint.at_mi, 0.0);
+            }
+        }
+        consider(ctx.world.spoken_city(&frame.leg.a, Some(false)), 0.0, 0.0);
+        consider(
+            ctx.world.spoken_city(&frame.leg.b, Some(false)),
+            frame.leg.miles,
+            0.0,
+        );
+        nearest.filter(|town| town.away <= NEAREST_TOWN_MI)
+    }
+
     /// `_speak_current_state()`: Alt+1, the state the truck is in, and nothing
     /// else.
     /// Where the truck is, for the record: the road, the nearest town when
@@ -251,21 +320,8 @@ impl DrivingState {
         let mut place = format!("{} {heading}", frame.leg.highway)
             .trim()
             .to_string();
-        let mut nearest: Option<(f64, String)> = None;
-        for landmark in frame.leg.landmarks() {
-            if landmark.category != "village" {
-                continue;
-            }
-            let along = landmark.at_mi - frame.native_offset;
-            let away = (along.powi(2) + landmark.off_mi.powi(2)).sqrt();
-            if nearest.as_ref().is_none_or(|found| away < found.0) {
-                nearest = Some((away, landmark.name.clone()));
-            }
-        }
-        if let Some((away, town)) = nearest {
-            if away <= NEAREST_TOWN_MI {
-                place = format!("{place} near {town}");
-            }
+        if let Some(town) = self.nearest_town(ctx, &frame) {
+            place = format!("{place} near {}", town.name);
         }
         let mut state = leg_state_at(&frame.leg, frame.native_offset);
         if state.is_empty() {
@@ -335,9 +391,10 @@ impl DrivingState {
     /// nearest one worth naming.
     ///
     /// The villages baked along each leg carry how far off the corridor they
-    /// sit, which is what separates "you are in Pine" from "Fairfield is six
-    /// miles off to your right" -- and the honest answer on an empty stretch
-    /// is that there is no town, said out loud rather than left as silence.
+    /// sit, which is what separates "In Pine." from "Nearest town: Fairfield."
+    /// Only the name is spoken; the distance was filler the driver didn't use.
+    /// On an empty stretch the answer is that there is no town, said out loud
+    /// rather than left as silence.
     pub fn speak_current_town(&mut self, ctx: &mut GameContext) {
         let Some(frame) = self.highway_frame() else {
             let city = self.local_route_city();
@@ -353,64 +410,15 @@ impl DrivingState {
             }
             return;
         };
-        let forward = frame.from_city == frame.leg.a;
-        // Ranked by how far the town actually is, not by how far along the
-        // road it sits: a place 200 feet ahead and five miles off is further
-        // away than one two miles up the road and right on it, and "nearest"
-        // has to mean nearest.
-        let mut nearest: Option<(f64, f64, Landmark)> = None;
-        for landmark in frame.leg.landmarks() {
-            if landmark.category != "village" {
-                continue;
-            }
-            let along = landmark.at_mi - frame.native_offset;
-            let away = (along.powi(2) + landmark.off_mi.powi(2)).sqrt();
-            if nearest.as_ref().is_none_or(|found| away < found.0) {
-                nearest = Some((away, along, landmark.clone()));
-            }
-        }
-        let Some((away, along, landmark)) = nearest else {
+        let Some(town) = self.nearest_town(ctx, &frame) else {
             ctx.say("No town near here.");
             return;
         };
-        if away > NEAREST_TOWN_MI {
-            ctx.say("No town near here.");
+        if town.along.abs() <= IN_TOWN_ALONG_MI && town.off_mi <= IN_TOWN_OFF_MI {
+            ctx.say(&format!("In {}.", town.name));
             return;
         }
-        let off_road = landmark.off_mi;
-        if along.abs() <= IN_TOWN_ALONG_MI && off_road <= IN_TOWN_OFF_MI {
-            ctx.say(&format!("In {}.", landmark.name));
-            return;
-        }
-        let off = if off_road >= 0.1 {
-            format!("{} off the road", self.closing_text(off_road))
-        } else {
-            String::new()
-        };
-        let where_text = if along.abs() <= IN_TOWN_ALONG_MI {
-            // Level with it: "two miles ahead" would be a distance the driver
-            // covers in seconds and then still not be there.
-            if off.is_empty() {
-                "right beside the road".to_string()
-            } else {
-                off
-            }
-        } else {
-            // Ahead or behind is read in the direction of travel, not the
-            // leg's native frame: on a leg driven b-to-a those are opposites,
-            // and the word has to match the mirror.
-            let past = if forward { along < 0.0 } else { along > 0.0 };
-            let mut where_text = format!(
-                "{} {}",
-                self.closing_text(along.abs()),
-                if past { "back" } else { "ahead" }
-            );
-            if !off.is_empty() {
-                where_text = format!("{where_text}, {off}");
-            }
-            where_text
-        };
-        ctx.say(&format!("Nearest town, {}: {where_text}.", landmark.name));
+        ctx.say(&format!("Nearest town: {}.", town.name));
     }
 
     /// `_speak_current_direction()`: Alt+4, the direction of travel, worded the
@@ -472,7 +480,8 @@ impl DrivingState {
         // gate"), so it starts like one; "half a mile" after the full stop
         // read as a run-on (agent playtest, 2026-09-02).
         let parts = [
-            format!("{where_text}."),
+            // Only the opening letter: the rest names streets and cities.
+            format!("{}.", crate::states::city::upper_first(&where_text)),
             format!(
                 "{} to {target}.",
                 crate::states::city::py_capitalize(&self.closing_text(distance.max(0.0)))
@@ -485,6 +494,40 @@ impl DrivingState {
             .collect::<Vec<_>>()
             .join(" ");
         ctx.say(&line);
+    }
+
+    /// Road left to the destination's gate once the truck is on its way in,
+    /// or None while the highway is still ahead.
+    ///
+    /// One answer for every readout that names the gate. The upcoming
+    /// readout read the gate ZONE's start as "facility gate in 0.3 miles"
+    /// while route status said "three quarters of a mile to the gate", and
+    /// the arrival estimate divided the frozen highway remainder by a crawl:
+    /// "arrival in 8.6 hours" two miles from the gate (agent drives A and B,
+    /// 2026-09-24).
+    ///
+    /// On the destination ramp the mainline odometer holds, so the ramp's
+    /// own countdown is the distance -- plus the facility's streets when
+    /// they follow the ramp, or "50 feet to the freight market" at a stop
+    /// sign five miles short of it named the ramp's end as the destination
+    /// (agent drive, 2026-09-23).
+    pub fn gate_distance_mi(&mut self, ctx: &GameContext) -> Option<f64> {
+        if self.surface_chain {
+            return Some(self.trip.remaining_miles());
+        }
+        if self.destination_exit_taken {
+            let mut left = self.ramp_mi.map(|mi| mi.max(0.0));
+            if self.ramp_continues_to_destination_streets(ctx) {
+                if let Some(streets) = self.surface_chain_route(ctx) {
+                    left = Some(left.unwrap_or(0.0) + streets.miles());
+                }
+            }
+            return Some(left.unwrap_or_else(|| self.trip.remaining_miles()));
+        }
+        if !self.departure_chain && self.trip.is_facility_approach_route() {
+            return Some(self.trip.remaining_miles());
+        }
+        None
     }
 
     /// `_closing_text(miles)`: a distance to something the truck has not

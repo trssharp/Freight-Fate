@@ -398,6 +398,27 @@ pub fn min_radius_ft(design_speed_mph: f64) -> f64 {
 pub const ADVISORY_MAX_MPH: i64 = 80;
 
 pub const ADVISORY_LATERAL_G: f64 = 0.30;
+
+/// The most lateral acceleration any advisory is established at, in g. READ,
+/// FHWA-SA-11-22, "Procedures for Setting Advisory Speeds on Curves" (2011),
+/// 3.7, the accelerometer method: "A measurement of 0.26 g ... to 0.30 g ...
+/// is considered an acceptable range for establishing advisory speeds." Past
+/// this a bend is being taken faster than any posted advisory would ever have
+/// asked, which is where the roll model starts charging a full trailer
+/// (`sim::vehicle::ROLL_WARN_SHARE`).
+pub const ADVISORY_ACCEPTABLE_MAX_G: f64 = 0.30;
+
+/// The bank a mapped bend on a leg built for `design_mph` is credited with:
+/// [`superelevation_at`] on roads designed at [`BANKED_DESIGN_MIN_MPH`] and
+/// above, and none below it, where town streets are left unbanked -- the same
+/// rule the advisory is repriced and screened with.
+pub fn bend_bank(radius_ft: f64, design_mph: Option<f64>) -> f64 {
+    design_mph
+        .filter(|mph| *mph >= BANKED_DESIGN_MIN_MPH)
+        .map(|mph| superelevation_at(radius_ft, mph))
+        .unwrap_or(0.0)
+}
+
 /// The bank a road is actually BUILT with, which is not the same question as
 /// the bank a road is ALLOWED. `SUPERELEVATION_MAX` above is 8 percent because
 /// the screen asks "is this curve under every standard anywhere" and wants the
@@ -582,6 +603,51 @@ fn banked_advisory(row: &CurveRow, design_mph: Option<f64>) -> i64 {
     baked
         .max(advisory_with_bank_mph(radius, design_mph))
         .min(ADVISORY_MAX_MPH)
+}
+
+/// The most cornering a loaded combination's tires will supply, in g.
+///
+/// The static rollover threshold a loaded five-axle combination is built to,
+/// NHTSA DOT HS 811 734 -- the same number the lane model corners against
+/// (`sim::lane::MAX_ROAD_LATERAL_G`), which is the point: a number the game
+/// speaks must be one the truck it is spoken to can drive.
+pub const HOLDABLE_LATERAL_G: f64 = 0.35;
+
+/// The slowest an advisory is ever spoken as, mph.
+///
+/// The lowest advisory plaque the MUTCD provides (2C.08, Table 2C-5 starts at
+/// 15), and the floor the curve bake already writes. A screen may step an
+/// advisory down to here and no further: below it the bend is not a curve
+/// warning any more, it is a corner, which `data::corners` prices.
+pub const ADVISORY_MIN_MPH: i64 = 15;
+
+/// An advisory the truck cannot actually hold, stepped down until it can.
+///
+/// A SELF-CONTRADICTION screen, not a taste adjustment. Every advisory is
+/// priced at [`ADVISORY_LATERAL_G`] plus the bank and then rounded to the
+/// nearest five, and rounding UP is what does the damage: 141 feet at 6
+/// percent prices out at 27.6 and is posted 30, which asks 0.37 g of the
+/// tires against the 0.35 they have. Seven bends in the shipped bake were over
+/// that line, and a truck taking any of them at the number the cab had just
+/// called out left its lane whatever the driver or the assists did (sweep over
+/// all 25,761 signed bends, 2026-09-19).
+///
+/// Downward only, to the next multiple of five, and never below the 15 the
+/// bake floors at: the row's geometry is not in question, only the rounding
+/// applied on top of it, and every correction runs toward caution.
+fn holdable_advisory(advisory_mph: i64, radius_ft: f64, bank: f64) -> i64 {
+    if radius_ft <= 0.0 {
+        return advisory_mph;
+    }
+    let mut mph = advisory_mph;
+    while mph > ADVISORY_MIN_MPH {
+        let demand = (mph * mph) as f64 / (15.0 * radius_ft) - bank;
+        if demand <= HOLDABLE_LATERAL_G {
+            break;
+        }
+        mph -= 5;
+    }
+    mph.max(ADVISORY_MIN_MPH)
 }
 
 /// A bend tighter than its own road may legally hold, on level ground.
@@ -810,7 +876,13 @@ pub fn build_from_sources(
                 // Connector arcs (interchange ramps) stay in the data with
                 // their flag: curve physics wants them, spoken layers skip
                 // them -- ramps carry their own speech.
-                let advisory_mph = banked_advisory(&row, design_speeds.get(&row.leg).copied());
+                let design_mph = design_speeds.get(&row.leg).copied();
+                let advisory_mph = banked_advisory(&row, design_mph);
+                // Last, because it judges the number the other corrections
+                // produced: an advisory the truck cannot hold is a row that
+                // disagrees with itself, whatever priced it.
+                let bank = bend_bank(row.min_radius_ft as f64, design_mph);
+                let advisory_mph = holdable_advisory(advisory_mph, row.min_radius_ft as f64, bank);
                 by_leg
                     .entry(row.leg.clone())
                     .or_default()
@@ -1242,7 +1314,7 @@ mod tests {
     fn test_absence_of_a_terrain_class_is_never_read_as_level() {
         // The safe direction, and the reason this reads a bake rather than a rule.
         //
-        // Screening treats level ground as licence to delete geometry, so a leg
+        // Screening treats level ground as license to delete geometry, so a leg
         // HPMS never classified must keep every curve it has. Absence of evidence
         // is not evidence of flatness -- getting this backwards would quietly
         // strip curves from exactly the legs we know least about.

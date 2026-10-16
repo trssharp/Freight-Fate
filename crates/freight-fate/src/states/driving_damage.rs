@@ -174,22 +174,48 @@ impl DrivingState {
     /// worst kind of surprise for a player who cannot see the trailer -- so
     /// each rung speaks once, when it is crossed.
     pub fn update_cargo_condition(&mut self, ctx: &mut GameContext, _dt: f64) {
-        let curve = self.trip.curve_at(self.trip.position_mi);
-        let bend = curve.filter(|curve| !curve.connector);
+        // The bend under the truck: a mapped one on the highway, or the exit
+        // ramp's own curve past its deceleration lane. The ramp is the same
+        // corner to the freight -- the exit speed is its advisory and its
+        // radius is that speed's AASHTO minimum -- so a ramp curve taken hot
+        // moves the load, and rolls the truck, exactly as a mainline bend
+        // would (`driving_rollover`).
+        let (advisory_mph, radius_ft, bank) = if self.ramp_mi.is_some() {
+            match (
+                self.ramp_curve_radius_ft(),
+                self.ramp_layout,
+                self.ramp_curve_geometry(),
+            ) {
+                (Some(radius), Some(layout), Some((_, bank))) => {
+                    (Some(layout.curve_mph), radius, bank)
+                }
+                _ => (None, 0.0, 0.0),
+            }
+        } else {
+            let curve = self.trip.curve_at(self.trip.position_mi);
+            match curve.filter(|curve| !curve.connector) {
+                Some(bend) => (
+                    Some(bend.advisory_mph as f64),
+                    bend.min_radius_ft as f64,
+                    self.bend_bank(&bend),
+                ),
+                None => (None, 0.0, 0.0),
+            }
+        };
         let speed_mph = self.trip.truck.speed_mph();
         let t = &mut self.trip.truck;
-        t.corner_overspeed_mph = match &bend {
-            Some(bend) => (speed_mph - bend.advisory_mph as f64).max(0.0),
-            None => 0.0,
-        };
+        t.corner_overspeed_mph =
+            advisory_mph.map_or(0.0, |advisory| (speed_mph - advisory).max(0.0));
         // The advisory itself as well as the excess: a liquid load needs the
         // ratio, because what a bend pulls sideways goes with the square of
         // how far over the posting it is being taken.
-        t.corner_advisory_mph = bend.as_ref().map_or(0.0, |b| b.advisory_mph as f64);
+        t.corner_advisory_mph = advisory_mph.unwrap_or(0.0);
         // And the geometry, for dry freight: a pallet is moved by the sideways
         // pull, which comes from the radius rather than from the sign.
-        t.corner_radius_ft = bend.as_ref().map_or(0.0, |b| b.min_radius_ft as f64);
-        let condition = t.cargo_damage_pct;
+        t.corner_radius_ft = radius_ft;
+        t.corner_bank = bank;
+        self.update_rollover(ctx);
+        let condition = self.trip.truck.cargo_damage_pct;
         // The HIGHEST rung crossed, not the next one up. A collision can put a
         // load through all three at once, and walking them a frame apart would
         // fire three interrupting warnings inside a tenth of a second; the
@@ -385,7 +411,7 @@ impl DrivingState {
                     format!("Damage {damage:.0} percent. Still in limp mode, capped at {cap}.")
                 };
             }
-            ctx.audio.play("ui/notify");
+            ctx.play_event_cue(Some(category), "ui/notify", 1.0, 0.0);
         }
         ctx.say_event_with(message, SayEvent::new().category(category));
     }
@@ -459,7 +485,7 @@ impl DrivingState {
     pub fn recovery_cost_text(&self, ctx: &GameContext) -> String {
         if player_pays_operating_costs(&profile_of(ctx).business_status) {
             let cost = self.roadside_service_cost();
-            if !self.maintenance_failures().is_empty() && profile_of(ctx).money < cost {
+            if !self.maintenance_failures().is_empty() && profile_of(ctx).money() < cost {
                 return format!(
                     "The repair will cost about {} dollars and most of {:.0} hours; any unpaid \
                      balance becomes debt",
@@ -537,7 +563,7 @@ impl DrivingState {
 
     /// Say once per engagement that limp mode, not the grade, owns the target.
     ///
-    /// Mirrors the "cruise is flat out and still losing the grade" cue: the
+    /// Mirrors the "Cruise down to 38 on this grade" cue: the
     /// set speed is unreachable for a reason the driver cannot see, so name it
     /// and name what cruise is holding instead.
     pub fn announce_limp_cruise_cap(&mut self, ctx: &mut GameContext) {
@@ -551,15 +577,7 @@ impl DrivingState {
             return;
         }
         self.limp_cruise_said = true;
-        let message = if self.terse_speech(ctx) {
-            format!("Limp mode. Holding {}.", ctx.settings.speed_text(cap))
-        } else {
-            format!(
-                "Cruise cannot hold {}; the truck is in limp mode. Holding {}.",
-                ctx.settings.speed_text(target),
-                ctx.settings.speed_text(cap)
-            )
-        };
+        let message = format!("Limp mode. Holding {}.", ctx.settings.speed_text(cap));
         // ROUTE, not the ambient default: cruise is silently holding a lower
         // speed than the driver set, the same class as the adaptive-cruise
         // easing line -- an assist changing what the truck does is a
@@ -613,8 +631,8 @@ impl DrivingState {
         let cost = self.roadside_service_cost();
         let money = {
             let p = profile_mut_of(ctx);
-            p.money -= cost; // can go negative: the truck cannot move otherwise
-            p.money
+            p.spend(cost); // can go negative: the truck cannot move otherwise
+            p.money()
         };
         if damage_failed {
             self.trip
@@ -690,7 +708,7 @@ impl DrivingState {
                 ctx.control_hint("engine")
             )
         };
-        ctx.say_event_with(message, SayEvent::new().category(SpeechCategory::Money));
+        ctx.say_event_with(message, SayEvent::new().category(SpeechCategory::Safety));
     }
 
     /// Company driver: the carrier takes the truck, and the driver waits.
@@ -810,7 +828,7 @@ impl DrivingState {
                 ctx.control_hint("engine")
             )
         };
-        ctx.say_event_with(message, SayEvent::new().category(SpeechCategory::Money));
+        ctx.say_event_with(message, SayEvent::new().category(SpeechCategory::Safety));
     }
 
     /// Leave the event on the career for the trust and termination layer.
@@ -877,15 +895,10 @@ impl DrivingState {
             .iter()
             .min_by(|a, b| damage_of(ctx, a).total_cmp(&damage_of(ctx, b)))
             .expect("a non-empty candidate list");
-        let cargo_kg = self.trip.truck.cargo_kg;
-        let trailer_attached = self.trip.truck.trailer_attached;
-        let automatic = self.trip.truck.transmission.automatic;
-        let odometer_mi = self.trip.truck.odometer_mi;
         {
             // The grounded tractor keeps its damage.
-            let old = self.trip.truck.clone();
             let p = profile_mut_of(ctx);
-            p.store_truck_condition(&old);
+            p.store_truck_condition(&self.trip.truck);
             p.truck = pick.to_string();
             if p.truck_conditions.get(pick).is_none() {
                 p.provision_truck_condition(pick, None);
@@ -893,11 +906,19 @@ impl DrivingState {
             }
         }
         let specs = profile_of(ctx).truck_specs();
-        self.trip.truck = TruckState::new(specs);
-        self.trip.truck.cargo_kg = cargo_kg;
-        self.trip.truck.trailer_attached = trailer_attached;
-        self.trip.truck.transmission.automatic = automatic;
-        self.trip.truck.odometer_mi = odometer_mi;
+        let old = std::mem::replace(&mut self.trip.truck, TruckState::new(specs));
+        // The trailer, its load and what the run has done to it come along:
+        // a load wrecked or scrapped before the swap is still wrecked at the
+        // dock, and a tank load still surges.
+        let truck = &mut self.trip.truck;
+        truck.cargo_kg = old.cargo_kg;
+        truck.trailer_attached = old.trailer_attached;
+        truck.transmission.automatic = old.transmission.automatic;
+        truck.odometer_mi = old.odometer_mi;
+        truck.cargo_damage_pct = old.cargo_damage_pct;
+        truck.cargo_fragility = old.cargo_fragility;
+        truck.liquid = old.liquid;
+        truck.preventable_damage_pct = old.preventable_damage_pct;
         profile_of(ctx).load_truck_condition(&mut self.trip.truck);
         let damage_pct = self.trip.truck.damage_pct;
         self.trip.truck.recover_from_breakdown(damage_pct);

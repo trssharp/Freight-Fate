@@ -10,7 +10,9 @@ use crate::sim::trip::Trip;
 use crate::sim::trip_models::*;
 use crate::sim::trip_route_helpers::stop_offset_for_direction;
 use crate::sim::weather::WeatherKind;
-use crate::speech_text::{hazard_call, in_lane_hazard_call, toll_charged, SpokenMessage};
+use crate::speech_text::{
+    hazard_call, in_lane_hazard_call_named, passing_hazard_call, toll_charged, SpokenMessage,
+};
 
 impl Trip {
     pub fn traffic_pressure_intensity(&self, mile: f64, kind: &str) -> f64 {
@@ -141,18 +143,8 @@ impl Trip {
                 }
                 self.charged_tolls.insert(key);
                 if toll.amount <= 0.0 {
-                    self.emit(
-                        TripEventKind::GpsCue,
-                        SpokenMessage::new(format!(
-                            "{} entry recorded at {}. Toll billed at carrier settlement.",
-                            toll.method_label(),
-                            toll.name
-                        )),
-                        TripEventData {
-                            toll: Some(toll.clone()),
-                            ..Default::default()
-                        },
-                    );
+                    // A ticket entry: nothing is charged here, and the toll
+                    // point cue ahead of it already named it.
                     continue;
                 }
                 self.toll_charges.push(TollCharge {
@@ -205,7 +197,6 @@ impl Trip {
                 let prev = self.route.cities[i - 1].clone();
                 let city = self.route.cities[i].clone();
                 let nxt = self.route.cities[i + 1].clone();
-                let highway = self.route.legs[i].highway.clone();
                 let world = self.world;
                 let city_state = world
                     .cities
@@ -231,10 +222,22 @@ impl Trip {
                 } else {
                     String::new()
                 };
+                // Off a corridor onto a relayed pickup's street chain the
+                // truck has arrived, not passed through: the turn cue names
+                // the street, and "toward" this same city said nothing.
+                if city == nxt {
+                    if !crossing.is_empty() {
+                        self.emit(
+                            TripEventKind::CityReached,
+                            SpokenMessage::new(crossing.trim_end().to_string()),
+                            TripEventData::default(),
+                        );
+                    }
+                    continue;
+                }
                 let message = format!(
-                    "{crossing}Passing {}, {city_state}. Continuing on {highway} toward {}.",
+                    "{crossing}Passing {}, {city_state}.",
                     world.spoken_city(&city, Some(false)),
-                    world.spoken_city(&nxt, None)
                 );
                 self.emit(
                     TripEventKind::CityReached,
@@ -338,8 +341,8 @@ impl Trip {
                 };
                 // "Or change lanes" is only true advice where there is
                 // somewhere to send it (playtest report, US-285, 2026-08-12).
-                let message =
-                    in_lane_hazard_call(&format!("{} {where_}.", py_capitalize(&reason)), side);
+                let body = format!("{} {where_}.", py_capitalize(&reason));
+                let message = in_lane_hazard_call_named(&body, side, &self.open_side_spoken(side));
                 self.emit(
                     TripEventKind::Hazard,
                     message,
@@ -351,6 +354,8 @@ impl Trip {
                         // brake-alone still has to reach ITS speed rather
                         // than the road-spanning safe speed.
                         in_lane: Some(true),
+                        open_side: Some(side),
+                        pass_message: passing_hazard_call(&body, side),
                         name: Some(format!("the {reason}")),
                         ..Default::default()
                     },
@@ -393,7 +398,7 @@ impl Trip {
                 .unwrap_or_default();
             let body = format!("{first}{}.", chars.as_str());
             let message = if in_lane {
-                in_lane_hazard_call(&body, side)
+                in_lane_hazard_call_named(&body, side, &self.open_side_spoken(side))
             } else {
                 hazard_call("Brake now!", &body)
             };

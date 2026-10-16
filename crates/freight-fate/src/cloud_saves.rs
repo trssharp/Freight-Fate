@@ -36,7 +36,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -44,14 +44,13 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 
 use crate::meaningful_play::{MeaningfulPlayReason, MeaningfulPlayStamp, MeaningfulPlayTracker};
 use crate::net::{wait_seconds, Event, SharedTransport};
-use crate::online_journal::py_json_dumps;
 use crate::online_presence::{
     default_transport, join_with_timeout, py_str, truthy, OnlineIdentity,
 };
+use ff_core::models::profile::{Profile, LEGACY_SAVE_SUFFIX, SAVE_SUFFIX};
 use ff_core::sim::real_traffic::{wall_clock, Clock};
 
 // A save burst (delivery, achievement, rest) writes the file several times in
@@ -68,9 +67,7 @@ pub const MAX_UPLOAD_BYTES: usize = 900 * 1024;
 
 const WORKER_TICK_S: f64 = 60.0;
 
-// The profile's integrity-signature fields (models/profile.py). Stripped from
-// cloud content: the signature only verifies on the machine that wrote it.
-pub const SIGNATURE_FIELDS: [&str; 2] = ["_signature", "_signature_version"];
+pub use ff_core::models::profile::origin::{cloud_content, SIGNATURE_FIELDS};
 
 /// Raw ed25519 public keys by key id (the shape
 /// `ff_core::cloud_save_integrity::public_keys()` returns); `None` in the
@@ -96,31 +93,6 @@ pub fn save_slot_name(profile_name: &str) -> String {
     } else {
         safe.to_string()
     }
-}
-
-/// The upload form of a profile snapshot: signature-stripped JSON,
-/// gzipped deterministically, plus its sha256 hex digest.
-pub fn cloud_content(profile_dict: &Value) -> (Vec<u8>, String) {
-    let portable = match profile_dict {
-        Value::Object(map) => {
-            let mut out = Map::new();
-            for (k, v) in map {
-                if !SIGNATURE_FIELDS.contains(&k.as_str()) {
-                    out.insert(k.clone(), v.clone());
-                }
-            }
-            Value::Object(out)
-        }
-        other => other.clone(),
-    };
-    let raw = py_json_dumps(&portable);
-    let mut encoder = flate2::GzBuilder::new()
-        .mtime(0)
-        .write(Vec::new(), flate2::Compression::best());
-    let _ = encoder.write_all(raw.as_bytes());
-    let content = encoder.finish().unwrap_or_default();
-    let digest = hex::encode(Sha256::digest(&content));
-    (content, digest)
 }
 
 /// Decode downloaded content back to a profile dict. Errors when the bytes
@@ -279,6 +251,10 @@ struct State {
     // been spoken this session (the "once" tier's memory).
     backup_announcements: BackupAnnouncements,
     all_clear_spoken: HashSet<String>,
+    // Careers the server accepted after the owner reviewed them: the main
+    // loop drains these through take_absolved and clears the loaded
+    // career's "changed outside the game" mark.
+    absolved: Vec<String>,
     status: String,
 }
 
@@ -419,6 +395,7 @@ impl CloudSaves {
             return;
         }
         self.inner.started.store(true, Ordering::SeqCst);
+        self.inner.forget_conflicts_with_no_local_save();
         self.inner.log_sync_state();
         self.inner.stop.clear();
         if self.inner.threaded {
@@ -537,6 +514,15 @@ impl CloudSaves {
         std::mem::take(&mut st.announcements)
     }
 
+    /// Slot names whose upload came back with `clearIntegrityFlag`: the
+    /// owner reviewed the career and accepted it. Drained by the main loop,
+    /// which clears the mark on the loaded career so its next backup goes up
+    /// unmarked. Same polled pattern as [`take_announcements`](Self::take_announcements).
+    pub fn take_absolved(&self) -> Vec<String> {
+        let mut st = self.inner.state.lock().unwrap();
+        std::mem::take(&mut st.absolved)
+    }
+
     /// Flush the pending upload briefly and stop the worker. Never raises.
     pub fn shutdown(&self) {
         self.inner.stop_worker();
@@ -633,6 +619,7 @@ impl CloudSaves {
                     .unwrap_or(""),
             );
             self.inner.sync_state.clear_conflict(name);
+            self.inner.note_absolved(name, &result);
             if let Some(stamp) = &meaningful_play {
                 self.inner
                     .meaningful_play
@@ -666,6 +653,46 @@ impl CloudSaves {
 impl Inner {
     fn enabled(&self) -> bool {
         self.enabled.load(Ordering::SeqCst)
+    }
+
+    /// Drop conflicts for careers this computer no longer has.
+    ///
+    /// A conflict is a choice between this machine's save and the cloud's.
+    /// With no local save there is no "keep mine" to offer, so the record
+    /// cannot be resolved by anything the player does -- and the two heals
+    /// in [`Inner::upload_slot`] never reach it, because both run on the way
+    /// to an upload and a career with no save on disk never queues one. The
+    /// Online hub went on saying "<career> is waiting for you to choose
+    /// which copy to keep" for a career that was gone from the cloud AND
+    /// from the computer, with no way to clear it (Shane, 2026-09-20).
+    ///
+    /// Forgetting rather than hiding matters: a stale row left in
+    /// `cloud_saves.json` would attach itself to the next career started
+    /// under the same name, and block ITS backups against a revision that
+    /// was never its own.
+    fn forget_conflicts_with_no_local_save(&self) {
+        // Strip the known suffixes rather than taking file_stem(): a career
+        // named "Run 1.9" would otherwise read back as "Run 1" and its live
+        // conflict would be forgotten as stale.
+        let on_disk: std::collections::BTreeSet<String> = Profile::list_saves()
+            .iter()
+            .filter_map(|path| path.file_name().map(|n| n.to_string_lossy().to_string()))
+            .filter_map(|name| {
+                name.strip_suffix(SAVE_SUFFIX)
+                    .or_else(|| name.strip_suffix(LEGACY_SAVE_SUFFIX))
+                    .map(str::to_string)
+            })
+            .collect();
+        for (name, entry) in self.sync_state.slots() {
+            if slot_conflict(&entry).is_none() || on_disk.contains(&name) {
+                continue;
+            }
+            log::info!(
+                "Cloud sync state for {name}: a conflict was waiting for a career this \
+computer no longer has; forgetting it so the slot starts clean"
+            );
+            self.sync_state.forget(&name);
+        }
     }
 
     /// One line per known slot at startup: the kept session logs only go
@@ -881,6 +908,12 @@ revision {} is waiting in the Cloud backup menu",
             .push(eviction_status(name));
     }
 
+    fn note_absolved(&self, name: &str, result: &Map<String, Value>) {
+        if truthy(result.get("clearIntegrityFlag")) {
+            self.state.lock().unwrap().absolved.push(name.to_string());
+        }
+    }
+
     fn set_status(&self, message: &str) {
         self.state.lock().unwrap().status = message.to_string();
     }
@@ -959,6 +992,7 @@ copy no longer exists; restarting the slot fresh"
                     .unwrap_or(""),
             );
             self.done_with(name, &snapshot);
+            self.note_absolved(name, &result);
             if let Some(stamp) = &meaningful_play {
                 self.meaningful_play
                     .clear_if_accepted(name, &stamp.operation_id);

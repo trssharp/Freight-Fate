@@ -99,7 +99,7 @@ pub use ff_core::settings::{acc_gap_seconds, ACC_GAP_CHOICES, ACC_GAP_DEFAULT};
 pub use ff_core::sim::driving_modes::tuning_for_time_scale;
 pub use ff_core::sim::enforcement_observe::OBSERVE_LEEWAY_MPH;
 pub use ff_core::sim::hos::{clock_text, is_night, time_of_day};
-pub use ff_core::sim::lane::{lane_label, lane_phrase, LaneKeeping, CURVE_RATE};
+pub use ff_core::sim::lane::{lane_label, lane_phrase, LaneKeeping};
 pub use ff_core::sim::lane_guidance::LaneGuidance;
 pub use ff_core::sim::pedal_latch::PedalLatch;
 pub use ff_core::sim::timezones::city_zone;
@@ -240,20 +240,21 @@ pub fn route_event_sound(event: &TripEvent) -> Option<&'static str> {
     }
 }
 
-/// `_traffic_vehicle_sound`: the pass whoosh for the NPC vehicle on the event.
+/// The earcon for a slower vehicle ahead: the slowing-traffic cue, or the
+/// trooper's own pass when it is a trooper. The vehicle's own sound is its
+/// traffic loop once it is near; a pass whoosh here, with the vehicle still a
+/// quarter mile up the road, sounded like something going by that never did
+/// (owner drive, 2026-10-09).
 pub fn traffic_vehicle_sound(event: &TripEvent) -> &'static str {
-    let vehicle_class = event
+    let trooper = event
         .data
         .npc_vehicle
         .as_ref()
-        .map(|v| v.vehicle_class.trim().to_lowercase())
-        .unwrap_or_default();
-    match vehicle_class.as_str() {
-        "state trooper" => "traffic/trooper_pass",
-        "semi" => "traffic/semi_pass",
-        "box truck" => "traffic/box_truck_pass",
-        "car" => "traffic/car_pass",
-        _ => "events/traffic_slowing",
+        .is_some_and(|v| v.vehicle_class.trim().eq_ignore_ascii_case("state trooper"));
+    if trooper {
+        "traffic/trooper_pass"
+    } else {
+        "events/traffic_slowing"
     }
 }
 
@@ -317,6 +318,19 @@ pub fn record_inspection(ctx: &mut GameContext) {
     if regular {
         ctx.award_achievement("scale_regular");
     }
+}
+
+/// Collapse runs of the same spoken name so a facility-approach route
+/// (which repeats one city key once per local leg) does not read as
+/// "Portland to Portland to Portland" on the Map and settlement screens.
+pub fn unique_consecutive(parts: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(parts.len());
+    for part in parts {
+        if out.last().map(String::as_str) != Some(part.as_str()) {
+            out.push(part.clone());
+        }
+    }
+    out
 }
 
 /// `_join_phrase`: "a", "a, and b", "a, b, and c".
@@ -456,6 +470,7 @@ pub struct PendingAmbient {
     pub category: Option<SpeechCategory>,
     pub waited_s: f64,
     pub key: Option<String>,
+    pub priority: Option<EventPriority>,
     /// A line that counts down toward something can re-render at delivery, so
     /// a wait never makes it lie: the 12-second age cap is REAL seconds, and
     /// under time compression that is miles -- a travel plaza queued at "in 5
@@ -497,6 +512,7 @@ impl PendingAmbient {
             category: None,
             waited_s: 0.0,
             key: None,
+            priority: None,
             render: None,
         }
     }
@@ -579,7 +595,7 @@ impl Instructor for Tutorial {
             let text = if ctx.settings.automatic_transmission {
                 format!(
                     "At air ready, press {} to release the parking brake, then hold {} to \
-                     accelerate. The transmission shifts for you.",
+                     accelerate.",
                     ctx.control_hint("parking_brake"),
                     ctx.control_hint("accelerate")
                 )
@@ -635,7 +651,7 @@ impl Instructor for Tutorial {
             self.stage = 3;
             let text = format!(
                 "Rolling. {} for your speed, {} for a full report, {} for all the controls. Brake \
-                 hard at a hazard warning; {} stops fast. Safe travels.",
+                 hard at a hazard warning; {} stops fast.",
                 ctx.control_hint("speed"),
                 ctx.control_hint("status_menu"),
                 ctx.control_hint("help"),
@@ -728,7 +744,27 @@ impl RadioPlaybackBackend for DrivingRadioBackend<'_> {
         _volume: f64,
     ) -> Result<(), RadioPlaybackError> {
         let reception = self.reception_for(station);
-        self.driving.radio_signal_factor = signal_volume_factor(&reception);
+        self.start(&reception)
+    }
+
+    fn play_reception(
+        &mut self,
+        reception: &RadioReception,
+        _volume: f64,
+    ) -> Result<(), RadioPlaybackError> {
+        self.start(reception)
+    }
+
+    fn stop_radio(&mut self) {
+        self.ctx.audio.stop_music_with(600);
+    }
+}
+
+impl DrivingRadioBackend<'_> {
+    /// Start `reception.station` at the volume its signal supports.
+    fn start(&mut self, reception: &RadioReception) -> Result<(), RadioPlaybackError> {
+        let station = &reception.station;
+        self.driving.radio_signal_factor = signal_volume_factor(reception);
         if station.source_type == PERSONAL_PLAYLIST_SOURCE_TYPE {
             self.driving.apply_radio_volume(self.ctx);
             // A playlist with nothing playable in it must reach the dial's
@@ -760,14 +796,12 @@ impl RadioPlaybackBackend for DrivingRadioBackend<'_> {
         if station.fallback {
             self.driving.radio_station_id = station.id.clone();
             self.ctx.audio.stop_music_with(600);
+        } else if DrivingState::is_channel3000(station) {
+            self.driving.start_channel3000(self.ctx, 900);
         } else {
             self.driving.start_station_rotation(self.ctx, station, 900);
         }
         Ok(())
-    }
-
-    fn stop_radio(&mut self) {
-        self.ctx.audio.stop_music_with(600);
     }
 }
 
@@ -885,6 +919,9 @@ impl RadioSettingsAccess for RadioSettingsView<'_> {
     fn radio_streamer_safe(&self) -> bool {
         self.0.radio_streamer_safe
     }
+    fn synth_music(&self) -> bool {
+        self.0.synth_music
+    }
     fn set_radio_enabled(&mut self, _enabled: bool) {}
     fn set_radio_station_id(&mut self, _station_id: &str) {}
 }
@@ -904,6 +941,9 @@ impl RadioSettingsAccess for RadioSettingsMut<'_> {
     }
     fn radio_streamer_safe(&self) -> bool {
         self.0.radio_streamer_safe
+    }
+    fn synth_music(&self) -> bool {
+        self.0.synth_music
     }
     fn set_radio_enabled(&mut self, enabled: bool) {
         self.0.radio_enabled = enabled;
@@ -970,6 +1010,20 @@ impl RadioRoute for RadioRouteView<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unique_consecutive_collapses_runs_only() {
+        assert_eq!(unique_consecutive(&[]), Vec::<String>::new());
+        assert_eq!(
+            unique_consecutive(&["Portland".into(), "Portland".into(), "Astoria".into()]),
+            vec!["Portland".to_string(), "Astoria".to_string()]
+        );
+        // A real corridor that revisits a city non-consecutively stays intact.
+        assert_eq!(
+            unique_consecutive(&["A".into(), "B".into(), "A".into(),]),
+            vec!["A".to_string(), "B".to_string(), "A".to_string()]
+        );
+    }
 
     #[test]
     fn join_phrase_reads_like_a_list() {

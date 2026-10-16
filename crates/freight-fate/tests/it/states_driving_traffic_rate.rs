@@ -58,7 +58,7 @@ impl Corridor {
 fn lanes_your_side(leg: &ff_core::data::world_models::Leg, offset_mi: f64) -> i64 {
     for seg in leg.lane_segments() {
         if seg.start_mi <= offset_mi && offset_mi <= seg.end_mi {
-            return seg.your_side(true).max(1);
+            return seg.your_side().max(1);
         }
     }
     if leg.divided == Some(false) {
@@ -336,7 +336,12 @@ impl Run {
 /// `SPAWN_CELL_MI` slice of road, so the key says where the vehicle came
 /// into being -- which is where its speed was drawn from the posted number.
 pub fn spawn_cell_mi(key: &str) -> Option<f64> {
-    let cell: i64 = key.strip_prefix("bubble:")?.parse().ok()?;
+    let cell: i64 = key
+        .strip_prefix("bubble:")?
+        .split(':')
+        .next()?
+        .parse()
+        .ok()?;
     Some(cell as f64 * ff_core::sim::traffic_manager::SPAWN_CELL_MI)
 }
 
@@ -974,10 +979,13 @@ pub struct BenchRun {
 
 /// Drive into a lead doing `lead_mph` on a road of `lanes_your_side` lanes,
 /// hands off from the moment the warning lands, and measure the response.
+/// Lane keeping on partial: on full the truck passes instead of braking
+/// (`states_driving_passing`), and hands off is the driver's case.
 pub fn bench_lead(lanes_your_side: i64, lead_mph: f64) -> BenchRun {
     use ff_core::sim::traffic_manager::TrafficVehicle;
 
     let mut harness = PlaytestHarness::new();
+    harness.app.ctx.settings.lane_keeping = "partial".to_string();
     harness.app.ctx.settings.speed_keeper = false;
     harness.app.ctx.settings.automatic_emergency_braking = true;
     harness.app.ctx.settings.time_scale = 1.0;
@@ -1107,7 +1115,7 @@ pub fn bench_lead(lanes_your_side: i64, lead_mph: f64) -> BenchRun {
             run.resolution = harness
                 .transcript()
                 .iter()
-                .find(|line| line.contains("Well done"))
+                .find(|line| line.contains("Clear of"))
                 .cloned()
                 .unwrap_or_default();
             break;
@@ -1404,10 +1412,12 @@ pub fn lane_bench(drive: &mut DrivingState, limit_mph: f64, lanes_your_side: i64
 
 /// Drive into a lead doing `lead_mph` on a road of `lanes_your_side` lanes,
 /// hands off, and report every line heard and the slowest the truck got.
+/// Lane keeping on partial, for the reason [`bench_lead`] gives.
 fn met_a_slow_lead(name: &str, lanes_your_side: i64, lead_mph: f64) -> (Vec<String>, f64) {
     use ff_core::sim::traffic_manager::TrafficVehicle;
 
     let mut harness = PlaytestHarness::new();
+    harness.app.ctx.settings.lane_keeping = "partial".to_string();
     harness.app.ctx.settings.speed_keeper = false;
     harness.app.ctx.settings.automatic_emergency_braking = true;
     harness.app.ctx.settings.time_scale = 1.0;
@@ -1515,12 +1525,12 @@ fn with_no_lane_to_go_around_in_the_call_is_brake_and_nothing_else() {
     assert!(!call.contains("Change lanes"), "{call:?}");
     let resolution = heard
         .iter()
-        .find(|line| line.contains("Well done"))
+        .find(|line| line.contains("Clear of"))
         .unwrap_or_else(|| panic!("the hazard never resolved: {heard:#?}"));
     // What actually happened is that the truck came down to the vehicle's
     // speed. It did not nearly stop, and there was nowhere to ease around to.
     assert!(
-        resolution.contains("You slow to match the slow car. Well done."),
+        resolution.contains("Clear of the slow car."),
         "{resolution:?}"
     );
     assert!(!resolution.contains("ease around"), "{resolution:?}");
@@ -1551,13 +1561,13 @@ fn with_a_lane_open_the_call_offers_it() {
     );
     let resolution = heard
         .iter()
-        .find(|line| line.contains("Well done"))
+        .find(|line| line.contains("Clear of"))
         .unwrap_or_else(|| panic!("the hazard never resolved: {heard:#?}"));
     // Braking down to the vehicle's speed is not going around it, whatever
     // the road offers: the swerve has its own line, spoken from the lane
     // change itself.
     assert!(
-        resolution.contains("You slow to match the slow car. Well done."),
+        resolution.contains("Clear of the slow car."),
         "{resolution:?}"
     );
     assert!(!resolution.contains("ease around"), "{resolution:?}");

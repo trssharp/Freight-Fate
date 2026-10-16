@@ -267,6 +267,80 @@ fn passenger_vehicle_ramp_sign_never_raises_the_truck_target() {
 }
 
 #[test]
+fn ramp_length_reads_the_travel_direction_and_is_none_when_absent() {
+    let w = world();
+    let route = first_route_option(w, "Chicago", "Indianapolis");
+    let leg = route.legs[0].clone();
+    let at = leg.miles / 2.0;
+    let raw = serde_json::json!({
+        "at_mi": at,
+        "exit_ref": "fixture",
+        "source": "test fixture",
+        "ramp_length_ft_forward": 1320.0,
+        "ramp_length_source": "derived from OpenStreetMap geometry (fixture)",
+    });
+    let ix = parse_interchange(&raw, leg.miles, "Chicago", "Indianapolis", &leg.highway).unwrap();
+    let forward = replace_leg(
+        &route,
+        0,
+        with_corridor(&leg, |detail| detail.interchanges = vec![ix.clone()]),
+    );
+    assert_eq!(trip_on(forward, true).ramp_length_mi_at(at), Some(0.25));
+
+    // The same exit driven B->A has no length that way.
+    let reverse = first_route_option(w, "Indianapolis", "Chicago");
+    let rev_leg = reverse.legs[0].clone();
+    let reverse = replace_leg(
+        &reverse,
+        0,
+        with_corridor(&rev_leg, |detail| detail.interchanges = vec![ix]),
+    );
+    assert_eq!(
+        trip_on(reverse, true).ramp_length_mi_at(rev_leg.miles - at),
+        None
+    );
+
+    // No exit at all nearby.
+    let empty = replace_leg(
+        &route,
+        0,
+        with_corridor(&leg, |detail| detail.interchanges.clear()),
+    );
+    assert_eq!(trip_on(empty, true).ramp_length_mi_at(at), None);
+
+    // A length without a source is refused at load.
+    let mut unsourced = raw.clone();
+    unsourced
+        .as_object_mut()
+        .unwrap()
+        .remove("ramp_length_source");
+    assert!(parse_interchange(
+        &unsourced,
+        leg.miles,
+        "Chicago",
+        "Indianapolis",
+        &leg.highway
+    )
+    .is_err());
+}
+
+#[test]
+fn baked_ramp_length_is_read_for_a_known_exit() {
+    // I-65 Chicago to Indianapolis, its exits re-derived on its polyline
+    // 2026-09-25 (OSM of 2026-06-22): exit 240 has a southbound ramp only;
+    // exit 74A-B matched no gore either way.
+    let w = world();
+    let route = first_route_option(w, "Chicago", "Indianapolis");
+    let trip = trip_on(route.clone(), true);
+    let exit_240 = trip.ramp_length_mi_at(57.4).expect("exit 240 has a length");
+    assert!((exit_240 - 1727.3 / 5280.0).abs() < 1e-9, "{exit_240}");
+    assert_eq!(trip.ramp_length_mi_at(23.1), None);
+    let reverse = first_route_option(w, "Indianapolis", "Chicago");
+    let miles = reverse.legs[0].miles;
+    assert_eq!(trip_on(reverse, true).ramp_length_mi_at(miles - 57.4), None);
+}
+
+#[test]
 fn test_next_exit_context_mentions_flavor_exit() {
     let (route, _) = route_with_interchange(world(), "Chicago", "Indianapolis");
     let mut trip = trip_on(route, true);
@@ -399,6 +473,49 @@ fn test_place_stops_attaches_exit_label() {
         .find(|s| s.name == target.name)
         .expect("the curated stop was placed");
     assert_eq!(placed.exit_label, "exit 21");
+}
+
+#[test]
+fn test_a_matched_stop_takes_its_own_exit_not_the_nearest() {
+    // The bake matched the stop to the interchange three miles on; the exit
+    // half a mile away by mile marker is a neighbour, and used to win.
+    let route = first_route_option(world(), "Chicago", "Indianapolis");
+    let (mut leg, target) = leg0_curated_stop(&route);
+    let exit = |at_mi: f64, exit_ref: &str| Interchange {
+        at_mi,
+        exit_ref: exit_ref.to_string(),
+        highway: leg.highway.clone(),
+        source: "OSM".to_string(),
+        ..Default::default()
+    };
+    let exits = vec![exit(target.at_mi + 0.5, "7"), exit(target.at_mi + 3.0, "9")];
+    for stop in leg.stops.iter_mut().filter(|s| s.name == target.name) {
+        stop.exit_ref = "9".to_string();
+        stop.interchange_mi = Some(target.at_mi + 3.0);
+    }
+    let matched = with_corridor(&leg, |detail| detail.interchanges = exits.clone());
+    let trip = trip_on(replace_leg(&route, 0, matched), true);
+    let placed = trip
+        .stops
+        .iter()
+        .find(|s| s.name == target.name)
+        .expect("the curated stop was placed");
+    assert_eq!(placed.exit_label, "exit 9");
+    let served = trip
+        .interchange_at(placed.interchange_mi.expect("the match rides along"), 1e-6)
+        .expect("the match names a record on the route");
+    assert_eq!(served.exit_ref, "9");
+
+    // The leg records no such exit: the stop's own number still speaks.
+    let unrecorded = with_corridor(&leg, |detail| detail.interchanges = vec![exits[0].clone()]);
+    let trip = trip_on(replace_leg(&route, 0, unrecorded), true);
+    let placed = trip
+        .stops
+        .iter()
+        .find(|s| s.name == target.name)
+        .expect("the curated stop was placed");
+    assert_eq!(placed.exit_label, "exit 9");
+    assert_eq!(placed.interchange_mi, None);
 }
 
 #[test]
@@ -599,12 +716,32 @@ fn test_metric_zone_warning_uses_metric_speed_limit() {
         .collect();
     let blob = msgs.join(" ");
     // 55/45 mph rendered as km/h
+    assert!(blob.contains("Limit 89, then 72."), "{blob}");
+    assert!(!blob.contains("Limit 55"), "{blob}");
+}
+
+#[test]
+fn test_mainline_via_does_not_pollute_the_exit_label() {
+    // tools/build_interchanges.py merges every ramp near an interchange node,
+    // so this exit's record carried the I-35 North entrance ramp's signage.
+    // The cue must not send the driver "for I-35 North" toward their own road.
+    let w = world();
+    let route = route_from_cities(w, &["Oklahoma City", "Ardmore"]);
     assert!(
-        blob.contains("Speed limit 89 from 2 kilometers out, then 72"),
-        "{blob}"
+        route
+            .legs
+            .iter()
+            .any(|leg| { leg.interchanges().iter().any(|ix| ix.exit_ref == "31B") }),
+        "exit 31B missing from the Oklahoma City -> Ardmore route"
     );
-    assert!(
-        !blob.contains("Speed limit 55 at the taper, then 45"),
-        "{blob}"
-    );
+    let trip = make_trip(w, "Oklahoma City", "Ardmore", 2);
+    let cue = trip
+        .navigation_cues
+        .iter()
+        .find(|c| c.kind == "interchange" && c.text.contains("exit 31B"))
+        .expect("an interchange cue for exit 31B");
+    assert!(cue.text.contains("toward Waurika"), "{}", cue.text);
+    assert!(!cue.text.contains("I-35 North"), "{}", cue.text);
+    assert!(!cue.text.contains("Oklahoma City"), "{}", cue.text);
+    assert!(!cue.near_text.contains("I-35 North"), "{}", cue.near_text);
 }

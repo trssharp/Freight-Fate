@@ -109,19 +109,41 @@ impl DrivingState {
     }
 
     /// `_resumed_speed_control_status()`.
-    pub fn resumed_speed_control_status(&self, ctx: &GameContext) -> String {
+    ///
+    /// The state, and the key that cancels it until the player has pressed
+    /// that key a few times. The open-road target is on Space and Tab.
+    pub fn resumed_speed_control_status(&self, ctx: &mut GameContext) -> String {
         if !self.speed_control_armed {
             return String::new();
         }
-        let target = match self.speed_control_target_mph {
-            Some(mph) => ctx.settings.speed_text(mph),
-            None => "the posted limit when the open road begins".to_string(),
-        };
+        if self.instruction_retired(ctx, "cruise_set") {
+            return "Automatic speed control paused. ".to_string();
+        }
         format!(
-            "Automatic speed control is paused; open-road target {target}. It will resume once \
-             the truck is rolling. Press {} to cancel it. ",
+            "Automatic speed control paused. {} cancels it. ",
             ctx.control_hint("cruise_set")
         )
+    }
+
+    /// The parking-brake pointer at the end of the resume line, retired once
+    /// the player has released the brake a few times.
+    pub fn parking_brake_hint_tail(&self, ctx: &mut GameContext) -> String {
+        if self.instruction_retired(ctx, "parking_brake") {
+            return String::new();
+        }
+        format!(
+            "At air ready, {} releases the parking brake.",
+            ctx.control_hint("parking_brake")
+        )
+    }
+
+    /// The transmission as a whole sentence.
+    pub fn transmission_sentence(&self) -> &'static str {
+        if self.trip.truck.transmission.automatic {
+            "Automatic transmission."
+        } else {
+            "Manual transmission."
+        }
     }
 
     /// `_parked_entry_status()`.
@@ -158,21 +180,21 @@ impl DrivingState {
         );
         match kind {
             WeatherKind::Rain | WeatherKind::HeavyRain => {
-                ctx.award_achievement("rain_driver");
+                ctx.award_driving_achievement("rain_driver");
             }
             WeatherKind::Snow | WeatherKind::Ice | WeatherKind::Wind => {
-                ctx.award_achievement("winter_or_wind");
+                ctx.award_driving_achievement("winter_or_wind");
             }
             WeatherKind::Fog | WeatherKind::Thunderstorm => {
-                ctx.award_achievement("low_visibility");
+                ctx.award_driving_achievement("low_visibility");
             }
             _ => {}
         }
         if kind == WeatherKind::Thunderstorm {
-            ctx.award_achievement("storm_driving");
+            ctx.award_driving_achievement("storm_driving");
         }
         if seen >= WeatherKind::ALL.len() {
-            ctx.award_achievement("weather_collector");
+            ctx.award_driving_achievement("weather_collector");
         }
     }
 
@@ -187,6 +209,7 @@ impl DrivingState {
         }
         self.entered_once = true;
         self.log_assist_configuration(ctx);
+        self.log_pace_configuration(ctx);
         self.refresh_exit_hint(ctx);
         ctx.clear_music_rotation();
         ctx.audio.stop_music_with(800);
@@ -226,16 +249,15 @@ impl DrivingState {
                 ctx.say_with(text, Say::queued());
             } else {
                 let engine = self.engine_entry_instruction(ctx);
+                let transmission = self.transmission_sentence();
+                let brake = self.parking_brake_hint_tail(ctx);
                 let text = format!(
-                    "Resuming your {drive_name}: {:.0} tons of {} to {destination}. {progress} \
-                     {hours_used:.1} hours used of {:.0}. It is {now}. Transmission is {mode}. \
-                     Weather: {report_lead}. Parked. {speed_control}{engine} At air ready, {} \
-                     releases the parking brake.",
-                    self.job.weight_tons,
-                    self.job.cargo.label,
-                    self.job.deadline_game_h,
-                    ctx.control_hint("parking_brake")
+                    "Resuming {drive_name}: {:.0} tons of {} to {destination}. {progress} \
+                     {hours_used:.1} of {:.0} hours. {now}. {transmission} {report_lead}. \
+                     {speed_control}{engine} {brake}",
+                    self.job.weight_tons, self.job.cargo.label, self.job.deadline_game_h,
                 );
+                let text = text.trim_end().to_string();
                 ctx.say_with(text, Say::queued());
             }
         } else {
@@ -258,10 +280,11 @@ impl DrivingState {
                 ctx.say_with(text, Say::queued());
             } else {
                 let engine = self.engine_entry_instruction(ctx);
+                let transmission = self.transmission_sentence();
                 let help = self.help_hint_tail(ctx);
                 let text = format!(
-                    "At the wheel. {objective}It is {now}. Transmission is {mode}. \
-                     Weather: {report_lead}. {engine} {help}"
+                    "At the wheel. {objective}It is {now}. {transmission} {report_lead}. {engine} \
+                     {help}"
                 );
                 ctx.say_with(text.trim_end().to_string(), Say::queued());
             }
@@ -274,7 +297,7 @@ impl DrivingState {
         if self.phase == DRIVE_PHASE_DELIVERY {
             self.record_weather_achievement(ctx);
             if !self.trip.truck.transmission.automatic {
-                ctx.award_achievement_with("manual_driver", false, true);
+                ctx.award_driving_achievement("manual_driver");
             }
         }
     }
@@ -283,15 +306,45 @@ impl DrivingState {
     /// radio's dial written to settings, the world's audio silenced.
     pub fn exit_drive(&mut self, ctx: &mut GameContext) {
         ctx.audio.horn_stop();
+        // The siren's dead-man's switch only ticks from inside update(), so
+        // once this state stops running it can never time itself out --
+        // leave to the menu mid pull-over and it outlived every drive that
+        // followed, until the game closed. Stop it explicitly, the same call
+        // a resolved stop already makes (`end_stop_audio`).
+        self.siren.stop(ctx.audio.as_mut());
         self.stop_liquid_cues(ctx);
         {
             let mut settings = RadioSettingsMut(&mut ctx.settings);
             self.radio.write_settings(&mut settings);
         }
         let _ = ctx.settings.save();
+        // The engine is handed back centred. The backend keeps the engine's
+        // pan across stops and drives on purpose, so a drive that ended
+        // mid-lean used to leave it leaning for whatever ran the engine next
+        // (review I7, 2026-09-19). The tracker goes back to "nothing written"
+        // with it, so a drive that is re-entered writes its first frame too.
+        ctx.audio.set_engine_pan(0.0);
+        self.engine_guide_pan_applied = None;
+        self.road_pan_applied = None;
         ctx.audio.stop_world();
+        self.forget_stopped_loops();
         ctx.audio.stop_music_with(600);
         ctx.apply_volumes();
+    }
+
+    /// Clear the latches of every cue loop `stop_world` just silenced.
+    ///
+    /// Each of these loops starts once on its latch rather than every frame,
+    /// so a latch left set kept its sound off after the world came back: the
+    /// lane guide tone stayed silent through the next drift after a pause,
+    /// which is the tone saying "centred" to a driver who was not. Every
+    /// place that stops the world under a live drive calls this after it.
+    pub fn forget_stopped_loops(&mut self) {
+        self.reverse_cue_active = false;
+        self.air_cue_active = false;
+        self.jake_cue_key = None;
+        self.lane_guide_tone_on = false;
+        self.lane_guide_pan_applied = 0.0;
     }
 
     /// `is_night(self.trip.local_hour)`: the drive's own day/night flag, for

@@ -58,7 +58,37 @@ const LANE: SoundCategory = SoundCategory {
         // inversion ever reads as a mistake and someone "corrects" this text,
         // they will be teaching blind drivers to steer off the road.
         SoundEntry::new(
-            "The road lean",
+            "The engine lean",
+            &[
+                Cue::new("engine/mid").volume(0.6).pan(-0.8).hold_s(2.0),
+                Cue::new("engine/mid")
+                    .volume(0.6)
+                    .pan(0.8)
+                    .delay_s(2.4)
+                    .hold_s(2.0),
+            ],
+            "Not a sound of its own: it is the engine you are always hearing, \
+             leaning to one side. Steer toward the lean, unless you have set \
+             the Steering guide row to steer away from it. It leans the way \
+             the wheel should go, so it points into a bend before you reach \
+             it and away from the edge you are drifting toward. This is the \
+             one cue here you follow rather than avoid, and it eases back to \
+             the middle as you make the turn or come straight.",
+        )
+        // Says what the code does (states/driving_updates/cues.rs,
+        // update_lane_guidance_audio): the turn half is never gated, the drift
+        // half is, and the tone replaces the whole thing. The old text taught
+        // that the lean never happens with the warning off, which was false
+        // for every bend (review I10, 2026-09-19).
+        .when(
+            "Every bend and street corner, in every lane keeping mode. It \
+             also leans to correct drift when lane keeping is partial or off \
+             and lane departure warning is on. Silent when the lane guide \
+             sound is set to tone, because the tone leans instead. The \
+             Steering guide row reverses which way to steer.",
+        ),
+        SoundEntry::new(
+            "Where you sit in the lane",
             &[
                 Cue::new("vehicle/road").volume(0.6).pan(-0.8).hold_s(2.0),
                 Cue::new("vehicle/road")
@@ -67,17 +97,14 @@ const LANE: SoundCategory = SoundCategory {
                     .delay_s(2.4)
                     .hold_s(2.0),
             ],
-            "Not a sound of its own: it is the road noise you are always \
-             hearing, leaning to one side. Steer toward the lean. It leans \
-             the way the wheel should go, so it points into a bend before \
-             you reach it, and away from the edge you are drifting toward. \
-             This is the one cue here you follow rather than avoid, and it \
-             eases back to the middle once you are straight.",
+            "The road noise under the truck, sitting where you are in your \
+             lane rather than where you should be going. Drift left and it \
+             goes left with you. It is the quieter half of the pair: the \
+             engine tells you what to do, this tells you what you have done.",
         )
         .when(
-            "Lane keeping partial or off, and lane-departure warning on. \
-             With that warning off the road stays centered and the lean never \
-             happens; on full lane keeping the truck holds the lane for you.",
+            "Lane keeping partial or off. On full lane keeping the truck \
+             holds the lane for you and the road stays centered.",
         ),
         SoundEntry::new(
             "Rumble strip, clipped",
@@ -140,12 +167,12 @@ const LANE: SoundCategory = SoundCategory {
             &[Cue::new("vehicle/lane_centered").volume(0.5)],
             "The soft chime that says you are centered again. It is the \
              all-clear after a drift, and it also marks a bend taken cleanly \
-             when speech is set to terse.",
+             when driving speech is set to Urgent only.",
         )
         .when(
             "The all-clear after a drift needs lane keeping partial or \
              off and lane-departure warning on. The short answer to a bend \
-             needs curve callouts on and speech set to terse.",
+             needs curve callouts on and driving speech set to Urgent only.",
         ),
         SoundEntry::new(
             "Lane line crossed",
@@ -200,14 +227,15 @@ const LANE: SoundCategory = SoundCategory {
                     .delay_s(2.0)
                     .hold_s(1.6),
             ],
-            "A soft note that leans toward the side you are drifting to and \
-             stops when you are straight again. You only hear this if you \
-             have switched the lane guide sound from road noise to tone; the \
-             default is the road itself leaning, with nothing added.",
+            "A soft note that leans toward the side to steer and stops when \
+             you are straight again. You only hear this if you have switched \
+             the lane guide sound from engine to tone; the default is the \
+             engine itself leaning, with nothing added.",
         )
         .when(
             "Lane guide sound set to tone, and lane departure warning \
-             on with lane keeping off or partial.",
+             on with lane keeping off or partial. The Steering guide row \
+             reverses it the same way it reverses the engine.",
         ),
         SoundEntry::new(
             "Rumble strip, single hit",
@@ -228,39 +256,58 @@ const LANE: SoundCategory = SoundCategory {
              enough back that braking still makes the corner.",
         ),
         SoundEntry::new(
-            "Curve chime",
-            &[
-                Cue::new("vehicle/curve_bink").volume(0.9).pan(-0.85),
-                Cue::new("vehicle/curve_bink")
-                    .volume(0.9)
-                    .pan(0.85)
-                    .delay_s(1.2),
-            ],
-            "A demanding bend is coming, and the chime comes from the side it \
-             turns toward. Be under the advised speed before you reach it, \
-             not while you are in it.",
-        )
-        .when("Curve callouts on."),
-        SoundEntry::new(
             "Mechanical blinker",
+            // Three flasher cycles a side: one cycle is one tick and one tock,
+            // and the rhythm is what a single cycle cannot teach.
             &[
                 Cue::new("vehicle/turn_signal").volume(0.8).pan(-0.6),
                 Cue::new("vehicle/turn_signal")
                     .volume(0.8)
+                    .pan(-0.6)
+                    .delay_s(0.9),
+                Cue::new("vehicle/turn_signal")
+                    .volume(0.8)
+                    .pan(-0.6)
+                    .delay_s(1.8),
+                Cue::new("vehicle/turn_signal")
+                    .volume(0.8)
                     .pan(0.6)
-                    .delay_s(5.0),
+                    .delay_s(3.0),
+                Cue::new("vehicle/turn_signal")
+                    .volume(0.8)
+                    .pan(0.6)
+                    .delay_s(3.9),
+                Cue::new("vehicle/turn_signal")
+                    .volume(0.8)
+                    .pan(0.6)
+                    .delay_s(4.8),
             ],
-            "Mechanical relay clicks. During a full-assist lane change they \
-             come from the side you are moving toward. With lane keeping \
-             partial or off, they follow your position within the lane while \
-             you steer. Signaling for an exit starts steady clicks on the right \
-             until you take the ramp, cancel, or miss the exit, even after the \
-             exit lane is set. Each recording finishes before repeating. \
-             Ordinary steering clicks stop when the move ends. A quieter centered signal tone confirms the \
-             steering cue ending; an assisted lane change ends with the \
+            "A turn signal relay: a tick, then a softer tock, at a steady \
+             pace. During a full-assist lane change it comes from the side \
+             you are moving toward. With lane keeping partial or off, it \
+             follows your position within the lane while you steer. \
+             Signaling for an exit starts it on the right until you take the \
+             ramp, cancel, or miss the exit, even after the exit lane is set. \
+             Ordinary steering clicks stop when the move ends, with the \
+             blinker clicking off; an assisted lane change ends with the \
              sound of tires crossing the painted line.",
         )
         .when("The I-key locator silences ordinary steering clicks, but not an armed exit signal."),
+        SoundEntry::new(
+            "Blinker off",
+            // Quieter and from straight ahead, exactly as
+            // update_steering_lane_cue and a canceled exit play it.
+            &[Cue::new("vehicle/turn_signal_off").volume(0.45).pan(0.0)],
+            "The turn signal stalk clicking back to the middle, from straight \
+             ahead. You hear it when you straighten up after steering over, \
+             when the exit lane is set, and when you cancel an exit while \
+             its blinker is running. The move is finished.",
+        )
+        .when(
+            "Straightening up clicks it off only with lane keeping partial or \
+             off and the I-key locator off. Canceling a running exit blinker \
+             clicks it off in every mode.",
+        ),
         SoundEntry::new(
             "Signal tone",
             &[
@@ -269,21 +316,12 @@ const LANE: SoundCategory = SoundCategory {
                     .volume(0.8)
                     .pan(0.6)
                     .delay_s(1.2),
-                // The self-cancel, third: quieter and from straight ahead,
-                // exactly as update_steering_lane_cue
-                // plays it. Same tone, and the treatment is the difference.
-                Cue::new("vehicle/signal_tone")
-                    .volume(0.45)
-                    .pan(0.0)
-                    .delay_s(2.4),
             ],
             "A short confirmation tone. It marks a \
              move you meant to make: crossing into another lane, easing onto the shoulder, \
-             coming up a ramp, or taking the exit the route asked for. The \
-             quieter one from straight ahead is the same signal cancelling \
-             itself, the way it does in a truck when the wheel comes back: \
-             the move is finished. Exit lane readiness is announced separately; \
-             the exit blinker continues until the ramp or cancellation.",
+             coming up a ramp, or taking the exit the route asked for. Exit \
+             lane readiness is announced separately; the exit blinker \
+             continues until the ramp or cancellation.",
         ),
     ],
 };
@@ -340,8 +378,8 @@ const AIR: SoundCategory = SoundCategory {
         SoundEntry::new(
             "Tire screech",
             &[Cue::new("vehicle/tire_screech").volume(0.9)],
-            "The tires have lost their grip on the road. Ease off whatever \
-             you were doing -- brake, throttle or steering -- rather than \
+            "The tires have lost their grip on the road. Ease off the brake, \
+             throttle or steering, whichever you were using, rather than \
              adding more of it. On a wet or icy road this arrives at speeds \
              that would be fine on dry pavement.",
         ),
@@ -384,7 +422,7 @@ const ENGINE_BRAKE: SoundCategory = SoundCategory {
              are.",
         )
         .when(
-            "More than 7 miles per hour over the posted limit -- past \
+            "More than 7 miles per hour over the posted limit: past \
              anything adaptive cruise will do on its own, and short of where \
              a trooper can act on your speed.",
         ),
@@ -412,6 +450,19 @@ const RAMPS: SoundCategory = SoundCategory {
             "A continuous tone that means the stop bar is close enough that \
              you must already be stopping. It runs until you have stopped or \
              passed it. Treat it as the last warning, not the first.",
+        ),
+        SoundEntry::new(
+            "Stop bar countdown",
+            // Quickening as the bar nears; here at the spacing it has a few
+            // hundred feet out, before it fuses into the solid tone above.
+            &[
+                Cue::new("vehicle/curve_bink").volume(0.9),
+                Cue::new("vehicle/curve_bink").volume(0.9).delay_s(0.8),
+                Cue::new("vehicle/curve_bink").volume(0.9).delay_s(1.4),
+            ],
+            "Beeps that come faster the closer the stop bar gets. When they \
+             run together into the steady tone above, you should already be \
+             nearly stopped.",
         ),
         SoundEntry::new(
             "Green light",
@@ -443,9 +494,9 @@ const HAZARDS: SoundCategory = SoundCategory {
             "Hazard clear",
             &[Cue::new("events/hazard_clear").volume(0.75)],
             "You got past the hazard. This is the success half of the \
-             dodge outcome pair: in terse speech it is the whole confirmation \
+             dodge outcome pair: at Urgent only it is the whole confirmation \
              that you cleared it, and you can go back to normal speed. Its \
-             opposite is the collision below -- the two sound nothing alike, \
+             opposite is the collision below. The two sound nothing alike, \
              so 'did I make it?' is never in doubt.",
         ),
         SoundEntry::new(
@@ -453,7 +504,7 @@ const HAZARDS: SoundCategory = SoundCategory {
             &[Cue::new("vehicle/collision").volume(0.9)],
             "You hit it. This is the failure half of the dodge outcome pair: \
              where the hazard-clear chime says you got past, this says you did \
-             not, and a spoken damage figure follows. In terse speech the \
+             not, and a spoken damage figure follows. At Urgent only the \
              sound is the outcome, so it is worth knowing before you need it.",
         ),
         SoundEntry::new(
@@ -506,66 +557,6 @@ const HAZARDS: SoundCategory = SoundCategory {
              at night, and a tired driver drifts and reacts late. Plan a \
              stop rather than pushing through it.",
         ),
-        // The two earcons the S4 driving speech ladder stands in with, once a
-        // rung stops speaking a whole category (LADDER_EARCONS in
-        // speech_pacing.py, pinned learnable by
-        // tests/test_driving_speech_ladder.py, and played by
-        // GameContext._play_ladder_earcon in app.py via
-        // sound_catalog.entry_by_name). This entry's own recipe -- key and
-        // volume -- IS the road level: app.py resolves the cue from here
-        // rather than keeping a second copy, so there is nothing to drift.
-        // Synthesized rather than shipped (``ladder_earcons.py``), the same
-        // way the enforcement signature is -- and, like that one, keyed under
-        // a folder name ("ladder/") outside the ones
-        // ``tests/test_speech_audio.py::test_all_referenced_assets_exist``
-        // scans for a file on disk, since neither cue has one.
-        SoundEntry::new(
-            "Confirmation note",
-            &[Cue::new("ladder/confirmation_note").volume(0.32)],
-            "One short, clear high note standing in for a confirmation -- \
-             the assist acted, the setting took, the latch caught. The words \
-             still reach the message log. Not to be confused with Hazard \
-             clear above, which means something quite different and used to \
-             be played here.",
-        )
-        .when("Driving speech set to Quiet or Urgent only."),
-        SoundEntry::new(
-            "Road ahead note",
-            &[Cue::new("ladder/road_ahead_note").volume(0.38)],
-            "Two short notes falling, standing in for a heads-up about what \
-             the road is about to do -- a bend coming, a merge, how far the \
-             next stretch runs. The words still reach the message log, and \
-             the route and road keys still answer for it.",
-        )
-        .when(
-            "Driving speech set to Urgent only. At Quiet and below \
-             these are spoken. Directions you cannot recover from -- take \
-             this exit, turn here, you missed it -- are always spoken, at \
-             every setting.",
-        ),
-        SoundEntry::new(
-            "Coaching note",
-            &[Cue::new("ladder/coaching_note").volume(0.4)],
-            "A soft two-note rising chime standing in for a driving tip. The \
-             tip itself still reaches the message log, so pull it up there \
-             if you want the words.",
-        )
-        .when(
-            "Driving speech set to Quiet. At Urgent only, tips are \
-             dropped instead of getting a sound.",
-        ),
-        SoundEntry::new(
-            "Status note",
-            &[Cue::new("ladder/status_note").volume(0.35)],
-            "A single short, low tock standing in for a status update -- \
-             load condition, the weather turning, and the like. The words \
-             still reach the message log and the status keys still answer \
-             for it.",
-        )
-        .when(
-            "Driving speech set to Quiet. At Urgent only, status \
-             updates are dropped instead of getting a sound.",
-        ),
     ],
 };
 
@@ -594,7 +585,7 @@ const ENFORCEMENT: SoundCategory = SoundCategory {
              officer sitting there has to go on.",
         )
         .when(
-            "Always -- nothing turns it off. Every post that is allowed \
+            "Always. Nothing turns it off. Every post that is allowed \
              to cost you anything sounds this first, at every enforcement \
              presence setting, and the radio is pulled down out of the way \
              so you can hear it.",
@@ -656,8 +647,8 @@ const ENFORCEMENT: SoundCategory = SoundCategory {
         SoundEntry::new(
             "Scale warning",
             &[Cue::new("events/weigh_station_warning").volume(0.7)],
-            "An open weigh station is ahead, and the full spoken notice -- \
-             distance, name, the exit key -- follows right behind it. Its \
+            "An open weigh station is ahead. The full spoken notice, with \
+             the distance, name and exit key, follows right behind it. Its \
              own low thump-then-beep, not the inspection cue, so the scale \
              is unmistakable before a word is spoken.",
         ),
@@ -669,7 +660,7 @@ const ENFORCEMENT: SoundCategory = SoundCategory {
              right behind the open-scale notice, never instead of it.",
         )
         .when(
-            "A weigh station transponder only -- the fleet issues one \
+            "A weigh station transponder only. The fleet issues one \
              free at career level 4, or an owner-operator can subscribe from \
              Business status. Without one, every open scale still demands \
              every truck pull in.",
@@ -683,7 +674,7 @@ const ENFORCEMENT: SoundCategory = SoundCategory {
              sometimes, and an overweight load always is.",
         )
         .when(
-            "A weigh station transponder only -- the fleet issues one \
+            "A weigh station transponder only. The fleet issues one \
              free at career level 4, or an owner-operator can subscribe from \
              Business status.",
         ),
@@ -715,9 +706,10 @@ const ENFORCEMENT: SoundCategory = SoundCategory {
         SoundEntry::new(
             "CB chatter",
             &[Cue::new("events/cb_radio_chatter")],
-            "Other drivers passing on what they have seen: enforcement, \
-             wrecks, work zones. It says how sure it is, it is sometimes out \
-             of date, and it never claims the road is clear.",
+            "The squelch of a CB call ending, played with what another \
+             driver passed on: enforcement, wrecks, work zones. The report \
+             says how sure it is, it is sometimes out of date, and it never \
+             claims the road is clear.",
         ),
     ],
 };
@@ -762,11 +754,9 @@ pub fn catalog_entries() -> impl Iterator<Item = &'static SoundEntry> {
 
 /// The catalog entry with this canonical spoken noun, or `None`.
 ///
-/// A lookup one caller (the S4 ladder's earcon playback, the app shell)
-/// needs at runtime: it knows a cue only by the name it teaches under
-/// (`speech_pacing.LADDER_EARCONS`), and the recipe -- key, volume, pan
-/// -- lives here so the drive and the Learn game sounds screen can never
-/// play the same cue two different ways.
+/// The recipe -- key, volume, pan -- lives here, so anything that plays a
+/// cue by the name it teaches under plays it exactly as the Learn game
+/// sounds screen does.
 pub fn entry_by_name(name: &str) -> Option<&'static SoundEntry> {
     catalog_entries().find(|entry| entry.name == name)
 }
@@ -799,13 +789,12 @@ pub const SELF_EXPLANATORY: &[(&str, &str)] = &[
     ("engine/idle", "It is an engine and it sounds like one."),
     (
         "engine_classic/idle",
-        "The same engine, in its earlier voice.",
+        "The same engine, in its earlier sound.",
     ),
     (
         "engine/low",
         "As the idle loop: an engine at an engine speed.",
     ),
-    ("engine/mid", "As the idle loop."),
     ("engine/midhigh", "As the idle loop."),
     ("engine/high", "As the idle loop."),
     (
@@ -818,8 +807,8 @@ pub const SELF_EXPLANATORY: &[(&str, &str)] = &[
     ),
     (
         "engine/jake_1600_synth",
-        "The classic jake voice: the same three staged entries play it when \
-         Settings, Audio has Engine brake voice set to classic, through the \
+        "The classic jake sound: the same three staged entries play it when \
+         Settings, Audio has Engine brake sound set to classic, through the \
          same key-resolution routing the drive uses. Not a second cue.",
     ),
     ("weather/*", "Rain, wind, snow and thunder name themselves."),
@@ -888,6 +877,24 @@ pub const SELF_EXPLANATORY: &[(&str, &str)] = &[
     ("traffic/motorcycle_cross", "As the car cross."),
     ("traffic/bus_cross", "As the car cross."),
     ("traffic/tractor_cross", "As the car cross."),
+    // Traffic sounds follow real NPC vehicles every frame (2026-10-08): a
+    // vehicle sounds like a vehicle where it is, and the bed under them is
+    // the road being as busy as it is.
+    (
+        "traffic/car_loop",
+        "A vehicle near the cab sounds like one, where it is.",
+    ),
+    ("traffic/pickup_loop", "As the car loop."),
+    ("traffic/box_truck_loop", "As the car loop."),
+    ("traffic/semi_loop", "As the car loop."),
+    ("traffic/motorcycle_loop", "As the car loop."),
+    ("traffic/bus_loop", "As the car loop."),
+    ("traffic/tractor_loop", "As the car loop."),
+    ("traffic/trooper_loop", "As the car loop."),
+    (
+        "traffic/highway_bed",
+        "Distant freeway traffic: texture, not a decision.",
+    ),
     (
         "poi/facility_gate",
         "Ambient bed for a place the game has already named.",

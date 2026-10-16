@@ -2,11 +2,12 @@
 //! `SettingsCategoryState` in `main_menu.py`, plus the spoken value labels
 //! the rows read.
 
+use ff_core::l10n;
 use ff_core::pyfmt::{py_str_float, round_py_n};
 use ff_core::settings::{
-    acc_gap_seconds, Settings, ACC_GAP_CHOICES, ACC_GAP_DEFAULT, BACKUP_ANNOUNCEMENT_MODES,
-    DRIVING_ASSIST_FIELDS, DRIVING_ASSIST_PRESETS, LANE_KEEPING_MODES, PLACE_CALLOUT_MODES,
-    TIME_SCALES,
+    acc_gap_seconds, ScoreDisplay, Settings, ACC_GAP_CHOICES, ACC_GAP_DEFAULT,
+    BACKUP_ANNOUNCEMENT_MODES, DRIVING_ASSIST_FIELDS, DRIVING_ASSIST_PRESETS, LANE_KEEPING_MODES,
+    PLACE_CALLOUT_MODES, TIME_SCALES,
 };
 use ff_core::sim::hos::clock_text;
 use ff_core::sim::season::{date_text, real_clock_game_hours};
@@ -14,8 +15,10 @@ use ff_core::speech_pacing::DRIVING_SPEECH_MODES;
 
 use super::settings::{save_settings, SettingsCategoryState};
 use super::settings_items::assist_flag;
-use crate::app::{version, GameContext, Say};
+use crate::app::{language, version, GameContext, Say};
 use crate::audio::VolumeUpdate;
+use crate::bindings::Action;
+use crate::states::text_entry::TextEntryState;
 use crate::updater;
 
 /// Python `f"{x:g}"` for the values these rows read (whole numbers bare,
@@ -45,6 +48,18 @@ fn cycle_index(options: &[&str], current: &str, d: i64, fallback_index: usize) -
         .position(|o| *o == current)
         .unwrap_or(fallback_index) as i64;
     (i + d).rem_euclid(options.len() as i64) as usize
+}
+
+/// The Language row's value: the language's own name, after "automatic"
+/// when the row follows the system.
+pub(super) fn language_label(s: &Settings) -> String {
+    let resolved = l10n::resolve(&s.language, language::system_locale().as_deref());
+    let name = l10n::language(resolved).map_or("English", |lang| lang.autonym);
+    if s.language == l10n::AUTO || s.language.is_empty() {
+        format!("automatic, {name}")
+    } else {
+        name.to_string()
+    }
 }
 
 pub(super) fn assist_preset_label(s: &Settings) -> &'static str {
@@ -78,6 +93,14 @@ pub(super) fn hos_label(s: &Settings) -> &'static str {
         "relaxed" => "relaxed",
         "debug_off" => "off (developer)",
         _ => "realistic",
+    }
+}
+
+pub(super) fn score_display_label(s: &Settings) -> &'static str {
+    match s.score_display {
+        ScoreDisplay::Both => "both",
+        ScoreDisplay::Percent => "percentage only",
+        ScoreDisplay::Description => "description only",
     }
 }
 
@@ -173,9 +196,17 @@ impl SettingsCategoryState {
         ctx.settings.apply_driving_assistance_preset(presets[next]);
         self.announce(ctx);
         if ctx.settings.lane_keeping != lane_before {
-            let note = if ctx.settings.lane_is_automated() {
-                "Lane keeping full: the truck holds the lane, tap Left or Right to change lanes."
+            let note = if ctx.settings.lane_is_automated()
+                && ctx.controller.device() == ff_core::input_hints::TOUCH
+            {
+                "Lane keeping full: the truck holds the lane, swipe left or right to change lanes."
                     .to_string()
+            } else if ctx.settings.lane_is_automated() {
+                format!(
+                    "Lane keeping full: the truck holds the lane, tap {} or {} to change lanes.",
+                    ctx.control_name(Action::SteerLeft),
+                    ctx.control_name(Action::SteerRight)
+                )
             } else {
                 format!(
                     "Lane keeping back to {}.",
@@ -345,6 +376,36 @@ impl SettingsCategoryState {
         self.announce(ctx);
     }
 
+    pub(super) fn cycle_score_display(&mut self, ctx: &mut GameContext, d: i64) {
+        let modes = [
+            ScoreDisplay::Both,
+            ScoreDisplay::Percent,
+            ScoreDisplay::Description,
+        ];
+        let current = modes
+            .iter()
+            .position(|mode| *mode == ctx.settings.score_display)
+            .unwrap_or(0) as i64;
+        ctx.settings.score_display = modes[(current + d).rem_euclid(modes.len() as i64) as usize];
+        self.announce(ctx);
+    }
+
+    pub(super) fn toggle_hos_planning_hints(&mut self, ctx: &mut GameContext, _d: i64) {
+        ctx.settings.hos_planning_hints = !ctx.settings.hos_planning_hints;
+        self.announce(ctx);
+    }
+
+    pub(super) fn toggle_facility_streets(&mut self, ctx: &mut GameContext, _d: i64) {
+        ctx.settings.facility_streets = !ctx.settings.facility_streets;
+        self.announce(ctx);
+    }
+
+    pub(super) fn toggle_steering_guide_inverted(&mut self, ctx: &mut GameContext, _d: i64) {
+        ctx.settings.steering_guide_inverted = !ctx.settings.steering_guide_inverted;
+        save_settings(&ctx.settings);
+        self.announce(ctx);
+    }
+
     pub(super) fn toggle_lane_guide_tone(&mut self, ctx: &mut GameContext, _d: i64) {
         ctx.settings.lane_guide_tone = !ctx.settings.lane_guide_tone;
         save_settings(&ctx.settings);
@@ -391,9 +452,69 @@ impl SettingsCategoryState {
         self.announce(ctx);
     }
 
+    /// Flip between the full soundtrack and the synthesized, no-AI music.
+    pub(super) fn toggle_music_source(&mut self, ctx: &mut GameContext, _d: i64) {
+        ctx.settings.synth_music = !ctx.settings.synth_music;
+        save_settings(&ctx.settings);
+        ctx.restart_music();
+        self.announce(ctx);
+    }
+
+    /// Roll a new, different music seed and restart synthesized music with it.
+    pub(super) fn roll_music_seed(&mut self, ctx: &mut GameContext, _d: i64) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        let mut rng = ff_core::music_synth::rng::Rng::new(nanos ^ ctx.settings.music_seed as u64);
+        let mut seed = ctx.settings.music_seed;
+        while seed == ctx.settings.music_seed {
+            seed = 10_000 + rng.below(90_000) as i64;
+        }
+        ctx.settings.music_seed = seed;
+        save_settings(&ctx.settings);
+        ctx.restart_music();
+        ctx.say(&format!(
+            "New music seed, {seed}. Every synthesized piece is new."
+        ));
+    }
+
+    /// The field Enter on Music seed opens: digits only, so a shared seed
+    /// can be typed back in. Confirming returns to the row, which the menu
+    /// reads again with the new seed.
+    pub(super) fn music_seed_entry() -> TextEntryState {
+        let mut entry = TextEntryState::new("Music seed", "Seed", |ctx, text| {
+            let text = text.trim();
+            // 18 digits always fit an i64.
+            let seed = text
+                .parse::<i64>()
+                .ok()
+                .filter(|_| text.bytes().all(|b| b.is_ascii_digit()));
+            let Some(seed) = seed else {
+                ctx.audio.play("ui/error");
+                ctx.say_with("Type a whole number.", Say::new().review(false));
+                return;
+            };
+            if seed != ctx.settings.music_seed {
+                ctx.settings.music_seed = seed;
+                save_settings(&ctx.settings);
+                ctx.restart_music();
+            }
+            ctx.pop_state();
+        });
+        entry.entry.max_len = 18;
+        entry
+    }
+
     pub(super) fn toggle_radio_streamer_safe(&mut self, ctx: &mut GameContext, _d: i64) {
         ctx.settings.radio_streamer_safe = !ctx.settings.radio_streamer_safe;
         ctx.apply_active_radio_settings();
+        self.announce(ctx);
+    }
+
+    pub(super) fn toggle_radio_shuffle_playlists(&mut self, ctx: &mut GameContext, _d: i64) {
+        ctx.settings.radio_shuffle_playlists = !ctx.settings.radio_shuffle_playlists;
+        save_settings(&ctx.settings);
         self.announce(ctx);
     }
 
@@ -503,11 +624,29 @@ impl SettingsCategoryState {
         }
     }
 
+    /// Faster or default JAWS arrow keys. The work runs on its own thread and
+    /// the app loop speaks the result, so this row says nothing itself.
+    pub(super) fn toggle_jaws_arrow_script(&mut self, ctx: &mut GameContext, _d: i64) {
+        let install = !ctx.services.jaws_script.installed();
+        ctx.services.jaws_script.request(install);
+    }
+
     pub(super) fn adjust_speech(&mut self, ctx: &mut GameContext, attr: &str, delta: f64) {
         Self::step_level(&mut ctx.settings, attr, delta);
         save_settings(&ctx.settings);
         ctx.apply_speech();
         self.announce_speech_preview(ctx, attr);
+    }
+
+    pub(super) fn cycle_language(&mut self, ctx: &mut GameContext, d: i64) {
+        let mut options = vec![l10n::AUTO];
+        options.extend(language::offered_languages().iter().map(|lang| lang.code));
+        let i = cycle_index(&options, &ctx.settings.language, d, 0);
+        ctx.settings.language = options[i].to_string();
+        save_settings(&ctx.settings);
+        let setting = ctx.settings.language.clone();
+        ctx.set_language(&setting);
+        self.announce(ctx);
     }
 
     pub(super) fn cycle_voice(&mut self, ctx: &mut GameContext, d: i64) {

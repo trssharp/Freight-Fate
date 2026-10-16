@@ -19,15 +19,21 @@
 //! Tool switches, parsed here:
 //!
 //! * `--list-break-scenarios` -- name and one-line summary of every
-//!   adversarial scenario (`tools/playtest_break.py --list`).
+//!   adversarial scenario (formerly `tools/playtest_break.py --list`).
+//! * `--list-speech-backends` -- every screen reader and voice Prism knows
+//!   on THIS machine, which of them can speak right now, and which one the
+//!   game would choose. There is no allowlist in the game, so a reader the
+//!   maintainers cannot install is answered by its own user running this.
 //! * `--break-scenario NAME` / `--break-battery` `[--transcript]` -- run one
 //!   scenario, or all of them, and print the verdict table.
+//! * `--key-probe [--seconds N]` -- measure what the keyboard delivers to the
+//!   game, screen reader included (formerly `tools/key_probe.py`).
 //! * `--playtest-sandbox` -- prepare (and with `--launch`, run the real game
 //!   in) a data directory that cannot reach the owner's account
-//!   (`tools/playtest_sandbox.py`).
+//!   (formerly `tools/playtest_sandbox.py`).
 //! * `--playtest-road --find FEATURE` -- start the real game at a named road
 //!   feature, or at the loaded facility gate for `departure`
-//!   (`tools/playtest_road.py`).
+//!   (formerly `tools/playtest_road.py`).
 //!
 //! # Why the tool parsing is here and not in `app::CliOptions`
 //!
@@ -45,6 +51,15 @@ use freight_fate::playtest::{breaker, observer, road, sandbox};
 use freight_fate::speech::CaptureSpeech;
 
 fn main() {
+    #[cfg(target_os = "ios")]
+    ios::run_under_uikit();
+    #[cfg(not(target_os = "ios"))]
+    std::process::exit(game_main());
+}
+
+/// The game process proper. On iOS this runs inside UIKit's application
+/// loop, handed over by SDL once the app has finished launching.
+fn game_main() -> i32 {
     // First of all, so the opening phase mark charges process creation and
     // dynamic linking to the launch instead of losing them.
     app::boot_timing::start();
@@ -65,7 +80,40 @@ fn main() {
     // console and, on every shell tested, no standard handles either, so an
     // un-attached tool run prints into the void.
     console::attach_parent(&args);
-    std::process::exit(run(&args));
+    run(&args)
+}
+
+/// iOS start-up: UIKit owns the main thread, so SDL starts the application
+/// and calls back into [`game_main`] once it has launched. The game loop then
+/// runs on the main thread exactly as on the desktop, SDL pumping UIKit's
+/// run loop with every event poll.
+#[cfg(target_os = "ios")]
+mod ios {
+    use std::ffi::{c_char, c_int, CString};
+
+    type SdlMain = extern "C" fn(c_int, *mut *mut c_char) -> c_int;
+
+    extern "C" {
+        fn SDL_UIKitRunApp(argc: c_int, argv: *mut *mut c_char, main: SdlMain) -> c_int;
+    }
+
+    extern "C" fn sdl_main(_argc: c_int, _argv: *mut *mut c_char) -> c_int {
+        super::game_main()
+    }
+
+    pub fn run_under_uikit() -> ! {
+        let args: Vec<CString> = std::env::args_os()
+            .filter_map(|arg| CString::new(arg.into_encoded_bytes()).ok())
+            .collect();
+        let mut argv: Vec<*mut c_char> = args.iter().map(|arg| arg.as_ptr().cast_mut()).collect();
+        let argc = argv.len() as c_int;
+        argv.push(std::ptr::null_mut());
+        // SAFETY: `argv` is a NULL-terminated array of NUL-terminated strings
+        // that `args` keeps alive for the whole call, which does not return
+        // until the application ends.
+        let code = unsafe { SDL_UIKitRunApp(argc, argv.as_mut_ptr(), sdl_main) };
+        std::process::exit(code)
+    }
 }
 
 /// Giving the drive tools their terminal back, without giving the player one.
@@ -83,7 +131,7 @@ mod console {
     /// Start menu -- and that launch stays completely detached: not attached
     /// to any console, so it cannot be killed by a Ctrl-C meant for the shell
     /// or by that shell's window closing. Every path that PRINTS needs an
-    /// argument to reach it: `--help`, `-h`, `/?`, an unrecognised switch
+    /// argument to reach it: `--help`, `-h`, `/?`, an unrecognized switch
     /// (which prints the usage and exits 2), `--list-break-scenarios`,
     /// `--break-scenario`, `--break-battery`, `--playtest-sandbox`,
     /// `--playtest-road`, `--smoke`, `--headless`. Keying on "any argument at
@@ -142,7 +190,7 @@ fn run(args: &[String]) -> i32 {
         print!("{USAGE}");
         return 0;
     }
-    // An unrecognised switch used to fall through to `CliOptions::parse`, which
+    // An unrecognized switch used to fall through to `CliOptions::parse`, which
     // ignores what it does not know -- so `--help` LAUNCHED THE GAME. Someone
     // asking what the flags are gets a window and a main menu instead of an
     // answer, and on a machine already running a copy the single-instance
@@ -154,12 +202,15 @@ fn run(args: &[String]) -> i32 {
                 .iter()
                 .any(|k| *k == a.as_str() || a.starts_with(&format!("{k}=")))
     }) {
-        eprintln!("freightfate: unrecognised switch {unknown}\n");
+        eprintln!("freightfate: unrecognized switch {unknown}\n");
         eprint!("{USAGE}");
         return 2;
     }
     if args.iter().any(|a| a == "--list-break-scenarios") {
         return list_break_scenarios();
+    }
+    if args.iter().any(|a| a == "--list-speech-backends") {
+        return list_speech_backends();
     }
     if let Some(name) = flag_value(args, "--break-scenario") {
         return run_break(&[name], has(args, "--transcript"));
@@ -178,22 +229,81 @@ fn run(args: &[String]) -> i32 {
         return playtest_road(args);
     }
     if has(args, "--agent-server") {
-        let launch =
-            flag_value(args, "--find").map(|feature| freight_fate::agent_server::LaunchAt {
-                feature,
-                origin: flag_value(args, "--from"),
-                destination: flag_value(args, "--to"),
-                seed: flag_value(args, "--seed")
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(7),
-            });
-        return freight_fate::agent_server::run(
-            has(args, "--reset"),
-            launch,
-            has(args, "--operator-keys"),
-        );
+        return agent_server(args);
+    }
+    if has(args, "--key-probe") {
+        return key_probe(args);
     }
     app::main_with(CliOptions::parse(args.iter().cloned()))
+}
+
+/// `--key-probe [--seconds N] [--log PATH]`: show what the keyboard delivers
+/// to the game (see `app::key_probe`), for a player whose screen reader
+/// re-sends held keys. Speaks its findings and writes them to a log.
+fn key_probe(args: &[String]) -> i32 {
+    let seconds = flag_value(args, "--seconds")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(25);
+    let mut app = match App::new() {
+        Ok(app) => app,
+        Err(e) => {
+            eprintln!("Could not start the key probe: {e}");
+            return 1;
+        }
+    };
+    let report = app.run_key_probe(seconds);
+    let path = flag_value(args, "--log")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            PathBuf::from(format!("key_probe-{stamp}.log"))
+        });
+    let text = report.text();
+    println!("{text}");
+    let saved = match std::fs::write(&path, &text) {
+        Ok(()) => format!("The log is saved as {}.", path.display()),
+        Err(e) => format!("The log could not be saved: {e}."),
+    };
+    println!("{saved}");
+    let spoken = format!("{} {saved}", report.spoken());
+    app.ctx.say(&spoken);
+    // The speech worker talks on its own thread; give it time to finish
+    // before the process, and the voice with it, goes away.
+    let words = spoken.split_whitespace().count() as f64;
+    std::thread::sleep(std::time::Duration::from_secs_f64(
+        (1.0 + words / 2.5).min(30.0),
+    ));
+    0
+}
+
+#[cfg(feature = "agent-server")]
+fn agent_server(args: &[String]) -> i32 {
+    let launch = flag_value(args, "--find").map(|feature| freight_fate::agent_server::LaunchAt {
+        feature,
+        origin: flag_value(args, "--from"),
+        destination: flag_value(args, "--to"),
+        seed: flag_value(args, "--seed")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(7),
+    });
+    freight_fate::agent_server::run(
+        has(args, "--reset"),
+        launch,
+        has(args, "--operator-keys"),
+        has(args, "--staging"),
+    )
+}
+
+/// Player builds leave the agent server out (the `agent-server` feature).
+#[cfg(not(feature = "agent-server"))]
+fn agent_server(_args: &[String]) -> i32 {
+    eprintln!(
+        "This build has no agent server. Build one with \
+         `cargo build --release -p freight-fate --bin freightfate`."
+    );
+    2
 }
 
 /// Every switch the binary answers to, for the unrecognised-switch check.
@@ -202,6 +312,7 @@ fn run(args: &[String]) -> i32 {
 const KNOWN_SWITCHES: &[&str] = &[
     "--agent-server",
     "--operator-keys",
+    "--staging",
     "--ai",
     "--assists",
     "--at",
@@ -221,10 +332,12 @@ const KNOWN_SWITCHES: &[&str] = &[
     "--help",
     "--hour",
     "--lane-keeping",
+    "--key-probe",
     "--launch",
     "--lead",
     "--level",
     "--list-break-scenarios",
+    "--list-speech-backends",
     "--log",
     "--max-advisory",
     "--max-miles",
@@ -244,6 +357,7 @@ const KNOWN_SWITCHES: &[&str] = &[
     "--routes",
     "--sample",
     "--scan",
+    "--seconds",
     "--seed",
     "--smoke",
     "--speed",
@@ -286,6 +400,7 @@ Drive tools:
   --playtest-sandbox [--launch]     a data directory that cannot reach the
                                     owner's account; --dir/--reset/--print
   --list-break-scenarios            name every adversarial scenario
+  --list-speech-backends            name every screen reader and voice found
   --break-scenario NAME             run one, --transcript to hear it
   --break-battery                   run them all and print the verdicts
   --agent-server                    the real game with an MCP server on stdio,
@@ -295,7 +410,13 @@ Drive tools:
                                     to boot straight into a staged drive;
                                     --operator-keys keeps the window up and
                                     lets the operator's keyboard in, to play
-                                    alongside the agent)
+                                    alongside the agent; --staging uses its
+                                    own directory and its own driver on the
+                                    staging site, cloud backup on)
+  --key-probe [--seconds N]         show what your keyboard delivers to the game,
+                                    for a screen reader that re-sends held keys
+                                    (JAWS): hold each arrow key for a few seconds;
+                                    it speaks its findings and writes a log
   --log PATH                        session log for the watcher
 ";
 
@@ -343,6 +464,85 @@ fn list_break_scenarios() -> i32 {
     let width = scenarios.iter().map(|s| s.name.len()).max().unwrap_or(0);
     for scenario in scenarios {
         println!("{:<width$}  {}", scenario.name, scenario.description);
+    }
+    0
+}
+
+/// Every backend Prism registers here, and what the game makes of each.
+///
+/// The game has no list of approved screen readers: `pick_backend` walks the
+/// registry in priority order and keeps the first whose own runtime check
+/// says it can speak. So ZDSR, PC-Talker, BoYing, SenseReader, System Access
+/// and ZoomText are already chosen automatically wherever they run -- and
+/// that is precisely what nobody here can confirm, because none of those
+/// readers can be installed on this machine. This switch moves the question
+/// to somebody who has one: run it, read the table, send it back.
+fn list_speech_backends() -> i32 {
+    use freight_fate::speech::{narrator_running, usable, PrismRegistry, VoiceRegistry};
+
+    let registry = match PrismRegistry::new() {
+        Ok(registry) => registry,
+        Err(err) => {
+            eprintln!("Prism did not start, so nothing here can speak: {err}");
+            return 1;
+        }
+    };
+    let chosen = freight_fate::speech::pick_backend(&registry, None).map(|backend| backend.name());
+    println!(
+        "{:<20} {:>8}  {:<10} NOTE",
+        "BACKEND", "PRIORITY", "CAN SPEAK"
+    );
+    for index in 0..registry.backend_count() {
+        let Some(id) = registry.id_at(index) else {
+            continue;
+        };
+        let name = registry.name_of(id).unwrap_or_else(|| id.to_string());
+        // UIA exists on every modern Windows but only Narrator reads it, so
+        // it is answered before the acquire that would fail confusingly.
+        if name == "UIA" && !narrator_running() {
+            println!(
+                "{:<20} {:>8}  {:<10} Narrator is not running",
+                name,
+                registry.priority_of(id),
+                "no"
+            );
+            continue;
+        }
+        let (speaks, note) = match registry.acquire(id) {
+            Ok(backend) => {
+                let features = backend.features();
+                let note = if Some(name.clone()) == chosen {
+                    "chosen"
+                } else if !features.is_supported_at_runtime {
+                    "not running here"
+                } else {
+                    ""
+                };
+                (usable(backend.as_ref()), note.to_string())
+            }
+            // The ordinary case for every reader this machine does not have.
+            Err(prismer::Error::BackendNotAvailable) => {
+                (false, "not installed or not running here".to_string())
+            }
+            Err(err) => (false, err.to_string()),
+        };
+        println!(
+            "{:<20} {:>8}  {:<10} {}",
+            name,
+            registry.priority_of(id),
+            if speaks { "yes" } else { "no" },
+            note
+        );
+    }
+    match chosen {
+        Some(name) => println!(
+            "
+The game would speak through {name}."
+        ),
+        None => println!(
+            "
+Nothing on this machine can speak; the game would run mute."
+        ),
     }
     0
 }
@@ -478,7 +678,7 @@ fn playtest_road(args: &[String]) -> i32 {
         let mut guard = freight_fate::single_instance::SingleInstanceGuard::new();
         if !guard.acquire() {
             eprintln!(
-                "Freight Fate is already running. Close it first -- a second window would \
+                "Freight Fate is already running. Close it first. A second window would \
                  start rolling behind the one you are looking at."
             );
             return 1;
@@ -689,6 +889,7 @@ fn road_options(args: &[String]) -> road::RoadOptions {
         hour: flag_f64(args, "--hour"),
         log: flag_value(args, "--log"),
         sandbox: !has(args, "--no-sandbox"),
+        unit: None,
     };
     if has(args, "--no-cruise") {
         opts.cruise = 0.0;

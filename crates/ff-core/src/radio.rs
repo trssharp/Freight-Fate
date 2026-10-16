@@ -14,8 +14,10 @@
 //! favourites arrive as a plain list of ids, and the Playlists directory is
 //! a parameter -- the game crate wires all three.
 
+pub mod community;
 pub mod playlists;
 pub mod state;
+mod synth_dial;
 #[cfg(test)]
 mod tests;
 
@@ -46,6 +48,24 @@ pub const RADIO_CATALOG_RESOURCE: &str = "radio_catalog.json";
 /// row at a time, so past this a search is a narrower search, not a longer
 /// list; the app says how many more there were.
 pub const RADIO_SEARCH_LIMIT: usize = 40;
+/// How many search hits one page of the Radio app's results list shows.
+/// Further hits sit behind next and previous page rows (and PageUp and
+/// PageDown), so no match is ever unreachable.
+pub const RADIO_SEARCH_PAGE_SIZE: usize = 25;
+
+/// Zero-based hit positions `(start, end)` shown on `page` of `total` hits,
+/// `end` exclusive. The page is clamped to the last real page.
+pub fn search_page_bounds(total: usize, page: usize, page_size: usize) -> (usize, usize) {
+    let size = page_size.max(1);
+    let last_page = total.saturating_sub(1) / size;
+    let start = page.min(last_page) * size;
+    (start, (start + size).min(total))
+}
+
+/// How many pages `total` hits fill (at least one, even when empty).
+pub fn search_page_count(total: usize, page_size: usize) -> usize {
+    total.saturating_sub(1) / page_size.max(1) + 1
+}
 pub const RADIO_IMPORTED_RESOURCE: &str = "radio_imported.json";
 pub const EARTH_RADIUS_MI: f64 = 3958.8;
 
@@ -150,7 +170,29 @@ impl RadioStation {
         if self.name.is_empty() || self.name.to_uppercase() == self.call_sign.to_uppercase() {
             return self.call_sign.clone();
         }
+        // A name that already says the call sign ("KXLU 88.9", "Classical
+        // KING FM 98.1", "AFN Tokyo") is the station's own branding: leading
+        // with the letters again made every seek say them twice.
+        if self.name_says_call_sign() {
+            return self.name.clone();
+        }
         format!("{}, {}", self.call_sign, self.name)
+    }
+
+    /// Whether the name carries the call sign, suffix aside (KING for
+    /// KING-FM or "KING FM"), as a word of its own: SAT is not in "Satellite".
+    fn name_says_call_sign(&self) -> bool {
+        let base = self
+            .call_sign
+            .split(|c: char| !c.is_alphanumeric())
+            .next()
+            .unwrap_or_default()
+            .to_uppercase();
+        !base.is_empty()
+            && self
+                .name
+                .split(|c: char| !c.is_alphanumeric())
+                .any(|word| word.to_uppercase() == base)
     }
 
     pub fn satellite(&self) -> bool {
@@ -165,6 +207,9 @@ pub struct RadioReception {
     pub signal: f64,
     pub reason: String,
     pub fallback: bool,
+    /// A saved station heard through its stream because the truck is outside
+    /// its clear signal: see [`RadioState::reception`].
+    pub streamed: bool,
 }
 
 impl RadioReception {
@@ -180,12 +225,16 @@ impl RadioReception {
             signal,
             reason: reason.to_string(),
             fallback: false,
+            streamed: false,
         }
     }
 
     pub fn signal_label(&self) -> &'static str {
         if self.fallback {
             return "fallback";
+        }
+        if self.streamed {
+            return "streaming";
         }
         if self.station.always_available {
             return "always available";
@@ -224,6 +273,16 @@ pub trait RadioPlaybackBackend {
         station: &RadioStation,
         volume: f64,
     ) -> Result<(), RadioPlaybackError>;
+    /// Start the station the radio just judged. A backend that scales the
+    /// program by signal reads it from `reception` rather than measuring the
+    /// station again, so it hears a streamed favorite the way the dial does.
+    fn play_reception(
+        &mut self,
+        reception: &RadioReception,
+        volume: f64,
+    ) -> Result<(), RadioPlaybackError> {
+        self.play_station(&reception.station, volume)
+    }
     fn stop_radio(&mut self);
 }
 
@@ -323,7 +382,7 @@ fn optional_float(row: &Value, key: &str) -> Option<f64> {
     }
 }
 
-fn station_from_dict(row: &Value) -> RadioStation {
+pub(crate) fn station_from_dict(row: &Value) -> RadioStation {
     RadioStation {
         id: py_str(row.get("id")),
         name: py_str(row.get("name")),
@@ -432,7 +491,11 @@ const LIVE365_CANONICAL_HOST: &str = "streaming.live365.com";
 /// different one. Live365 mounts fold further, onto the station id in the
 /// mount name: the directory carries the same station under several CDN
 /// edge hosts and bitrates, which put Radiostorm's At Work, Oldies and
-/// Comedy channels on the web band twice each. Never stored or spoken --
+/// Comedy channels on the web band twice each. A trailing `;` goes with the
+/// slash: `host/;` is the Shoutcast mount of the stream `host/` serves to a
+/// player, and repairing one directory listing to it while its twin kept
+/// the bare root put fifteen stations on the dial twice (sweep, 2026-10-03).
+/// Never stored or spoken --
 /// comparison only. Shared with tools/import_radio_catalog.py's build-time
 /// collision check, so both layers agree on what counts as "the same
 /// stream".
@@ -441,7 +504,7 @@ pub fn normalize_stream_url(url: &str) -> String {
     if let Some(m) = URL_SCHEME_RE.find(url) {
         url = &url[m.end()..];
     }
-    let url = url.trim_end_matches('/');
+    let url = url.trim_end_matches(['/', ';']);
     let (host, rest) = url.split_once('/').unwrap_or((url, ""));
     let host = host.to_lowercase();
     if LIVE365_HOST_RE.is_match(&host) {
@@ -548,12 +611,15 @@ pub fn load_imported_stations(
         .collect())
 }
 
-/// Curated plus imported (`DEFAULT_RADIO_CATALOG` in Python).
+/// Curated plus imported (`DEFAULT_RADIO_CATALOG` in Python), plus the
+/// accepted community stations this build ships.
 pub fn load_full_catalog(data_root: &Path) -> Result<Vec<RadioStation>, CatalogError> {
     let curated = load_radio_catalog(data_root)?;
     let imported = load_imported_stations(data_root, &curated)?;
     let mut stations = curated;
     stations.extend(imported);
+    let community = community::load_shipped_community_stations(data_root, &stations);
+    stations.extend(community);
     if !ids_unique(&stations) {
         return Err(CatalogError::ImportedCollision);
     }
@@ -562,7 +628,7 @@ pub fn load_full_catalog(data_root: &Path) -> Result<Vec<RadioStation>, CatalogE
 
 /// Where the shipped data tree lives: the same root every other data
 /// loader uses (`FREIGHT_FATE_DATA_ROOT` override, `<exe dir>/freight_fate/data`
-/// in a frozen build, the repo's `src/freight_fate/data` from source).
+/// in a frozen build, the repo's `data/` from source).
 /// `FREIGHT_FATE_DATA_DIR` is the *saves* directory and must not be read
 /// here: tests that point it at a temp dir broke every radio test.
 pub fn default_data_root() -> PathBuf {
@@ -758,7 +824,11 @@ pub const STATIC_SIGNAL_THRESHOLD: f64 = 0.12; // static smear lives in the oute
 /// the deep fringe, and go silent past the range edge.
 pub fn signal_volume_factor(reception: &RadioReception) -> f64 {
     let station = &reception.station;
-    if reception.fallback || station.always_available || station.range_miles <= 0.0 {
+    if reception.fallback
+        || reception.streamed
+        || station.always_available
+        || station.range_miles <= 0.0
+    {
         return 1.0;
     }
     let signal = reception.signal;

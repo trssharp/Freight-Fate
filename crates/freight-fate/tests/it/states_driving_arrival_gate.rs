@@ -292,7 +292,11 @@ fn test_toll_route_delivery_settlement_records_expense() {
     driving.trip.update(0.0);
     assert_eq!(driving.trip.toll_expense(), 30.0);
 
-    app.ctx.profile.as_mut().expect("a career").money = 1000.0;
+    app.ctx
+        .profile
+        .as_mut()
+        .expect("a career")
+        .set_money(1000.0);
     let hours = settlement_hours(&driving);
     let gross = job.payout_default(hours, 0.0);
     let status = app
@@ -330,7 +334,7 @@ fn test_toll_route_delivery_settlement_records_expense() {
     );
 
     let arrival = ArrivalState::new(&mut app.ctx, &mut driving);
-    let money = app.ctx.profile.as_ref().expect("a career").money;
+    let money = app.ctx.profile.as_ref().expect("a career").money();
     assert!(
         (money - (1000.0 + expected.net_before_advance)).abs() < 0.5,
         "{money}"
@@ -348,16 +352,16 @@ fn test_toll_route_delivery_settlement_records_expense() {
     );
     let text = arrival.summary_parts.join(" ");
     for phrase in [
-        "Carrier-paid or reimbursed charges 215 dollars",
+        "Charges 215: ",
         "tolls 30",
         "accessorials carrier-authorized unloading service 185 dollars",
         "not deducted from driver pay",
-        "Fines carried over 0 dollars",
+        "Fines 0.",
     ] {
         assert!(text.contains(phrase), "{text}");
     }
     assert!(text.contains("Carrier gross"), "{text}");
-    assert!(text.contains("Net driver pay"), "{text}");
+    assert!(text.contains("Net "), "{text}");
 
     assert_eq!(arrival.title(), "Delivery complete");
     let mut arrival = arrival;
@@ -401,4 +405,69 @@ fn test_toll_route_delivery_settlement_records_expense() {
         .map(|item| item.text(&arrival, &app.ctx))
         .collect();
     assert_eq!(rebuilt, summary_lines);
+}
+
+// -- the manual-spec differential ---------------------------------------------------------
+
+/// A New York to Philadelphia delivery held by a manual-trained driver,
+/// parked at the receiver in manual.
+fn manual_run(drove_automatic: bool) -> String {
+    let mut app = TestApp::new();
+    let mut profile = Profile::named_in("Manual Test", "New York");
+    profile
+        .career
+        .purchased_endorsements
+        .push("manual_transmission".to_string());
+    app.ctx.profile = Some(profile);
+    let job = Job::new(
+        &CARGO_CATALOG["electronics"],
+        18.0,
+        "New York",
+        "JFK Air Cargo",
+        "Philadelphia",
+        78.0,
+        2500.0,
+        12.0,
+    );
+    let route = get_world()
+        .route_from_cities(&["New York", "Philadelphia"])
+        .expect("New York to Philadelphia is a route");
+    let mut driving = DrivingState::new(
+        &mut app.ctx,
+        job,
+        route,
+        Some(5),
+        DRIVE_PHASE_DELIVERY,
+        None,
+    );
+    driving.trip.truck.transmission.automatic = false;
+    driving.drove_automatic = drove_automatic;
+    let arrival = ArrivalState::new(&mut app.ctx, &mut driving);
+    arrival.summary_parts.join(" ")
+}
+
+#[test]
+fn test_the_manual_differential_pays_only_a_run_driven_in_manual() {
+    assert!(manual_run(false).contains("Manual-spec differential"));
+    // Switched to manual for the last stretch: the gate sees manual, the
+    // run was automatic.
+    assert!(!manual_run(true).contains("Manual-spec differential"));
+}
+
+#[test]
+fn test_moving_in_automatic_marks_the_run_and_a_save_keeps_it() {
+    let mut harness = a_drive("Automatic Run");
+    harness.with_drive(|drive, ctx| {
+        ctx.settings.automatic_transmission = true;
+        drive.trip.truck.velocity_mps = 20.0;
+    });
+    frame(&mut harness);
+    let resumed = harness.with_drive(|drive, ctx| {
+        assert!(drive.drove_automatic);
+        let snapshot = drive.snapshot(ctx);
+        DrivingState::from_snapshot(ctx, &snapshot)
+            .expect("the snapshot resumes")
+            .drove_automatic
+    });
+    assert!(resumed);
 }

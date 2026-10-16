@@ -44,8 +44,22 @@ pub struct Scenario {
     pub hour: Option<f64>,
     pub fuel_pct: Option<f64>,
     pub damage_pct: Option<f64>,
+    /// Component wear on the active truck, 0 to 100: what a roadside
+    /// inspection reads.
+    pub tire_wear_pct: Option<f64>,
+    pub brake_wear_pct: Option<f64>,
+    /// The driving record's lifetime citation count and the career's
+    /// out-of-service events: together with damage they set the safety
+    /// record band that decides who gets pulled into the inspection lane.
+    pub citations: Option<i64>,
+    pub out_of_service_events: Option<i64>,
     /// A full sleep taken: hours of service and fatigue reset.
     pub rested: bool,
+    /// Sandbox HOS counters for a near-limit road start. These are staged
+    /// before `start_at`, which carries the clock into the new drive.
+    pub hos_driving_min: Option<f64>,
+    pub hos_duty_min: Option<f64>,
+    pub hos_since_break_min: Option<f64>,
     /// Drop any load in progress so the career is parked at the terminal.
     pub clear_load: bool,
     pub market_seed: Option<i64>,
@@ -132,10 +146,24 @@ impl Scenario {
                 return Err(format!("level must be from 1 to {MAX_CAREER_LEVEL}"));
             }
         }
-        for key in ["fuel_pct", "damage_pct"] {
+        for key in ["fuel_pct", "damage_pct", "tire_wear_pct", "brake_wear_pct"] {
             if let Some(pct) = number(args, key)? {
                 if !(0.0..=100.0).contains(&pct) {
                     return Err(format!("{key} must be from 0 to 100"));
+                }
+            }
+        }
+        for key in ["citations", "out_of_service_events"] {
+            if let Some(count) = integer(args, key)? {
+                if count < 0 {
+                    return Err(format!("{key} must be zero or more"));
+                }
+            }
+        }
+        for key in ["hos_driving_min", "hos_duty_min", "hos_since_break_min"] {
+            if let Some(minutes) = number(args, key)? {
+                if minutes < 0.0 {
+                    return Err(format!("{key} must be zero or more"));
                 }
             }
         }
@@ -166,7 +194,14 @@ impl Scenario {
             hour,
             fuel_pct: number(args, "fuel_pct")?,
             damage_pct: number(args, "damage_pct")?,
+            tire_wear_pct: number(args, "tire_wear_pct")?,
+            brake_wear_pct: number(args, "brake_wear_pct")?,
+            citations: integer(args, "citations")?,
+            out_of_service_events: integer(args, "out_of_service_events")?,
             rested: args.get("rested").and_then(Value::as_bool).unwrap_or(false),
+            hos_driving_min: number(args, "hos_driving_min")?,
+            hos_duty_min: number(args, "hos_duty_min")?,
+            hos_since_break_min: number(args, "hos_since_break_min")?,
             clear_load: args
                 .get("clear_load")
                 .and_then(Value::as_bool)
@@ -244,7 +279,7 @@ pub fn apply(ctx: &mut GameContext, scenario: &Scenario) -> Result<Vec<String>, 
             notes.push(format!("{} deliveries behind them.", deliveries.max(0)));
         }
         if let Some(money) = scenario.money {
-            p.money = money;
+            p.set_money(money);
             notes.push(format!("{} dollars in hand.", fmt_grouped(money, 0)));
         }
         if let Some(reputation) = scenario.reputation {
@@ -267,7 +302,11 @@ pub fn apply(ctx: &mut GameContext, scenario: &Scenario) -> Result<Vec<String>, 
             p.market.seed = seed;
             notes.push(format!("Market seed {seed}."));
         }
-        if scenario.fuel_pct.is_some() || scenario.damage_pct.is_some() {
+        if scenario.fuel_pct.is_some()
+            || scenario.damage_pct.is_some()
+            || scenario.tire_wear_pct.is_some()
+            || scenario.brake_wear_pct.is_some()
+        {
             let mut truck = TruckState::new(p.truck_specs());
             p.load_truck_condition(&mut truck);
             if let Some(pct) = scenario.fuel_pct {
@@ -278,12 +317,61 @@ pub fn apply(ctx: &mut GameContext, scenario: &Scenario) -> Result<Vec<String>, 
                 truck.damage_pct = pct;
                 notes.push(format!("Truck damage {} percent.", pct.round()));
             }
+            if let Some(pct) = scenario.tire_wear_pct {
+                truck.tire_wear_pct = pct;
+                notes.push(format!("Tire wear {} percent.", pct.round()));
+            }
+            if let Some(pct) = scenario.brake_wear_pct {
+                truck.brake_wear_pct = pct;
+                notes.push(format!("Brake wear {} percent.", pct.round()));
+            }
             p.store_truck_condition(&truck);
+            // A slip-seating company driver is handed a yard spare per load,
+            // each with its own record, so the next drive may read a different
+            // key than the one just written. The sandbox asked for THIS truck
+            // state: give every spare the same one.
+            let fields: Vec<(&str, f64)> = [
+                ("fuel_gal", Some(truck.fuel_gal)),
+                ("damage_pct", scenario.damage_pct),
+                ("tire_wear_pct", scenario.tire_wear_pct),
+                ("brake_wear_pct", scenario.brake_wear_pct),
+            ]
+            .into_iter()
+            .filter_map(|(key, value)| value.map(|v| (key, v)))
+            .collect();
+            for record in p.truck_conditions.values_mut() {
+                for (key, value) in &fields {
+                    record.insert((*key).to_string(), Value::from(*value));
+                }
+            }
+        }
+        // Dated now, so the safety record's window counts them.
+        if let Some(count) = scenario.citations {
+            p.driving_record.citations = count;
+            p.driving_record.citation_times = vec![p.game_hours; count.max(0) as usize];
+            notes.push(format!("Citations on the record: {count}."));
+        }
+        if let Some(count) = scenario.out_of_service_events {
+            p.out_of_service_events = count;
+            p.driving_record.out_of_service_times = vec![p.game_hours; count.max(0) as usize];
+            notes.push(format!("Out-of-service events: {count}."));
         }
         if scenario.rested {
             p.hos.sleep();
             p.fatigue = 0.0;
             notes.push("Fully rested; hours of service reset.".to_string());
+        }
+        if let Some(minutes) = scenario.hos_driving_min {
+            p.hos.driving_min = minutes;
+            notes.push(format!("HOS driving counter: {minutes:.0} minutes."));
+        }
+        if let Some(minutes) = scenario.hos_duty_min {
+            p.hos.duty_min = minutes;
+            notes.push(format!("HOS duty counter: {minutes:.0} minutes."));
+        }
+        if let Some(minutes) = scenario.hos_since_break_min {
+            p.hos.since_break_min = minutes;
+            notes.push(format!("HOS since-break counter: {minutes:.0} minutes."));
         }
         // Whatever the board showed before, it shows the new situation now.
         p.dispatch_board_cache = None;
@@ -320,6 +408,7 @@ mod tests {
         assert!(bad(r#"{"hour": 24}"#).contains("hour"));
         assert!(bad(r#"{"level": 0}"#).contains("level"));
         assert!(bad(r#"{"fuel_pct": 120}"#).contains("fuel_pct"));
+        assert!(bad(r#"{"hos_since_break_min": -1}"#).contains("hos_since_break_min"));
         assert!(bad(r#"{"business": "owner"}"#).contains("business"));
         assert!(bad(r#"{"endorsements": ["rocket"]}"#).contains("unknown endorsement"));
         assert!(bad(r#"{"settings": 3}"#).contains("settings"));
