@@ -99,7 +99,8 @@ impl DrivingState {
         if message.terse.is_some() && message.render(self.terse_speech(ctx)).is_empty() {
             return;
         }
-        ctx.message_log.add(&message.normal, MessageCategory::Event);
+        let line = ctx.tr(&message.normal);
+        ctx.message_log.add(&line, MessageCategory::Event);
     }
 
     /// `_speak_ambient_event(message, sound=None, *, log=True, category=None,

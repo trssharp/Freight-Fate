@@ -217,6 +217,20 @@ pub fn lane_phrase(index: i64, count: i64) -> String {
     format!("the {} lane", lane_label(index, count))
 }
 
+/// "In the right lane", written out whole for each lane so a translation
+/// matches the phrase itself rather than a short "In {...}" pattern that
+/// other lines share.
+pub fn in_lane_phrase(index: i64, count: i64) -> &'static str {
+    if count <= 1 {
+        return "In the lane";
+    }
+    match lane_label(index, count) {
+        "right" => "In the right lane",
+        "left" => "In the left lane",
+        _ => "In the middle lane",
+    }
+}
+
 /// Small deterministic lane simulation for audio-only steering cues.
 #[derive(Debug, Clone)]
 pub struct LaneKeeping {
@@ -559,7 +573,7 @@ impl LaneKeeping {
     }
 
     pub fn describe(&self) -> String {
-        let lane_part = format!("In {}", lane_phrase(self.lane, self.lane_count));
+        let lane_part = in_lane_phrase(self.lane, self.lane_count);
         let side = if self.offset < 0.0 { "left" } else { "right" };
         let away = self.offset.abs();
         if away < CENTERED_MAX {
@@ -1202,6 +1216,12 @@ mod tests {
         assert_eq!(lane_phrase(0, 1), "the lane");
         // Two lanes and up still name the side, which is the whole point there.
         assert_eq!(lane_phrase(0, 2), "the right lane");
+        for (index, count) in [(0, 1), (0, 2), (1, 2), (1, 3)] {
+            assert_eq!(
+                in_lane_phrase(index, count),
+                format!("In {}", lane_phrase(index, count))
+            );
+        }
     }
 
     #[test]

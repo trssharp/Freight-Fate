@@ -254,8 +254,9 @@ cleanup](https://doc.rust-lang.org/book/ch21-03-graceful-shutdown-and-cleanup.ht
   services. Codex's restricted shell can block initialization even when the
   same check passes with normal Windows access. Use the authorized elevated
   tool path for that verification; keep the game's save sandbox enabled.
-- Rust CI (`.github/workflows/rust.yml`) is **Windows only**, deliberately:
-  SDL2 is vendored for `windows-x86_64` alone. macOS and Linux build from
+- Rust CI (`.github/workflows/rust.yml`) tests the game on **Windows only**,
+  deliberately (ff-core, which is headless, runs its tests on Linux in
+  parallel): SDL2 is vendored for `windows-x86_64` alone. macOS and Linux build from
   source (BASS is fetched for both, Prism is vendored, and SDL2 is compiled
   in statically via the crate's `bundled` + `static-link` features -- NEVER
   Homebrew's sdl2, which is sdl2-compat and loads SDL3 at runtime, dying on
@@ -284,6 +285,19 @@ cleanup](https://doc.rust-lang.org/book/ch21-03-graceful-shutdown-and-cleanup.ht
   worker and reads as "node down".
 - Lint: `uv run ruff check tests tools`
 - Byte-compile check: `uv run python -m compileall tests tools`
+
+### Translations
+
+- Spoken text is translated at the speech boundary (`ff_core::l10n`, wired in
+  `GameContext::say`/`say_event` through `app/language.rs`), so code stays in
+  English. After changing any player-facing string, run
+  `uv run python tools/l10n/extract.py`; `tests/test_l10n.py` fails while
+  `lang/` is stale. `uv run python tools/l10n/check.py --stats` checks the
+  language files. A line assembled from pieces the extractor cannot see goes
+  in `lang/extra.pot` as a template.
+- Headless runs stay English. `FREIGHT_FATE_LANG=es` forces a language for a
+  run (harness and agent server included), and `FREIGHT_FATE_L10N_MISSES=path`
+  writes every line no translation matched.
 
 ### Both
 
@@ -328,7 +342,7 @@ cleanup](https://doc.rust-lang.org/book/ch21-03-graceful-shutdown-and-cleanup.ht
   its own `saves-agent-staging` directory, no careers and no identity copied
   in, its own driver on the staging backend (through the orinks-net `dev`
   preview; the owner enters its spoken code there the first time), cloud
-  backup on, presence and Mastodon off. No agent session ever reaches
+  backup on, presence off. No agent session ever reaches
   production: `--online`, which carried the real driver identity, was removed
   on 2026-09-25.
 

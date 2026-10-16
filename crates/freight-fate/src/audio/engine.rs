@@ -48,6 +48,10 @@ pub struct AudioEngine {
     // the requests the real backend must honour the moment it arrives.
     replay_music: Option<MusicReplay>,
     replay_engine_voice: Option<bool>,
+    // Loops still sounding when the probe lands, channel -> (key, gain). A
+    // screen that sets its bed once on entry (the main menu's ambience, the
+    // terminal's) never asks again, so the swap has to.
+    replay_loops: HashMap<u32, (String, f64)>,
 }
 
 /// The music request to re-issue when the deferred backend arrives.
@@ -101,6 +105,7 @@ impl AudioEngine {
             probe_headless: false,
             replay_music: None,
             replay_engine_voice: None,
+            replay_loops: HashMap::new(),
         }
     }
 
@@ -114,8 +119,8 @@ impl AudioEngine {
     /// Costs during the window: transient one-shots are dropped (menu
     /// earcons, at worst), and the "no sound on this computer" notice
     /// arrives a beat after the menu instead of inside its greeting.
-    /// Music, volumes and the engine-voice setting are remembered and
-    /// re-issued on arrival.
+    /// Music, looping beds, volumes and the engine-voice setting are
+    /// remembered and re-issued on arrival.
     pub fn new_deferred() -> Self {
         let pref = std::env::var("FREIGHT_FATE_AUDIO_BACKEND").unwrap_or_default();
         let trimmed = pref.trim().to_ascii_lowercase();
@@ -200,6 +205,11 @@ impl AudioEngine {
                 let _ = self.backend.play_radio_stream(&url, fade_ms);
             }
             None => {}
+        }
+        let mut loops: Vec<_> = std::mem::take(&mut self.replay_loops).into_iter().collect();
+        loops.sort_by_key(|(channel, _)| *channel);
+        for (channel, (key, volume)) in loops {
+            self.start_loop_with(channel, &key, volume, 800);
         }
     }
 
@@ -555,11 +565,17 @@ impl Audio for AudioEngine {
     }
 
     fn start_loop_with(&mut self, channel: u32, key: &str, volume: f64, fade_ms: u32) {
+        if self.probe.is_some() {
+            self.replay_loops.insert(channel, (key.to_string(), volume));
+        }
         let key = self.route_voice_key(key);
         self.backend.start_loop(channel, &key, volume, fade_ms);
     }
 
     fn set_loop_volume(&mut self, channel: u32, volume: f64) {
+        if let Some((_, gain)) = self.replay_loops.get_mut(&channel) {
+            *gain = volume;
+        }
         self.backend.set_loop_volume(channel, volume);
     }
 
@@ -572,6 +588,7 @@ impl Audio for AudioEngine {
     }
 
     fn stop_loop_with(&mut self, channel: u32, fade_ms: u32) {
+        self.replay_loops.remove(&channel);
         self.backend.stop_loop(channel, fade_ms);
     }
 
@@ -871,140 +888,4 @@ impl Audio for AudioEngine {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::any::Any;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    /// Records what the engine tells it, and nothing else.
-    struct RecordingBackend {
-        buses: Buses,
-        log: Rc<RefCell<Vec<String>>>,
-    }
-
-    impl AudioBackend for RecordingBackend {
-        fn name(&self) -> &'static str {
-            "recording"
-        }
-        fn enabled(&self) -> bool {
-            true
-        }
-        fn buses(&self) -> &Buses {
-            &self.buses
-        }
-        fn buses_mut(&mut self) -> &mut Buses {
-            &mut self.buses
-        }
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
-        fn as_any_mut(&mut self) -> &mut dyn Any {
-            self
-        }
-        fn play_music(&mut self, track: &str, fade_ms: u32) {
-            self.log
-                .borrow_mut()
-                .push(format!("music {track} {fade_ms}"));
-        }
-        fn set_engine_voice_classic(&mut self, classic: bool) {
-            self.log
-                .borrow_mut()
-                .push(format!("voice classic={classic}"));
-        }
-        fn set_volumes(&mut self, volumes: &VolumeUpdate) {
-            self.buses.apply(volumes);
-            self.log.borrow_mut().push("volumes".to_string());
-        }
-    }
-
-    fn engine_with_pending_probe() -> (
-        AudioEngine,
-        std::sync::mpsc::Sender<Result<bool, bass_sys::safe::BassError>>,
-    ) {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let mut engine = AudioEngine::with_backend(Box::new(NullBackend::new()));
-        engine.probe = Some(rx);
-        engine.probe_headless = false;
-        (engine, tx)
-    }
-
-    /// The requests boot makes while the device is still opening -- the menu
-    /// theme, the volume settings, the engine voice -- reach the real backend
-    /// the moment it arrives, and the null stand-in's "that asset does not
-    /// exist" answers do not outlive it.
-    #[test]
-    fn late_backend_hears_what_boot_asked_for() {
-        let (mut engine, _tx) = engine_with_pending_probe();
-        engine.play_music_with("menu_theme", 1500);
-        engine.set_volumes(&VolumeUpdate::default().master(0.5));
-        engine.set_engine_voice(true);
-        // Cached against the null backend: false. Must not survive the swap.
-        assert!(!engine.has_asset("ui/no_such_cue_for_this_test"));
-        assert!(engine
-            .asset_known
-            .contains_key("ui/no_such_cue_for_this_test"));
-
-        let log = Rc::new(RefCell::new(Vec::new()));
-        engine.probe = None;
-        engine.adopt_backend(
-            Box::new(RecordingBackend {
-                buses: Buses::new(),
-                log: Rc::clone(&log),
-            }),
-            false,
-        );
-
-        let seen = log.borrow().join("; ");
-        assert!(seen.contains("volumes"), "volumes not replayed: {seen}");
-        assert!(
-            seen.contains("voice classic=true"),
-            "voice not replayed: {seen}"
-        );
-        assert!(
-            seen.contains("music menu_theme 1500"),
-            "music not replayed: {seen}"
-        );
-        assert!(
-            engine.asset_known.is_empty(),
-            "stand-in asset answers survived the swap"
-        );
-        assert!(!engine.take_silence_notice());
-    }
-
-    /// A probe that comes back empty-handed leaves the game on the null
-    /// backend and arms the notice, so the main menu can say out loud that
-    /// this run has no sound.
-    #[test]
-    fn failed_probe_runs_silent_and_says_so() {
-        let (mut engine, tx) = engine_with_pending_probe();
-        tx.send(Err(bass_sys::safe::BassError::NOT_LOADED)).unwrap();
-        engine.update(0.0);
-        assert!(engine.probe.is_none());
-        assert_eq!(engine.backend_name(), "none");
-        assert!(engine.take_silence_notice());
-        assert!(!engine.take_silence_notice(), "the notice must speak once");
-    }
-
-    /// Music stopped before the backend arrives must not come back from the
-    /// dead when it does.
-    #[test]
-    fn stopped_music_is_not_replayed() {
-        let (mut engine, _tx) = engine_with_pending_probe();
-        engine.play_music_with("menu_theme", 1500);
-        engine.stop_music_with(400);
-        let log = Rc::new(RefCell::new(Vec::new()));
-        engine.probe = None;
-        engine.adopt_backend(
-            Box::new(RecordingBackend {
-                buses: Buses::new(),
-                log: Rc::clone(&log),
-            }),
-            false,
-        );
-        assert!(
-            !log.borrow().join("; ").contains("music"),
-            "stopped music was resurrected"
-        );
-    }
-}
+mod tests;

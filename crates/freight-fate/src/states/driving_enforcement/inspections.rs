@@ -235,7 +235,7 @@ impl DrivingState {
             ""
         };
         let summary = format!(
-            "Routine roadside inspection, Level 3: licence, medical card, logbook and the \
+            "Routine roadside inspection, Level 3: license, medical card, logbook and the \
              load's paperwork.{blitz}"
         );
         let lights = format!(

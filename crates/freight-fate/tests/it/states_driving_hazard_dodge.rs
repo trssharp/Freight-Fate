@@ -409,9 +409,7 @@ fn the_resolution_line_never_claims_a_lane_change_the_road_had_no_room_for() {
     harness.with_drive(|d, ctx| d.update_hazard(ctx, 1.0 / 60.0));
     let heard = harness.app.event_lines();
     assert!(
-        heard
-            .iter()
-            .any(|line| line == "You slow nearly to a stop for the debris. Well done."),
+        heard.iter().any(|line| line == "Clear of the debris."),
         "{heard:#?}"
     );
     assert!(!heard.iter().any(|line| line.contains("ease around")));
@@ -427,9 +425,7 @@ fn the_resolution_line_still_offers_easing_around_where_there_was_a_lane() {
     harness.with_drive(|d, ctx| d.update_hazard(ctx, 1.0 / 60.0));
     let heard = harness.app.event_lines();
     assert!(
-        heard
-            .iter()
-            .any(|line| line == "You slow nearly to a stop and ease around the debris. Well done."),
+        heard.iter().any(|line| line == "Clear of the debris."),
         "{heard:#?}"
     );
 }
@@ -518,8 +514,7 @@ fn with_nowhere_to_go_the_assist_acts_sooner_and_holds_the_truck_nearer() {
             run.bottom_mph
         );
         assert!(
-            run.resolution
-                .contains("You slow to match the slow car. Well done."),
+            run.resolution.contains("Clear of the slow car."),
             "{:?}",
             run.resolution
         );

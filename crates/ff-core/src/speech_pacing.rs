@@ -527,7 +527,7 @@ impl EventSpeechPacer {
     }
 
     fn duration_s(text: &str) -> f64 {
-        Self::BASE_UTTERANCE_S + text.chars().count() as f64 / Self::CHARS_PER_S
+        Self::BASE_UTTERANCE_S + spoken_length(text) / Self::CHARS_PER_S
     }
 
     // -- what the player has already heard ---------------------------------
@@ -687,6 +687,25 @@ impl EventSpeechPacer {
                 done_at: self.clear_at,
                 valid,
             });
+        }
+    }
+
+    /// `track` for a line delivered queued behind whatever is already in the
+    /// voice. A confirmation neither takes the slot nor empties it: it plays
+    /// after the protected line rather than replacing it, so a turn call or
+    /// a warning still speaking ahead of it is rescued if an interrupt cuts
+    /// it, as it was before the category reached this path. Emptying it
+    /// lost "Exit 50B in half a mile, keep right." to the automatic braking
+    /// that cut it, because a cruise confirmation had queued behind it.
+    fn track_queued(
+        &mut self,
+        text: &str,
+        priority: EventPriority,
+        category: Option<SpeechCategory>,
+        valid: Option<Valid>,
+    ) {
+        if category != Some(SpeechCategory::Confirmation) {
+            self.track(text, priority, category, valid);
         }
     }
 
@@ -952,12 +971,15 @@ impl EventSpeechPacer {
     /// announcement gives a backlog of chatter under a second before it goes
     /// in front of it.
     ///
-    /// (As in the Python, the slot is re-armed here WITHOUT a category: a
-    /// confirmation delivered queued still takes it.)
+    /// A confirmation delivered queued does not take the slot
+    /// (`track_queued`). Without that, lane keeping's "The road narrows to
+    /// two lanes." was handed back after the automatic braking that cut it
+    /// and heard twice, eight seconds apart (QA drive, 2026-10-13).
     pub fn should_flush(
         &mut self,
         text: &str,
         priority: EventPriority,
+        category: Option<SpeechCategory>,
         valid: Option<Valid>,
     ) -> bool {
         let now = self.now();
@@ -971,7 +993,7 @@ impl EventSpeechPacer {
             self.interrupt_deliveries();
             self.restart_projection(now, text, priority);
             self.protected = None;
-            self.track(text, priority, None, valid);
+            self.track_queued(text, priority, category, valid);
             return true;
         }
         let start = now.max(self.clear_at);
@@ -988,7 +1010,7 @@ impl EventSpeechPacer {
             // under "Entering ... zone", and every burst logged twice as a
             // requeue (live drive into Abilene, 2026-09-24). It queues.
             self.extend_projection(now, text, priority);
-            self.track(text, priority, None, valid);
+            self.track_queued(text, priority, category, valid);
             return false;
         }
         if start - now > budget && self.only_a_live_line_ahead(now, text) {
@@ -1000,7 +1022,7 @@ impl EventSpeechPacer {
             // dropped its tail ("Light red." cutting the take line). Waiting
             // it out is shorter than the replay, and it is heard once.
             self.extend_projection(now, text, priority);
-            self.track(text, priority, None, valid);
+            self.track_queued(text, priority, category, valid);
             return false;
         }
         if start - now > budget {
@@ -1057,11 +1079,11 @@ impl EventSpeechPacer {
             }
             self.interrupt_deliveries();
             self.restart_projection(now, text, priority);
-            self.track(text, priority, None, valid);
+            self.track_queued(text, priority, category, valid);
             return true;
         }
         self.extend_projection(now, text, priority);
-        self.track(text, priority, None, valid);
+        self.track_queued(text, priority, category, valid);
         false
     }
 
@@ -1094,6 +1116,19 @@ impl EventSpeechPacer {
         self.purge_next = true;
         self.protected = None;
     }
+}
+
+/// A line's length in English characters' worth of speaking time. A Chinese
+/// or Japanese character carries a syllable or more, about as long to say
+/// as three English letters, so a translated line is not mistaken for a
+/// short one by the backlog projection.
+fn spoken_length(text: &str) -> f64 {
+    text.chars()
+        .map(|c| match c as u32 {
+            0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xAC00..=0xD7AF => 3.0,
+            _ => 1.0,
+        })
+        .sum()
 }
 
 #[cfg(test)]

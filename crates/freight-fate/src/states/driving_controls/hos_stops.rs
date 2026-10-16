@@ -1,7 +1,6 @@
 //! Route advice and advance warnings for the next required rest.
 
 use crate::app::{GameContext, SayEvent};
-use crate::bindings::Action;
 use crate::states::driving::DrivingState;
 use crate::states::driving_core::{hos_mut_of, hos_of};
 use ff_core::models::jobs::hos_stops::{plan_hos_stop, HosStopAdvice, StopPlanningRoute};
@@ -69,18 +68,8 @@ impl DrivingState {
             let key = format!("{prefix}{:.0}", self.absolute_game_hour(ctx, None) * 60.0);
             ctx.reset_event_condition(&key);
             self.hos_plan_hint_pending = Some(key.clone());
-            // A pad has no hours keys; its clock button carries the full
-            // report.
-            let hours_key = if ctx.controller.device() == ff_core::input_hints::CONTROLLER {
-                Action::Clock
-            } else {
-                Action::HosDrive
-            };
             ctx.say_event_with(
-                format!(
-                    "{message} Press {} for full hours and route details.",
-                    ctx.control_name(hours_key)
-                ),
+                message,
                 SayEvent::queued()
                     .key(&key)
                     .priority(EventPriority::Route)

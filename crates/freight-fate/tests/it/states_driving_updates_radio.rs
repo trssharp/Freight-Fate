@@ -1038,3 +1038,35 @@ fn test_a_station_fading_out_hands_the_dial_to_the_strongest_local_signal() {
     radio_frame(&mut d, &mut app);
     assert!(app.event_lines().is_empty(), "{:?}", app.event_lines());
 }
+
+#[test]
+fn test_a_favorite_plays_on_past_its_range() {
+    // Orinks, 2026-10-12: a station the driver saved stays with them from
+    // anywhere, with no fade, no static and no handover.
+    let mut app = TestApp::new();
+    app.ctx.settings.radio_streamer_safe = false;
+    let mut d = a_denver_drive(&mut app, 916);
+    let tape = MusicAudio::install(&mut app);
+    d.trip.truck.start_engine();
+    d.update_audio(&mut app.ctx, 0.0);
+    let mut catalog = d.radio.catalog.clone();
+    catalog.retain(|station| dial_group(station) != TERRESTRIAL_GROUP);
+    catalog.push(a_ranged_stream("kmhf-denver"));
+    catalog.push(a_regional_stream("ktst-denver"));
+    d.radio.set_catalog(catalog);
+    tune(&mut d, &mut app, "kmhf-denver");
+    radio_frame(&mut d, &mut app);
+    d.radio.toggle_favorite();
+    app.clear_speech();
+
+    d.trip.position_mi = 120.0;
+    radio_frame(&mut d, &mut app);
+
+    assert_eq!(d.radio.tuned_station().id, "kmhf-denver");
+    assert_eq!(
+        tape.last_stream().as_deref(),
+        Some("https://radio.test/kmhf-denver")
+    );
+    assert_eq!(d.radio_signal_factor, 1.0);
+    assert!(app.event_lines().is_empty(), "{:?}", app.event_lines());
+}

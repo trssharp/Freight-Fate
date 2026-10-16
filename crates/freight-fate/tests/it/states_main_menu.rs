@@ -78,10 +78,7 @@ fn the_main_menu_welcomes_and_walks_a_new_career_to_the_home_city() {
     assert!(is::<MainMenuState>(&app));
     let lines = app.visible_lines();
     assert_eq!(lines[0], "Freight Fate");
-    let welcome = format!(
-        "Welcome to Freight Fate, version {}.",
-        updater::spoken_version(version())
-    );
+    let welcome = format!("Freight Fate {}.", updater::spoken_version(version()));
     assert!(app.main_lines().iter().any(|line| line.contains(&welcome)));
 
     select::<MainMenuState>(&mut app, "New career");
@@ -108,6 +105,17 @@ fn the_main_menu_welcomes_and_walks_a_new_career_to_the_home_city() {
         .main_lines()
         .iter()
         .any(|line| line.starts_with("First-day briefing")));
+    // The briefing just said where the truck is parked: the terminal behind
+    // it gives the cash a company briefing leaves out, not the location again.
+    let lines = app.main_lines();
+    assert!(
+        lines.iter().any(|line| line.ends_with(" dollars.")),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains(", Chicago. ")),
+        "{lines:?}"
+    );
     assert_eq!(app.ctx.stack_len(), 2);
     assert!(is::<CityMenuState>(&app));
 }
@@ -477,7 +485,7 @@ fn continue_latest_career_welcomes_the_driver_back() {
     assert!(app
         .main_lines()
         .iter()
-        .any(|line| line.starts_with("Welcome back, Road Star. You are parked at")));
+        .any(|line| line == "Welcome back, Road Star."));
     assert!(is::<CityMenuState>(&app));
 }
 

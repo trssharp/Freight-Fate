@@ -109,7 +109,7 @@ fn escape_leaves_at_once_even_while_the_worker_is_stuck() {
     assert!(state.is_finished());
     assert_eq!(app.ctx.stack_len(), depth - 1, "no waiting on the worker");
     let said = app.main_lines().join(" ");
-    assert!(said.contains("Update cancelled."), "{said}");
+    assert!(said.contains("Update canceled."), "{said}");
     app.shutdown();
 }
 

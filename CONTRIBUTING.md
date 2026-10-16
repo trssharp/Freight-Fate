@@ -54,6 +54,15 @@ each release.
 - If you add or change menu items, driving prompts, warnings, settings, or
   status text, test the spoken result.
 
+## Translations
+
+Every spoken line is translated where it leaves for the speech channels, from
+the PO files in `lang/`; [lang/README.md](lang/README.md) is the translator's
+guide. After changing spoken text, run `uv run python tools/l10n/extract.py`
+so the template and every language file pick up the new line; the Python
+tests fail while they are stale. A translation correction can arrive as a pull
+request against a `lang/*.po` file or as a Translation correction issue.
+
 ## World and route data
 
 World data changes are welcome. Please keep them deterministic and offline:

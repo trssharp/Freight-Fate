@@ -31,7 +31,7 @@ pub enum DownloadError {
 impl std::fmt::Display for DownloadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DownloadError::Cancelled => f.write_str("update cancelled"),
+            DownloadError::Cancelled => f.write_str("update canceled"),
             DownloadError::Stalled(idle) => {
                 write!(f, "no data arrived for {} seconds", idle.as_secs())
             }
@@ -236,7 +236,7 @@ pub fn run_bounded(
         let stop = if cancelled.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
             Some(io::Error::new(
                 io::ErrorKind::Interrupted,
-                "update cancelled",
+                "update canceled",
             ))
         } else if Instant::now() >= deadline {
             Some(io::Error::new(
@@ -299,7 +299,7 @@ pub fn extract_with(
     if cancelled.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
-            "update cancelled",
+            "update canceled",
         ));
     }
     extracted_root(staging, &name, env)

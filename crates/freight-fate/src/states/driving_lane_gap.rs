@@ -42,6 +42,37 @@ use ff_core::speech_pacing::SpeechCategory;
 use crate::app::{GameContext, SayEvent};
 use crate::states::driving::DrivingState;
 use crate::states::driving_core::*;
+use crate::states::driving_updates::lane_count_words;
+
+/// How far under a vehicle pacing it in the right lane lane keeping eases
+/// the truck, so the vehicle pulls ahead and the truck drops in behind it.
+const PASS_RETURN_EASE_MPH: f64 = 10.0;
+
+/// How long the left lane stays excused after lane keeping's move back was
+/// called off or held by traffic.
+pub const KEEP_RIGHT_EXCUSE_S: f64 = 30.0;
+
+/// The time gap the move back keeps to a vehicle in the lane it moves into:
+/// to the one ahead at the truck's speed, and from the one behind at its own.
+const DROP_IN_HEADWAY_S: f64 = 3.0;
+
+/// The rig, cab to trailer tail. The truck's position is its front bumper.
+const RIG_LENGTH_MI: f64 = 72.0 / 5280.0;
+
+/// A traffic vehicle's real length, by kind. `TrafficVehicle::length_mi` is
+/// a quarter mile for every vehicle, a deliberately wide footprint the
+/// collision and clearance checks share; a move back that keeps a real
+/// headway reads the vehicle at its own size instead.
+fn real_length_mi(vehicle_class: &str) -> f64 {
+    let feet = match vehicle_class {
+        "car" => 15.0,
+        "state trooper" => 17.0,
+        "box truck" => 26.0,
+        "semi" => 72.0,
+        _ => 20.0,
+    };
+    feet / 5280.0
+}
 
 /// The margin and the forward sweep live with the trip now
 /// (`Trip::lane_blocker_at`), because the hazard call that names the open
@@ -159,7 +190,20 @@ impl DrivingState {
         }
         // Marked spoken either way. A cue held back by the spacing and let out
         // later would be describing a gap that has moved on since.
-        self.lane_gap_said_keys.insert(key);
+        self.lane_gap_said_keys.insert(key.clone());
+        let went_ahead = self
+            .trip
+            .traffic_manager
+            .vehicles
+            .iter()
+            .any(|v| v.key == key && v.position_mi > self.trip.position_mi);
+        if went_ahead {
+            // It passed the truck, not the other way round: nobody was
+            // overtaken, so there is nothing to be clear of. With passers
+            // coming up the lanes beside, this said "Left lane open" for
+            // every car that went by (owner drive, 2026-10-09).
+            return;
+        }
         if self.lane_gap_cue_s > 0.0 || self.passing.is_some() {
             // Spaced out, or lane keeping is passing and takes the lane back
             // itself: "In the right lane." is the line for that.
@@ -167,17 +211,8 @@ impl DrivingState {
         }
         self.lane_gap_cue_s = LANE_GAP_CUE_MIN_GAP_S;
         let name = lane_label(watch, self.lane.lane_count);
-        let vehicle = if self.lane_gap_blocker_class.is_empty() {
-            "vehicle".to_string()
-        } else {
-            self.lane_gap_blocker_class.clone()
-        };
         let capitalized = capitalize(name);
-        let message = if self.terse_speech(ctx) {
-            format!("{capitalized} lane open.")
-        } else {
-            format!("Clear of the {vehicle}. {capitalized} lane open.")
-        };
+        let message = format!("{capitalized} lane open.");
         ctx.play_event_cue(Some(SpeechCategory::Status), "ui/notify", 0.45, 0.0);
         // ROUTE priority: "the lane you were boxed out of is open" is the
         // transition a driver is actively waiting on to merge back, and at
@@ -259,7 +294,8 @@ impl DrivingState {
     /// ahead in that lane holds the truck where it is. Dropped without a word
     /// if the truck is no longer in the lane it passed in (the driver moved
     /// it, or the road took the lane away) or leaves the highway.
-    pub fn update_pass_return(&mut self, ctx: &GameContext) {
+    pub fn update_pass_return(&mut self, ctx: &mut GameContext) {
+        self.pass_return_ease_mph = None;
         let Some((home, passed_in)) = self.passing else {
             return;
         };
@@ -282,8 +318,14 @@ impl DrivingState {
         if self.hazard_deadline.is_some()
             || !self.lane_keeping_may_change_lanes()
             || Some(home) == self.closed_lane_here()
-            || !self.lane_gap_open(home)
         {
+            return;
+        }
+        if !self.pass_return_open(home) {
+            // Held by traffic, which is lane keeping's call and not the
+            // driver's: the left lane is excused while it lasts.
+            self.keep_right_excused_s = KEEP_RIGHT_EXCUSE_S;
+            self.ease_for_pacer(home);
             return;
         }
         self.passing = None;
@@ -291,6 +333,117 @@ impl DrivingState {
         // says it is coming.
         self.begin_lane_change(home);
         self.pass_returning = true;
+    }
+
+    /// A change lane keeping is making checks the lane it is moving into on
+    /// every frame of the move, not only when it began, and calls the move
+    /// off if a vehicle takes that lane or the road ends it first. The move
+    /// takes seconds, and a vehicle off a ramp can join the lane in them:
+    /// lane keeping finished the move back from a pass anyway, into the side
+    /// of a box truck that had just merged (player report, 2026-10-13).
+    pub fn hold_keeping_lane_change(&mut self, ctx: &mut GameContext) {
+        let Some(target) = self.lane_change_target else {
+            self.keeping_lane_change = false;
+            return;
+        };
+        if !self.keeping_lane_change {
+            return; // the driver's own change is theirs to answer for
+        }
+        let count = self.lane.lane_count;
+        let ended = target >= count;
+        let open = if self.pass_returning {
+            self.pass_return_open(target)
+        } else {
+            self.lane_gap_open(target)
+        };
+        if !ended && Some(target) != self.closed_lane_here() && open {
+            return;
+        }
+        self.lane_change_target = None;
+        self.keeping_lane_change = false;
+        // The truck stays where it is because lane keeping called the move
+        // off, so the CB has nothing to say about it being there.
+        self.keep_right_excused_s = KEEP_RIGHT_EXCUSE_S;
+        let home = self.lane.lane;
+        if std::mem::take(&mut self.pass_returning) {
+            // Still beside the vehicle it passed: try the move back again
+            // once the lane is clear.
+            self.passing = self.passing.or(Some((target, home)));
+        } else if self
+            .passing
+            .is_some_and(|(_, passed_in)| passed_in == target)
+        {
+            // The pass never happened, so the hazard call is the driver's
+            // again and the automatic brake answers it.
+            self.passing = None;
+        }
+        // Each lane's line whole, so a translation can say the lane the way
+        // its own language does rather than slot a bare "left" into a frame.
+        let text = if ended {
+            format!("The road narrows to {}.", lane_count_words(count))
+        } else {
+            match lane_label(home, count) {
+                "left" => "Staying in the left lane.",
+                "right" => "Staying in the right lane.",
+                _ => "Staying in the middle lane.",
+            }
+            .to_string()
+        };
+        ctx.say_event_with(
+            text,
+            SayEvent::queued()
+                .priority(EventPriority::Route)
+                .category(SpeechCategory::Confirmation),
+        );
+    }
+
+    /// The vehicle keeping the move back from a pass out of `lane`, or None.
+    ///
+    /// A real headway, not the wide footprint a lane change otherwise reads:
+    /// a vehicle ahead must stay `DROP_IN_HEADWAY_S` ahead of the cab at the
+    /// truck's speed, and one behind that far behind the trailer at its own,
+    /// through the seconds the move takes. The truck drops in behind a
+    /// vehicle that has just gone by, the way a driver would, instead of
+    /// waiting for it to be a third of a mile up the road. A vehicle on the
+    /// ramp beside the right lane counts as in it.
+    pub fn pass_return_blocker(&self, lane: i64) -> Option<&TrafficVehicle> {
+        let speed = self.trip.truck.speed_mph();
+        let horizon_hr = LANE_GAP_ACT_REAL_S * self.trip.effective_time_scale() / 3600.0;
+        let ahead_need = speed * DROP_IN_HEADWAY_S / 3600.0;
+        self.trip
+            .traffic_manager
+            .vehicles
+            .iter()
+            .filter(|v| v.lane == lane || (lane == 0 && v.lane == -1))
+            .find(|v| {
+                let rear = v.position_mi - self.trip.position_mi;
+                let front = rear + real_length_mi(&v.vehicle_class);
+                let drift = (v.speed_mph - speed) * horizon_hr;
+                let behind_need = RIG_LENGTH_MI + v.speed_mph * DROP_IN_HEADWAY_S / 3600.0;
+                rear.min(rear + drift) < ahead_need && front.max(front + drift) > -behind_need
+            })
+    }
+
+    /// Whether the move back from a pass can go into `lane` now.
+    pub fn pass_return_open(&self, lane: i64) -> bool {
+        self.pass_return_blocker(lane).is_none()
+    }
+
+    /// A vehicle holding the right lane at the truck's speed or faster
+    /// paces it, and lane keeping would wait in the left lane for as long as
+    /// that lasts. Ease off under it, so it pulls ahead and the truck drops
+    /// in behind, without a word: the driver hears the engine ease. A slower
+    /// vehicle there is the one being passed, and the pass carries on at
+    /// speed.
+    fn ease_for_pacer(&mut self, lane: i64) {
+        let Some(pacer) = self.pass_return_blocker(lane) else {
+            return;
+        };
+        if pacer.speed_mph + 2.0 < self.trip.truck.speed_mph() {
+            return;
+        }
+        self.pass_return_ease_mph =
+            Some((pacer.speed_mph - PASS_RETURN_EASE_MPH).max(LANE_MIN_MPH));
     }
 
     /// Whether an armed exit is close enough that the truck should be
@@ -318,6 +471,7 @@ impl DrivingState {
     /// clearance reading has already passed.
     fn begin_lane_change(&mut self, target: i64) {
         self.lane_change_target = Some(target);
+        self.keeping_lane_change = true;
         self.pass_returning = false;
         self.lane_change_timer = LANE_TAP_CHANGE_S;
         self.lane_signal_timer = 0.0;

@@ -189,6 +189,16 @@ fn test_sound_lookup_prefers_ogg_when_available() {
 }
 
 #[test]
+fn test_main_menu_ambience_ships_in_the_pack() {
+    if !shipped_sounds() {
+        return;
+    }
+    for key in ff_core::music::MENU_AMBIENCE {
+        assert!(asset_bytes(key, SFX_EXTENSIONS).is_some(), "{key}");
+    }
+}
+
+#[test]
 fn test_engine_recordings_resolve_for_the_ring_and_one_shots() {
     // Looping beds may resolve to WAV (lossy edges break loop seams --
     // tools/fix_loop_seams.py); the licensed overlay's file wins where

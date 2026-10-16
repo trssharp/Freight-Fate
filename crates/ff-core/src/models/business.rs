@@ -431,7 +431,7 @@ pub fn next_business_unlock<P: BusinessProfile + ?Sized>(profile: &P) -> String 
         return format!("Company driver by choice. {}", company_ladder_next(level));
     }
     if ok {
-        return "Next: buy into a leased-on owner-operator tractor position from Business status."
+        return "Next: the owner-operator buy-in under Business status, where you buy the truck you drive."
             .to_string();
     }
     // The Business Prep Driver rank (14) starts reading the real checklist,
@@ -452,7 +452,8 @@ pub fn next_business_unlock<P: BusinessProfile + ?Sized>(profile: &P) -> String 
 /// turned the buy-in down hears in place of the offer.
 fn company_ladder_next(level: i64) -> String {
     match next_company_rank_for_level(level) {
-        None => "You are at the top career rank. The owner-operator buy-in stays open under                  Business status if you ever want it."
+        None => "You are at the top career rank. The owner-operator buy-in stays open under \
+                 Business status if you ever want it."
             .to_string(),
         Some(next_rank) => format!(
             "Next: level {}, {}. {}",
@@ -550,7 +551,7 @@ fn business_status_summary_inner<P: BusinessProfile + ?Sized>(profile: &P) -> St
     }
     if ok {
         return format!(
-            "You are a company driver for {}, level {} {}. You qualify to buy your first leased-on tractor position. Owner-operator buy-in costs {} dollars and keeps {} dollars of working capital in the bank.",
+            "You are a company driver for {}, level {} {}. You qualify for the owner-operator buy-in: you buy the truck you drive and keep hauling for the carrier as a leased-on owner-operator. The buy-in costs {} dollars and keeps {} dollars of working capital in the bank.",
             carrier_name(profile),
             rank.level,
             rank.title,

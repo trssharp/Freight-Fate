@@ -82,11 +82,7 @@ impl DrivingState {
         let message = if ctx.settings.destination_approach_assist {
             format!("At {facility}. Stop to check in.")
         } else {
-            format!(
-                "At {facility}. Stop, set the parking brake with {}, then {} opens the facility.",
-                ctx.control_hint("parking_brake"),
-                ctx.control_hint("rest")
-            )
+            format!("At {facility}. Stop and set the parking brake.")
         };
         ctx.say_event_with(
             message,
@@ -105,7 +101,7 @@ impl DrivingState {
         // throttle (automation-handoff sweep, 2026-08-20, the deferred
         // 2026-08-15 audit).
         ctx.say_event_with(
-            "Automatic speed control paused for pickup. It resumes when you depart.",
+            "Automatic speed control paused for pickup.",
             SayEvent::queued()
                 .priority(EventPriority::Route)
                 .category(SpeechCategory::Confirmation),
@@ -180,7 +176,7 @@ impl DrivingState {
             TimedMessageState::new(
                 "Pulling into pickup",
                 &format!("Pulling into {facility}."),
-                "Pulling into the pickup facility. Please wait.",
+                "Pulling into the pickup.",
                 STOP_PULL_IN_WAIT_S,
                 move |ctx: &mut GameContext| {
                     drive.with(ctx, |drive, ctx| {

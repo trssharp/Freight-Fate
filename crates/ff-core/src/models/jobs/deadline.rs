@@ -62,39 +62,38 @@ impl HosPlan {
         self.drive_h + self.breaks as f64 * 0.5 + self.sleeps as f64 * 10.0
     }
 
+    /// The plan in one short line; a break or sleep the route does not need
+    /// is not mentioned.
     pub fn summary(&self) -> String {
-        let break_text = if self.breaks == 0 {
-            "no 30-minute break".to_string()
-        } else {
-            format!(
-                "{} 30-minute break{}",
+        let mut plan = format!("{} driving hours", fmt_f(self.drive_h, 1));
+        if self.breaks != 0 {
+            plan.push_str(&format!(
+                ", {} 30-minute break{}",
                 self.breaks,
                 if self.breaks != 1 { "s" } else { "" }
-            )
-        };
-        let sleep_text = if self.sleeps == 0 {
-            "no 10-hour sleep".to_string()
-        } else {
-            format!(
-                "{} 10-hour sleep{}",
+            ));
+        }
+        if self.sleeps != 0 {
+            plan.push_str(&format!(
+                ", {} 10-hour sleep{}",
                 self.sleeps,
                 if self.sleeps != 1 { "s" } else { "" }
-            )
-        };
-        let mut coverage = String::new();
-        if self.break_stop_count != 0 || self.sleep_stop_count != 0 {
-            coverage = format!(
-                " Route has {} break-capable stop{} and {} sleep-capable stop{}.",
-                self.break_stop_count,
-                if self.break_stop_count != 1 { "s" } else { "" },
-                self.sleep_stop_count,
-                if self.sleep_stop_count != 1 { "s" } else { "" },
-            );
+            ));
         }
-        format!(
-            "Legal HOS plan: {} driving hours, {break_text}, {sleep_text}.{coverage}",
-            fmt_f(self.drive_h, 1)
-        )
+        let coverage = if self.has_stop_coverage() {
+            format!(
+                " Break stops: {}. Sleep stops: {}.",
+                self.break_stop_count, self.sleep_stop_count
+            )
+        } else {
+            String::new()
+        };
+        format!("{plan}.{coverage}")
+    }
+
+    /// Whether [`Self::summary`] names the route's break and sleep stops.
+    pub fn has_stop_coverage(&self) -> bool {
+        self.break_stop_count != 0 || self.sleep_stop_count != 0
     }
 }
 

@@ -129,15 +129,17 @@ pub const WEIGH_STATION_REMINDER_MAX_MI: f64 = 1.0;
 /// ten times real speed and 61 mph is three real seconds -- a tester heard
 /// the reminder and the bypass lights three seconds apart (log, 2026-10-07).
 /// Now the reminder holds the clock to real time from where it speaks to the
-/// gore, the way a signalled exit already does, and a crossing that comes
+/// gore, the way a signaled exit already does, and a crossing that comes
 /// sooner than this after the reminder (a late notice, a busy cab) is not
 /// charged at all.
 pub const SCALE_REMINDER_REAL_LEAD_S: f64 = 15.0;
 
 /// The sentence the open-scale lead distance is sized from. It must pace the
-/// real announcement's longest realistic rendering -- a long stop name and the
-/// controller phrases, which run longer than the keyboard letters -- or the
-/// spoken lead undershoots and the notice lands with no road left to act on.
+/// real announcement's longest realistic rendering -- a long stop name -- or
+/// the spoken lead undershoots and the notice lands with no road left to act
+/// on. The notice no longer names keys, but the sample keeps the lead it had
+/// when it did: sized to the shorter line, the notice fell to the same two
+/// miles as the stop's own distance call and lost the frame to it.
 pub const SCALE_NOTICE_SAMPLE: &str = concat!(
     "Open weigh station ahead in two miles: Northbound Platte River Port ",
     "of Entry. All trucks must pull in. Signal for the scale exit with ",

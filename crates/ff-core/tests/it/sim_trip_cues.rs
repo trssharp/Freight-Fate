@@ -240,7 +240,7 @@ fn test_toll_cues_and_charges_deduplicate() {
         gps_messages(&advance),
         vec![
             "ticket system toll point ahead, New Jersey Turnpike ticket entry. \
-             Estimated toll 18 dollars, billed to carrier settlement."
+             Toll about 18 dollars."
         ]
     );
     assert!(gps_events(&repeat).is_empty());
@@ -279,20 +279,16 @@ fn test_zero_amount_toll_entry_marker_does_not_record_expense() {
     let advance = trip.update(0.0);
     assert_eq!(
         gps_messages(&advance),
-        vec![
-            "ticket system toll point ahead, Pennsylvania Turnpike eastern ticket entry. \
-             Entry recorded for carrier settlement."
-        ]
+        vec!["ticket system toll point ahead, Pennsylvania Turnpike eastern ticket entry."]
     );
 
     trip.position_mi = 18.0;
     let entry = trip.update(0.0);
-    assert_eq!(
-        gps_messages(&entry),
-        vec![
-            "ticket system entry recorded at Pennsylvania Turnpike eastern ticket entry. \
-             Toll billed at carrier settlement."
-        ]
+    // Nothing is charged at a ticket entry, and the cue ahead named it.
+    assert!(
+        gps_messages(&entry).is_empty(),
+        "{:?}",
+        gps_messages(&entry)
     );
     assert_eq!(trip.toll_expense(), 0.0);
     assert!(messages_of(&entry, TripEventKind::TollCharged).is_empty());
@@ -379,7 +375,7 @@ fn test_city_events_announce_a_state_line_the_map_does_not_carry() {
 
     assert_eq!(
         messages_of(&events, TripEventKind::CityReached),
-        vec!["Crossing into Ohio. Passing Cleveland, Ohio. Continuing on I-76 toward Pittsburgh."]
+        vec!["Crossing into Ohio. Passing Cleveland, Ohio."]
     );
 }
 
@@ -396,7 +392,7 @@ fn test_city_events_include_state_without_repeating_crossing() {
 
     assert_eq!(
         messages_of(&events, TripEventKind::CityReached),
-        vec!["Passing Buffalo, New York. Continuing on I-90 toward Cleveland."]
+        vec!["Passing Buffalo, New York."]
     );
 }
 

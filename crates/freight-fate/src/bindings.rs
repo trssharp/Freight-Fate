@@ -73,6 +73,9 @@ pub enum Action {
     Grade,
     Upcoming,
     LastAnnouncement,
+    /// Keyboard only by default: copies the last spoken line to the
+    /// clipboard. Handled on every screen, not just at the wheel.
+    CopyLastSpoken,
     Cb,
     HosWheel,
     HosBreak,
@@ -95,6 +98,13 @@ pub enum Action {
     TransmissionMode,
     Radio,
     RadioFavorite,
+    /// Pad only: the keyboard radio dial keys stay fixed.
+    RadioTuneNext,
+    RadioTunePrev,
+    RadioVolumeUp,
+    RadioVolumeDown,
+    RadioCategoryNext,
+    RadioCategoryPrev,
     RadioStatus,
     RadioNowPlaying,
 }
@@ -446,6 +456,20 @@ const TABLE: &[Row] = &[
         &[],
     ),
     (
+        Action::CopyLastSpoken,
+        "copy_last_spoken",
+        "Copy the last spoken text",
+        &[Chord {
+            key: Key::C,
+            mods: Mods {
+                shift: true,
+                ctrl: true,
+                alt: false,
+            },
+        }],
+        &[],
+    ),
+    (
         Action::Cb,
         "cb",
         "Repeat the last CB chatter",
@@ -583,28 +607,70 @@ const TABLE: &[Row] = &[
         "radio",
         "Radio on or off",
         &[Chord::plain(Key::M)],
-        &[],
+        &[PadChord::modified(Pad::RightStickUp)],
     ),
     (
         Action::RadioFavorite,
         "radio_favorite",
         "Save the station as a favorite",
         &[Chord::plain(Key::O)],
+        &[PadChord::modified(Pad::RightStickDown)],
+    ),
+    (
+        Action::RadioTuneNext,
+        "radio_tune_next",
+        "Tune to the next radio station",
         &[],
+        &[PadChord::plain(Pad::RightStickRight)],
+    ),
+    (
+        Action::RadioTunePrev,
+        "radio_tune_prev",
+        "Tune to the previous radio station",
+        &[],
+        &[PadChord::plain(Pad::RightStickLeft)],
+    ),
+    (
+        Action::RadioVolumeUp,
+        "radio_volume_up",
+        "Raise radio volume",
+        &[],
+        &[PadChord::plain(Pad::RightStickUp)],
+    ),
+    (
+        Action::RadioVolumeDown,
+        "radio_volume_down",
+        "Lower radio volume",
+        &[],
+        &[PadChord::plain(Pad::RightStickDown)],
+    ),
+    (
+        Action::RadioCategoryNext,
+        "radio_category_next",
+        "Next radio category",
+        &[],
+        &[PadChord::modified(Pad::RightStickRight)],
+    ),
+    (
+        Action::RadioCategoryPrev,
+        "radio_category_prev",
+        "Previous radio category",
+        &[],
+        &[PadChord::modified(Pad::RightStickLeft)],
     ),
     (
         Action::RadioStatus,
         "radio_status",
         "Radio status",
         &[Chord::plain(Key::Y)],
-        &[],
+        &[PadChord::modified(Pad::LeftStick)],
     ),
     (
         Action::RadioNowPlaying,
         "radio_now_playing",
         "What the radio is playing",
         &[Chord::shift(Key::Y)],
-        &[],
+        &[PadChord::modified(Pad::Back)],
     ),
 ];
 
@@ -1065,6 +1131,20 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_pad_binding_keeps_a_new_radio_default() {
+        let settings = Settings {
+            pad_bindings: "horn=rstick_right".into(),
+            ..Settings::default()
+        };
+        let bindings = KeyBindings::from_settings(&settings);
+        assert_eq!(
+            bindings.pad_action_for(ControllerButton::RightStickRight, false),
+            Some(Action::Horn)
+        );
+        assert!(bindings.pad_chords(Action::RadioTuneNext).is_empty());
+    }
+
+    #[test]
     fn a_chord_with_unbound_modifiers_falls_back_to_the_bare_key() {
         let b = KeyBindings::default();
         assert_eq!(b.action_for(Key::E, Mods::ALT), Some(Action::Engine));
@@ -1117,10 +1197,17 @@ mod tests {
         b.set_chord(Action::Engine, Chord::alt(Key::Z));
         b.set_chord(Action::Accelerate, Chord::plain(Key::F5));
         b.set_pad_chord(Action::Horn, PadChord::modified(ControllerButton::Paddle1));
+        b.set_pad_chord(
+            Action::RadioTuneNext,
+            PadChord::plain(ControllerButton::Paddle2),
+        );
         let mut settings = Settings::default();
         b.store(&mut settings);
         assert_eq!(settings.key_bindings, "accelerate=f5;engine=alt+z");
-        assert_eq!(settings.pad_bindings, "horn=mod+paddle_1");
+        assert_eq!(
+            settings.pad_bindings,
+            "horn=mod+paddle_1;radio_tune_next=paddle_2"
+        );
         assert_eq!(KeyBindings::from_settings(&settings), b);
         // A default table writes nothing.
         KeyBindings::default().store(&mut settings);

@@ -16,6 +16,9 @@ on:
       seconds:
         description: "seconds of audio to decode per station"
         default: "25"
+      ids:
+        description: "comma-separated station ids to hear instead (overrides only)"
+        default: ""
 
 jobs:
   sweep:
@@ -30,8 +33,11 @@ jobs:
       - name: Install ffmpeg
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
       - name: Audit
+        env:
+          IDS: ${{ inputs.ids }}
         run: |
           python3 tools/audit_radio_streams.py --only "${{ inputs.only }}" --recheck-dropped \
+            --ids "$IDS" \
             --seconds "${{ inputs.seconds }}" \
             --shard ${{ matrix.shard }}/8 --workers 24 \
             --output radio-audit-${{ matrix.shard }}.json

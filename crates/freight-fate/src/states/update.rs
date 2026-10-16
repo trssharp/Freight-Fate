@@ -125,14 +125,14 @@ impl State for UpdateCheckState {
             self.message = "On iPhone and iPad, updates come through the App Store \
                             or TestFlight."
                 .to_string();
-            ctx.say(&format!("{} Escape goes back.", self.message));
+            ctx.say(&self.message);
             return;
         }
         if !updater::is_frozen() {
             self.message = "Updates are only available in the packaged game. \
                             This copy runs from source; update it with git."
                 .to_string();
-            ctx.say(&format!("{} Escape goes back.", self.message));
+            ctx.say(&self.message);
             return;
         }
         if self.checker.is_none() {
@@ -160,7 +160,7 @@ impl State for UpdateCheckState {
                 updater::spoken_version(version())
             );
         }
-        ctx.say(&format!("{} Escape goes back.", self.message));
+        ctx.say(&self.message);
     }
 
     fn handle_event(&mut self, ctx: &mut GameContext, event: &InputEvent) {
@@ -394,7 +394,7 @@ fn sentence(text: &str) -> String {
 
 /// Where a player can always get the update by hand.
 pub const MANUAL_DOWNLOAD: &str =
-    "To update by hand, download it from github.com/Orinks/Freight-fate/releases.";
+    "To update by hand, download it from github.com/orinks-games/Freight-Fate/releases.";
 
 const PHASE_DOWNLOADING: u8 = 0;
 const PHASE_UNPACKING: u8 = 1;
@@ -814,7 +814,7 @@ impl State for UpdateDownloadState {
                 // worker stops and tidies up when it next wakes.
                 self.cancelled.store(true, Ordering::SeqCst);
                 self.finished = true;
-                ctx.say("Update cancelled.");
+                ctx.say("Update canceled.");
                 ctx.audio.play("ui/menu_back");
                 ctx.pop_state();
             }

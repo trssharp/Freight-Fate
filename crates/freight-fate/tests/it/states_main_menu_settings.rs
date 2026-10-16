@@ -106,6 +106,20 @@ fn hos_planning_hints_row_explains_and_persists_the_opt_in() {
 }
 
 #[test]
+fn facility_streets_row_toggles_and_persists() {
+    let mut app = TestApp::new();
+    assert!(app.ctx.settings.facility_streets);
+    open_settings_category(&mut app, "World and traffic");
+    move_to::<Cat>(&mut app, "Facility streets");
+    assert_eq!(current_label::<Cat>(&app), "Facility streets: on");
+    key(&mut app, Key::Return);
+    assert_eq!(current_label::<Cat>(&app), "Facility streets: off");
+    assert!(!Settings::load().facility_streets);
+    key(&mut app, Key::Left);
+    assert!(Settings::load().facility_streets);
+}
+
+#[test]
 fn test_settings_menu_cycles_lane_keeping() {
     let mut app = TestApp::new();
     assert_eq!(app.ctx.settings.lane_keeping, "full"); // the all-assists default
@@ -239,6 +253,7 @@ fn gameplay_subcategory_rows(category: &str) -> &'static [&'static str] {
             "Fuel prices",
             "Parking source",
             "Live weather controls calendar",
+            "Facility streets",
             "Back",
         ],
         "controls" => &[
@@ -1231,4 +1246,34 @@ fn test_a_row_notice_is_heard_when_that_row_is_the_one_you_land_on() {
         .main_lines()
         .iter()
         .any(|line| line.contains("used to offer Realistic")));
+}
+
+/// The Controller row says which controller the game is listening to, so a
+/// player can tell whether a new pad was found.
+#[test]
+fn the_controller_row_names_the_connected_controller() {
+    use freight_fate::controller::fakes::FakePad;
+    let controller_row = |app: &mut TestApp| {
+        cat_rows(app, "controls")
+            .into_iter()
+            .map(|(label, _)| label)
+            .find(|label| label.starts_with("Controller:"))
+            .expect("a Controller row")
+    };
+    let mut app = TestApp::new();
+    app.ctx.settings.controller_enabled = true;
+    app.ctx.controller.set_enabled(true);
+    assert_eq!(
+        controller_row(&mut app),
+        "Controller: enabled, none connected"
+    );
+    app.ctx
+        .controller
+        .bind_device(Box::new(FakePad::new(0)), "Xbox Series X Controller");
+    assert_eq!(
+        controller_row(&mut app),
+        "Controller: enabled, Xbox Series X Controller connected"
+    );
+    app.ctx.settings.controller_enabled = false;
+    assert_eq!(controller_row(&mut app), "Controller: disabled");
 }

@@ -226,7 +226,7 @@ fn entering_the_drive_speaks_the_objective() {
     assert!(!lines.is_empty(), "entering a drive says something");
     let spoken = lines.join(" ");
     assert!(spoken.contains("At the wheel"), "{spoken}");
-    assert!(spoken.contains("Transmission is"), "{spoken}");
+    assert!(spoken.contains("It is "), "{spoken}");
     // Entering again is silent: a menu popping back to the road must not
     // re-read the whole objective.
     app.clear_speech();

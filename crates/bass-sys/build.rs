@@ -97,7 +97,7 @@ fn main() {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        // Import libraries, headers and licence notes are for the build and
+        // Import libraries, headers and license notes are for the build and
         // the reader, not the running program.
         if name.ends_with(".lib")
             || name.ends_with(".txt")

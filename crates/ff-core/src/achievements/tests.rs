@@ -74,9 +74,9 @@ fn test_achievement_copy_is_allusive_and_speech_sized() {
         let visible = format!("{} {}", achievement.name, achievement.description).to_lowercase();
         assert!(!achievement.description.contains('\n'));
         let length = achievement.description.chars().count();
-        assert!((80..=220).contains(&length), "{}: {length}", achievement.id);
+        assert!((40..=140).contains(&length), "{}: {length}", achievement.id);
         assert!(
-            achievement.description.matches('.').count() >= 2,
+            achievement.description.matches('.').count() >= 1,
             "{}",
             achievement.id
         );

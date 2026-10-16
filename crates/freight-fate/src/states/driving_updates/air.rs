@@ -15,7 +15,6 @@ impl DrivingState {
             return;
         }
         self.brake_lockout_cue_timer = 4.0;
-        let terse = self.terse_speech(ctx);
         // One standing condition -- "why the truck will not roll yet" --
         // with three mutually exclusive descriptions. A player who holds the
         // accelerator against the lockout re-triggers this every 4 seconds;
@@ -47,35 +46,20 @@ impl DrivingState {
         };
         if !self.trip.truck.engine_on {
             self.set_status("Start the engine before releasing the brakes.");
-            let message = if terse {
-                "Engine off.".to_string()
-            } else {
-                "Engine off. Start the engine first.".to_string()
-            };
-            ctx.say_event_with(message, opts(live::LOCKOUT_ENGINE_OFF));
+            ctx.say_event_with("Engine off.", opts(live::LOCKOUT_ENGINE_OFF));
         } else if !self.trip.truck.air_ready() {
             self.set_status("Waiting for air pressure before the truck can move.");
             let psi = self.trip.truck.air_pressure_psi();
-            let message = if terse {
-                format!("Air pressure {psi:.0} psi.")
-            } else {
-                format!(
-                    "Air pressure {psi:.0} psi. At 100 psi, {} releases the parking brake.",
-                    ctx.control_hint("parking_brake")
-                )
-            };
-            ctx.say_event_with(message, opts(live::LOCKOUT_AIR));
+            ctx.say_event_with(
+                format!("Air pressure {psi:.0} psi."),
+                opts(live::LOCKOUT_AIR),
+            );
         } else if self.trip.truck.parking_brake {
             let brake_hint = ctx.control_hint("parking_brake");
             self.set_status(format!(
                 "Parking brake set. Press {brake_hint} to release it."
             ));
-            let message = if terse {
-                "Parking brake set.".to_string()
-            } else {
-                format!("Parking brake set. Press {brake_hint} to release it.")
-            };
-            ctx.say_event_with(message, opts(live::LOCKOUT_PARKING_BRAKE));
+            ctx.say_event_with("Parking brake set.", opts(live::LOCKOUT_PARKING_BRAKE));
         }
     }
 
@@ -101,22 +85,16 @@ impl DrivingState {
             self.low_air_said = true;
             ctx.audio.play_with("vehicle/low_air_buzzer", 0.7, 0.0);
             ctx.controller.rumble.alert();
-            // What to do about it depends on where the truck is. Parked, the
-            // answer is to leave the parking brake alone. Rolling, that advice
-            // is nonsense and the driver needs the real one: get stopped while
-            // there is still air to stop with, because the spring brakes will
-            // do it for them at 40 psi wherever they happen to be.
+            // Rolling, the driver needs the one action that matters: get
+            // stopped while there is still air to stop with, because the
+            // spring brakes will do it for them at 40 psi wherever they happen
+            // to be. Parked, there is nothing to do but wait.
             let rolling = self.trip.truck.velocity_mps.abs() > 0.3;
-            let advice = if rolling {
-                "The spring brakes set on their own at 40 psi."
-            } else {
-                "The parking brake stays set until pressure builds."
-            };
             let psi = self.trip.truck.air_pressure_psi();
-            let message = if terse {
-                format!("Low air: {psi:.0} psi.")
-            } else {
-                format!("Low air warning, {psi:.0} psi. {advice}")
+            let message = match (terse, rolling) {
+                (true, _) => format!("Low air: {psi:.0} psi."),
+                (false, true) => format!("Low air warning, {psi:.0} psi. Stop now."),
+                (false, false) => format!("Low air warning, {psi:.0} psi."),
             };
             // Parked, this is a band readout; rolling, it is the last warning
             // before the spring brakes set on their own -- the same
@@ -169,15 +147,7 @@ impl DrivingState {
             self.set_status(format!(
                 "Air ready. Press {brake_hint} to release the parking brake."
             ));
-            let psi = self.trip.truck.air_pressure_psi();
-            let message = if terse {
-                format!("Air ready: {psi:.0} psi.")
-            } else {
-                format!(
-                    "Air pressure ready at {psi:.0} psi. Press {brake_hint} to release the \
-                     parking brake."
-                )
-            };
+            let message = "Air ready.";
             // ROUTE, not the ambient default: same reasoning as the lockout
             // lines below -- this is the reason the truck can now move, a
             // standing instruction until the driver acts (automation-handoff

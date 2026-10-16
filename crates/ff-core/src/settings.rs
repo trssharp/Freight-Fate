@@ -20,6 +20,25 @@ use crate::units::{
     distance_unit, hud_speed, spoken_distance, spoken_gap, to_distance, MILES_TO_KM,
 };
 
+/// How score readouts balance the descriptive band and the numeric score.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScoreDisplay {
+    #[default]
+    Both,
+    Percent,
+    Description,
+}
+
+impl From<ScoreDisplay> for Value {
+    fn from(value: ScoreDisplay) -> Self {
+        match value {
+            ScoreDisplay::Both => Self::String("Both".to_string()),
+            ScoreDisplay::Percent => Self::String("Percent".to_string()),
+            ScoreDisplay::Description => Self::String("Description".to_string()),
+        }
+    }
+}
+
 mod migrate;
 pub mod paths;
 #[cfg(test)]
@@ -316,9 +335,9 @@ macro_rules! settings_fields {
 
 settings_fields! {
     /// Master switch for the orinks.net and sharing services: the drivers
-    /// board, `online_presence`, `cloud_saves`, Mastodon sharing, and
-    /// Discord presence behave as disabled while it is off, without losing
-    /// their individual settings. Live-data simulation sources
+    /// board, `online_presence`, `cloud_saves`, and Discord presence behave
+    /// as disabled while it is off, without losing their individual
+    /// settings. Live-data simulation sources
     /// (`real_weather`, `real_traffic`, `real_parking`) are deliberately NOT
     /// gated here -- they follow their own Settings toggles (owner ruling,
     /// 2026-08-08: two testers lost real weather to this switch with no
@@ -348,6 +367,10 @@ settings_fields! {
     acc_following_gap: String = "normal" => str_checked,
     /// friendlier default for new players
     automatic_transmission: bool = true => bool_truthy,
+    /// Alt+J: whether J on an automatic box arms the retarder manager.
+    /// Kept between drives, so a driver who stages the jake by hand is not
+    /// handed back to the manager at every dispatch.
+    automatic_jake: bool = true => bool_truthy,
     /// Simple keeps the familiar hold-through-stop behavior. Deliberate
     /// requires a release and second press before an automatic changes
     /// direction.
@@ -384,6 +407,10 @@ settings_fields! {
     /// hours of service: realistic/relaxed (debug_off is an internal dev
     /// bypass)
     hos_mode: String = "realistic" => str_checked,
+    /// Whether score readouts speak both the band and number, only the
+    /// number, or only the descriptive band.
+    #[serde(default)]
+    score_display: ScoreDisplay = ScoreDisplay::Both => score_display,
     /// Optional early advice from the legal-reach planner. The mandatory
     /// hours warnings and requested readouts do not depend on this switch.
     hos_planning_hints: bool = false => bool_strict,
@@ -616,18 +643,6 @@ settings_fields! {
     /// two only make sense together -- and the Online menu turns it off
     /// again on its own.
     cloud_saves: bool = false => bool_strict,
-    /// Post short public summaries of notable deliveries (new badges, level
-    /// ups, perfect streaks) to the player's own Mastodon account through
-    /// orinks.net. Off by default, separate from Profile sharing, and inert
-    /// until a Mastodon account is linked on the site.
-    mastodon_sharing: bool = false => bool_strict,
-    /// Last-known link state and handle, refreshed on every status check.
-    /// Two fields because a link can exist without a handle (the server
-    /// could not read the account name): linked gates the toggle, the handle
-    /// is only spoken. The server stays the authority; this cache only keeps
-    /// the settings menu from needing the network to read a label.
-    mastodon_linked: bool = false => bool_strict,
-    mastodon_linked_handle: String = "" => str_checked,
     /// accept game-controller input alongside the keyboard
     controller_enabled: bool = true => bool_strict,
     /// rumble/vibration feedback on the controller
@@ -667,6 +682,17 @@ settings_fields! {
     touch_haptics: bool = true => bool_strict,
     /// Whether the one-time iOS gesture-practice offer was made.
     touch_practice_offered: bool = false => bool_strict,
+    /// iOS gesture thresholds: how far (points) a stroke travels and how
+    /// soon (ms) after it must lift to be a flick rather than a hold, how
+    /// many flicks deep the brake swipe goes, how long a still finger waits
+    /// to straighten the wheel, how far two fingers turn the engine key,
+    /// and below what speed the deep swipe sets the parking brake.
+    touch_flick_points: f64 = 30.0 => float_plain,
+    touch_flick_ms: f64 = 150.0 => float_plain,
+    touch_deep_swipe_factor: f64 = 3.0 => float_plain,
+    touch_still_hold_ms: f64 = 500.0 => float_plain,
+    touch_rotate_degrees: f64 = 30.0 => float_plain,
+    touch_parking_brake_mph: f64 = 1.0 => float_plain,
     /// Steer AWAY from the engine's lean instead of toward it, for
     /// drivers who learned that habit in audio racing games.
     steering_guide_inverted: bool = false => bool_strict,
@@ -675,6 +701,21 @@ settings_fields! {
     /// file written before it existed, so everyone answers it once
     /// (owner, 2026-09-30).
     assist_preset_chosen: bool = false => bool_strict,
+    /// Whether a drive takes the real streets between the highway and a
+    /// facility: the turn-by-turn from the ramp's end to the gate, out of the
+    /// origin's gate to the on-ramp, and into a shipper in town. Off is the
+    /// 1.8 arrival players asked to keep (2026-10-11): the destination ramp
+    /// ends at the gate, a loaded run leaves straight onto the highway, and
+    /// a pickup in town is one access road. A drive keeps the value it
+    /// started with (`DrivingState::facility_streets_on`).
+    facility_streets: bool = true => bool_strict,
+    /// The language the game speaks (`ff_core::l10n`): "auto" follows the
+    /// operating system when the game has a catalog for it, "en" is
+    /// English, and any other value is a catalog code such as "es" or
+    /// "pt_BR". A fresh install follows the system; a settings file written
+    /// before the setting existed loads as English, so an update never
+    /// changes the language a player already hears.
+    language: String = "auto" => str_plain,
 }
 
 impl Settings {

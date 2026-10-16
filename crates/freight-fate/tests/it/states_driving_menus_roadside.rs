@@ -160,7 +160,7 @@ fn test_the_traffic_stop_offers_one_way_back_onto_the_highway() {
 
 #[test]
 fn test_a_pulled_licence_ends_the_run_from_the_shoulder() {
-    // A stop that just pulled the licence cannot offer the highway: the
+    // A stop that just pulled the license cannot offer the highway: the
     // driver is not allowed to move the truck.
     let mut app = TestApp::new();
     let drive = a_drive(&mut app);
@@ -459,7 +459,7 @@ fn test_a_run_off_that_suspends_the_cdl_ends_the_drive() {
     let text = with_top::<LicencePulledState, _>(&app, |s| s.outcome_text().to_string());
     assert!(
         text.starts_with(
-            "You pull onto the shoulder and stop. The licence is pulled as of now, so the truck \
+            "You pull onto the shoulder and stop. The license is pulled as of now, so the truck \
              stays here."
         ),
         "{text}"

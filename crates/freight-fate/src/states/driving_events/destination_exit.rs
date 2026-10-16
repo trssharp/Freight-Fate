@@ -159,17 +159,11 @@ impl DrivingState {
             };
             return format!("{core} {signal}{lane}");
         }
-        // Lane keeping takes this exit with no signal and no lane work, so
-        // the one thing the driver must not have to infer is that it is
-        // happening at all. Said once per run, and terse keeps it: a
-        // consequence is exactly what terse verbosity holds on to.
-        // No "slow down for the ramp": the ramp is braked for past the gore,
+        // Lane keeping takes this exit with no signal and no lane work; the
+        // manual says so, the callout does not (owner, 2026-10-14). No "slow
+        // down for the ramp" either: the ramp is braked for past the gore,
         // where taking the exit names its speed (realistic exit, 2026-09-24).
-        if self.lane_keeping_takes_exit_said {
-            return core;
-        }
-        self.lane_keeping_takes_exit_said = true;
-        format!("{core} Lane keeping will take this exit.")
+        core
     }
 
     /// `_check_destination_exit()`.
@@ -193,18 +187,15 @@ impl DrivingState {
             // Cruise stays engaged down the ramp approach, capped at the ramp
             // target, rather than handing the pedal back cold.
             let announcement = self.destination_exit_announcement(ctx, &stop, ahead);
-            let cap = self.cap_cruise_for_ramp(ctx, Some(&stop));
+            self.cap_cruise_for_ramp(Some(&stop));
             ctx.audio.play_with("ui/notify", 0.7, 0.0);
-            // ROUTE: this line carries "lane keeping will take this exit",
-            // which is the only warning the driver gets that the truck is
-            // about to leave the highway without them touching anything. Left
-            // at the AMBIENT default it was dropped whenever another line
-            // landed in the same moment, and the exit read as taking itself --
-            // reported twice now (Sarah A, 2026-08-15; and the report the
-            // attribution was written for in the first place).
+            // ROUTE: this line is the only warning the driver gets that the
+            // truck is about to leave the highway. Left at the AMBIENT default
+            // it was dropped whenever another line landed in the same moment,
+            // and the exit read as taking itself (Sarah A, 2026-08-15).
             let mut opts = SayEvent::queued().priority(EventPriority::Route);
             opts.category = Some(SpeechCategory::Navigation);
-            ctx.say_event_with(format!("{announcement}{cap}"), opts);
+            ctx.say_event_with(announcement, opts);
         }
         if self.exit_stop.is_none() {
             self.exit_stop = Some(stop);

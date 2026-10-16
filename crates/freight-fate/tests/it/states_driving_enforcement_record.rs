@@ -1,4 +1,4 @@
-//! What the roadside writes on the licence: the serious-violation ladder, the
+//! What the roadside writes on the license: the serious-violation ladder, the
 //! major offense, the fatigue events, and the exploits the adversarial
 //! harness found.
 //!
@@ -204,7 +204,7 @@ fn test_a_second_pursuit_ends_this_career_driving_for_good() {
 #[test]
 fn test_a_stop_that_suspends_the_cdl_does_not_send_you_back_out_driving() {
     // The stop menu used to offer "Pull back onto the highway" no matter what
-    // had just happened -- so a driver whose licence had been pulled seconds
+    // had just happened -- so a driver whose license had been pulled seconds
     // earlier was invited to drive on, with no way to end the run from the
     // shoulder. A suspended driver is done for now; the run ends here.
     let mut app = TestApp::new();
@@ -351,7 +351,7 @@ fn test_speeding_nobody_saw_never_touches_the_licence() {
     // The strike is gone, and the guarantee it needed is now structural
     // rather than deliberate: with nobody watching, speeding produces no
     // citation to put on the record in the first place. Nothing may reach the
-    // licence file without a trooper having been there.
+    // license file without a trooper having been there.
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, "Jerry");
     drive.trip.posts = Vec::new(); // empty road
@@ -821,6 +821,15 @@ fn test_the_fatigue_out_of_service_actually_holds_the_truck() {
         spoken(&app)
             .iter()
             .any(|line| line.contains("Out of service for fatigue")),
+        "{:#?}",
+        spoken(&app)
+    );
+    // The 70-hour limit does not reset on ten hours off: only the driving
+    // and duty clocks do, and the line says so.
+    assert!(
+        spoken(&app)
+            .iter()
+            .any(|line| line.contains("Driving and duty clocks reset, and the delivery deadline")),
         "{:#?}",
         spoken(&app)
     );

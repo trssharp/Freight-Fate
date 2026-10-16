@@ -330,10 +330,46 @@ SPECS: dict[str, tuple[str, float, float]] = {
         12.0,
         0.4,
     ),
+    # The main menu's beds, picked by the career's clock and business
+    # (ff_core::music::select_menu_ambience). The shipped takes were made in
+    # the ElevenLabs flows canvas from these prompts on 2026-10-12, then
+    # crossfaded at the seam and levelled to about -31 dB RMS.
+    "ambient/menu_night_lot": (
+        "Truck stop parking lot at night ambience, several semi trucks idling "
+        "at different distances, a refrigerated trailer unit humming, distant "
+        "interstate traffic, faint crickets, an occasional soft air brake hiss "
+        "far away, calm and quiet, no voices, no music, steady bed suitable "
+        "for seamless looping",
+        20.0,
+        0.4,
+    ),
+    "ambient/menu_yard": (
+        "A single diesel semi truck idling steadily in a quiet truck yard at "
+        "night, heard from outside a few meters away, low rumble, light wind, "
+        "distant highway hum, no voices, no music, steady bed suitable for "
+        "seamless looping",
+        20.0,
+        0.4,
+    ),
+    "ambient/menu_dispatch_office": (
+        "Inside a small trucking dispatch office, quiet ventilation hum, "
+        "occasional keyboard typing, a muffled semi truck idling outside the "
+        "window, soft distant CB radio static, no clear voices, no music, "
+        "steady bed suitable for seamless looping",
+        20.0,
+        0.4,
+    ),
 }
 
 # Ambience beds loop at runtime; ask the API for a seamless loop when it can.
-LOOP_KEYS = {"ambient/truck_stop", "ambient/warehouse", "vehicle/road"}
+LOOP_KEYS = {
+    "ambient/truck_stop",
+    "ambient/warehouse",
+    "ambient/menu_night_lot",
+    "ambient/menu_yard",
+    "ambient/menu_dispatch_office",
+    "vehicle/road",
+}
 
 
 def _load_dotenv() -> None:

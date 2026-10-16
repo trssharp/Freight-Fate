@@ -70,6 +70,7 @@ sdl2 = { workspace = true, features = ["raw-window-handle"] }
 url.workspace = true
 form_urlencoded.workspace = true
 webbrowser.workspace = true
+sys-locale.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true

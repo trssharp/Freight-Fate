@@ -27,10 +27,6 @@ use ff_core::data::world::World;
 use ff_core::data::world_models::{HomeTerminal, Route};
 use ff_core::input_hints::TOUCH;
 use ff_core::models::business::{is_owner_operator, COMPANY_DRIVER, INDEPENDENT_AUTHORITY};
-use ff_core::models::career_objectives::career_objective;
-use ff_core::models::career_training::{
-    is_company_training_profile, training_guidance, TrainingStage,
-};
 use ff_core::models::enforcement;
 use ff_core::models::jobs::relay::{relay_load, RelayRequest};
 use ff_core::models::jobs::{
@@ -45,7 +41,6 @@ use ff_core::pyfmt::{fmt_f, fmt_grouped, py_int, round_py_n};
 use ff_core::sim::hos::limits;
 
 use crate::app::{GameContext, Say};
-use crate::bindings::Action;
 use crate::states::base::{InputEvent, Key, Menu, MenuItem, SimpleMenuState};
 use crate::states::driving::DrivingState;
 use crate::states::main_menu::TouchPracticeOfferState;
@@ -212,9 +207,7 @@ pub fn first_day_orientation_lines(ctx: &GameContext, prefix: &str) -> Vec<Strin
             "Fuel, repairs, truck wear, trailer programs, and business reserves come out \
              of your cash."
                 .to_string(),
-            "First objective: open the dispatch board and choose an unlocked load with a \
-             deadline you can protect."
-                .to_string(),
+            "Next: the dispatch board.".to_string(),
         ];
     }
     vec![
@@ -228,9 +221,7 @@ pub fn first_day_orientation_lines(ctx: &GameContext, prefix: &str) -> Vec<Strin
         "As a new hire, dispatch assigns your load and route, and refusing an assignment \
          goes on your service record."
             .to_string(),
-        "First objective: open the dispatch board, accept the assigned load, and deliver \
-         it cleanly."
-            .to_string(),
+        "Next: the dispatch board.".to_string(),
     ]
 }
 
@@ -241,43 +232,6 @@ pub(crate) fn cdl_drive_refusal(ctx: &GameContext) -> Option<String> {
     let record = &p.driving_record;
     (record.lifetime_disqualified || record.suspended(p.game_hours))
         .then(|| ff_core::models::enforcement::suspension_drive_refusal_line(p))
-}
-
-/// What the terminal says about the first-day / career objective on entry
-/// (the `first_day` clause of `CityMenuState.announce_entry`).
-pub(crate) fn terminal_objective_clause(p: &Profile) -> String {
-    if first_day_guidance_active(p) {
-        let guidance = if is_company_training_profile(p) {
-            Some(training_guidance(p))
-        } else {
-            None
-        };
-        if let Some(guidance) = guidance.filter(|g| g.stage == TrainingStage::FirstDispatch) {
-            return format!(
-                " First-day objective: open the dispatch board and accept your assigned {} \
-                 load.",
-                guidance.recommendation_label
-            );
-        }
-        if !is_company_training_profile(p) {
-            return " First-day objective: open the dispatch board and choose an unlocked load \
-                    that keeps your cash cushion."
-                .to_string();
-        }
-        let objective = career_objective(p);
-        return format!(
-            " Career objective: {} Recommended dispatch: {}.",
-            objective.terminal_text, objective.recommendation
-        );
-    }
-    if !first_dispatch_done(p) && is_company_training_profile(p) {
-        let objective = career_objective(p);
-        return format!(
-            " Career objective: {} Recommended dispatch: {}.",
-            objective.terminal_text, objective.recommendation
-        );
-    }
-    format!(" Career objective: {}", career_objective(p).terminal_text)
 }
 
 // -- the dispatch board cache -------------------------------------------------------
@@ -759,13 +713,12 @@ pub fn launch_driving(ctx: &mut GameContext, launch: DrivingLaunch) {
             job.deadline_covers_rest |= extra_rest;
             if extra_rest {
                 format!(
-                    " Dispatch adjusted the delivery deadline to {} hours. Your current hours require a 10-hour sleep en route. {} selects a rest stop.",
-                    fmt_f(job.deadline_game_h, 1),
-                    ctx.control_name(Action::Rest)
+                    " Deadline extended to {} hours for a 10-hour sleep en route.",
+                    fmt_f(job.deadline_game_h, 1)
                 )
             } else {
                 format!(
-                    " Dispatch adjusted the delivery deadline to {} hours for this route and your current legal hours.",
+                    " Deadline extended to {} hours.",
                     fmt_f(job.deadline_game_h, 1)
                 )
             }

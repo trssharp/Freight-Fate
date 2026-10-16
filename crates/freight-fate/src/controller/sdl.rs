@@ -135,6 +135,12 @@ pub fn button_to_sdl(button: ControllerButton) -> Button {
         ControllerButton::Paddle3 => Button::Paddle3,
         ControllerButton::Paddle4 => Button::Paddle4,
         ControllerButton::Touchpad => Button::Touchpad,
+        ControllerButton::RightStickUp
+        | ControllerButton::RightStickDown
+        | ControllerButton::RightStickLeft
+        | ControllerButton::RightStickRight => {
+            unreachable!("right-stick directions are synthesized from axis events")
+        }
     }
 }
 

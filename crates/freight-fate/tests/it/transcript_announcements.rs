@@ -324,7 +324,7 @@ fn test_cb_radio_chatter_queues_and_uses_cb_audio() {
     d.handle_trip_event(
         &mut app.ctx,
         &cb_chatter(
-            "CB chatter in 5 miles: drivers report a bear ahead. \
+            "CB chatter in 5 miles: drivers report a trooper ahead. \
              Ease back and check your speed.",
             14.0,
             4.0,
@@ -356,7 +356,7 @@ fn test_truly_ambient_chatter_is_spaced_without_blocking_safety() {
     d.handle_trip_event(
         &mut app.ctx,
         &cb_chatter(
-            "CB chatter in 5 miles: drivers report a bear ahead.",
+            "CB chatter in 5 miles: drivers report a trooper ahead.",
             14.0,
             4.0,
         ),
@@ -401,7 +401,7 @@ fn test_truly_ambient_chatter_is_spaced_without_blocking_safety() {
     d.handle_trip_event(
         &mut app.ctx,
         &cb_chatter(
-            "CB chatter in 4 miles: drivers report a bear ahead.",
+            "CB chatter in 4 miles: drivers report a trooper ahead.",
             14.0,
             3.0,
         ),
@@ -410,7 +410,7 @@ fn test_truly_ambient_chatter_is_spaced_without_blocking_safety() {
     assert_eq!(
         app.event_calls().last().cloned(),
         Some((
-            "CB chatter in 4 miles: drivers report a bear ahead.".to_string(),
+            "CB chatter in 4 miles: drivers report a trooper ahead.".to_string(),
             false
         ))
     );
@@ -434,7 +434,11 @@ fn test_the_cb_call_a_hazard_swallowed_still_comes_back_on_alt_c() {
     let post = always_observing_post(6.0, 2.0); // watched from mile 4
     d.handle_trip_event(
         &mut app.ctx,
-        &cb_chatter("CB chatter, in 4 miles: a driver reports a bear.", 6.0, 2.0),
+        &cb_chatter(
+            "CB chatter, in 4 miles: a driver reports a trooper.",
+            6.0,
+            2.0,
+        ),
     );
     advance_ambient(&mut app, &mut d, &clock, AMBIENT_QUEUE_MAX_AGE_S + 1.0);
     d.hazard_deadline = None;
@@ -689,9 +693,8 @@ fn test_the_construction_warning_does_not_shout_brake_now_from_eight_miles() {
     let message = d.trip.zone_warning_message(&zone, 8.0);
 
     assert!(!message.contains("Brake now"), "{message}");
-    assert!(message.starts_with("In "), "{message}");
-    // The information all survives: how far, what, and both limits.
-    assert!(message.contains("construction ahead"), "{message}");
+    // The information all survives: what, how far, and both limits.
+    assert!(message.starts_with("Construction, 8 miles."), "{message}");
     assert!(
         message.contains("45") && message.contains("55"),
         "{message}"

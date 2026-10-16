@@ -428,9 +428,25 @@ impl World {
         city: &str,
         location_name: &str,
     ) -> Result<Route, DataError> {
+        self.facility_approach_route_with(city, location_name, true)
+    }
+
+    /// `facility_approach_route`, or with `streets` false the single
+    /// synthetic access-road leg every facility had in 1.8, even one with a
+    /// turn-level street chain (the Facility streets setting).
+    pub fn facility_approach_route_with(
+        &self,
+        city: &str,
+        location_name: &str,
+        streets: bool,
+    ) -> Result<Route, DataError> {
         let city = self.resolve_city_key(city);
         let location = self.facility_location(&city, location_name)?;
-        if let Some(source_approach) = self.facility_approaches()?.get(&location.id) {
+        if let Some(source_approach) = self
+            .facility_approaches()?
+            .get(&location.id)
+            .filter(|_| streets)
+        {
             if source_approach.turn_level && !source_approach.segments.is_empty() {
                 return Ok(local_chain_route(
                     &city,

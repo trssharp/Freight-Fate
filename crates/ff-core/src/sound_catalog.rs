@@ -378,8 +378,8 @@ const AIR: SoundCategory = SoundCategory {
         SoundEntry::new(
             "Tire screech",
             &[Cue::new("vehicle/tire_screech").volume(0.9)],
-            "The tires have lost their grip on the road. Ease off whatever \
-             you were doing -- brake, throttle or steering -- rather than \
+            "The tires have lost their grip on the road. Ease off the brake, \
+             throttle or steering, whichever you were using, rather than \
              adding more of it. On a wet or icy road this arrives at speeds \
              that would be fine on dry pavement.",
         ),
@@ -422,7 +422,7 @@ const ENGINE_BRAKE: SoundCategory = SoundCategory {
              are.",
         )
         .when(
-            "More than 7 miles per hour over the posted limit -- past \
+            "More than 7 miles per hour over the posted limit: past \
              anything adaptive cruise will do on its own, and short of where \
              a trooper can act on your speed.",
         ),
@@ -496,7 +496,7 @@ const HAZARDS: SoundCategory = SoundCategory {
             "You got past the hazard. This is the success half of the \
              dodge outcome pair: at Urgent only it is the whole confirmation \
              that you cleared it, and you can go back to normal speed. Its \
-             opposite is the collision below -- the two sound nothing alike, \
+             opposite is the collision below. The two sound nothing alike, \
              so 'did I make it?' is never in doubt.",
         ),
         SoundEntry::new(
@@ -585,7 +585,7 @@ const ENFORCEMENT: SoundCategory = SoundCategory {
              officer sitting there has to go on.",
         )
         .when(
-            "Always -- nothing turns it off. Every post that is allowed \
+            "Always. Nothing turns it off. Every post that is allowed \
              to cost you anything sounds this first, at every enforcement \
              presence setting, and the radio is pulled down out of the way \
              so you can hear it.",
@@ -647,8 +647,8 @@ const ENFORCEMENT: SoundCategory = SoundCategory {
         SoundEntry::new(
             "Scale warning",
             &[Cue::new("events/weigh_station_warning").volume(0.7)],
-            "An open weigh station is ahead, and the full spoken notice -- \
-             distance, name, the exit key -- follows right behind it. Its \
+            "An open weigh station is ahead. The full spoken notice, with \
+             the distance, name and exit key, follows right behind it. Its \
              own low thump-then-beep, not the inspection cue, so the scale \
              is unmistakable before a word is spoken.",
         ),
@@ -660,7 +660,7 @@ const ENFORCEMENT: SoundCategory = SoundCategory {
              right behind the open-scale notice, never instead of it.",
         )
         .when(
-            "A weigh station transponder only -- the fleet issues one \
+            "A weigh station transponder only. The fleet issues one \
              free at career level 4, or an owner-operator can subscribe from \
              Business status. Without one, every open scale still demands \
              every truck pull in.",
@@ -674,7 +674,7 @@ const ENFORCEMENT: SoundCategory = SoundCategory {
              sometimes, and an overweight load always is.",
         )
         .when(
-            "A weigh station transponder only -- the fleet issues one \
+            "A weigh station transponder only. The fleet issues one \
              free at career level 4, or an owner-operator can subscribe from \
              Business status.",
         ),

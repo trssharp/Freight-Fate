@@ -16,7 +16,7 @@ use ff_core::models::business::status_label;
 use ff_core::models::jobs::facility_text;
 use ff_core::models::profile::{data_dir, LegacyCareerError, LoadError, Profile};
 use ff_core::models::start_options::option_for_profile;
-use ff_core::music::{select_menu_music_sequence, MenuMusicProfile};
+use ff_core::music::{select_menu_ambience, select_menu_music_sequence, MenuMusicProfile};
 use ff_core::playtest_levers::apply_continue_levers;
 use ff_core::pyfmt::{fmt_f, fmt_grouped};
 
@@ -40,6 +40,7 @@ use crate::{impl_state_for_menu, impl_state_for_text_entry};
 
 mod achievements;
 mod careers;
+mod input_practice;
 mod settings;
 mod settings_actions;
 mod settings_items;
@@ -50,6 +51,10 @@ mod touch_practice;
 pub use achievements::{AchievementCareerState, AchievementCategoryState, AchievementsState};
 pub use careers::{
     CareerAction, CareerActionsState, ConfirmCareerActionState, LoadDriverState, ManageCareersState,
+};
+pub use input_practice::{
+    describe_button, describe_key, opens_input_practice, opens_input_practice_pad,
+    InputPracticeState,
 };
 pub use settings::{
     GameplaySettingsState, SettingsCategoryState, SettingsState, SETTINGS_LAYOUT_NOTICES,
@@ -228,21 +233,17 @@ pub fn first_day_orientation_message(ctx: &GameContext, prefix: &str) -> String 
     );
     if option.is_owner_operator() {
         return format!(
-            "{prefix}First-day briefing: leased to {}, parked at {location}. You own a new \
-             truck with a full tank and {} dollars of working capital. Fuel, repairs, truck \
-             wear, trailer programs, and business reserves come out of your cash. First \
-             objective: open the dispatch board and choose an unlocked load with a deadline \
-             you can protect.",
+            "{prefix}First-day briefing: leased to {} at {location}. New truck, {} dollars \
+             working capital. Fuel, repairs, wear, trailers, and reserves come from your cash. \
+             Next: dispatch board.",
             option.carrier_name,
             fmt_grouped(p.money(), 0)
         );
     }
     format!(
-        "{prefix}First-day briefing: welcome aboard {}. Your assigned truck is parked at \
-         {location}. The carrier covers fuel, repairs, insurance, and trailer support. \
-         Dispatch style: {}. As a new hire, dispatch assigns your load and route, and \
-         refusing an assignment goes on your service record. First objective: open the \
-         dispatch board, accept the assigned load, and deliver it cleanly.",
+        "{prefix}First-day briefing: {}. Truck at {location}. Carrier covers fuel, repairs, \
+         insurance, and trailers. Dispatch: {}. Assigned loads; a refusal goes on your record. \
+         Next: dispatch board.",
         option.carrier_name,
         option.dispatch.summary()
     )
@@ -254,8 +255,9 @@ pub fn first_state_after_career_creation(ctx: &GameContext) -> SharedState {
         return share(OnlineOfferState::default());
     }
     // The welcome is spoken just before this state is pushed, so its entry
-    // announcement queues behind it rather than cutting it off.
-    share(CityMenuState::new(ctx, true))
+    // announcement queues behind it rather than cutting it off, and leaves
+    // out the location the welcome just gave.
+    share(CityMenuState::after_briefing(ctx))
 }
 
 /// Resume a saved mid-trip delivery if there is one, else the terminal hub.
@@ -619,21 +621,9 @@ impl MainMenuState {
         ctx.profile = Some(latest);
         let lever_notes = apply_continue_levers(ctx);
         let p = ctx.profile.as_ref().expect("just loaded");
-        let welcome = if p.active_trip.is_some() {
-            format!("Welcome back, {}.", p.name)
-        } else {
-            let terminal_name = ctx
-                .world
-                .home_terminal(&p.current_city)
-                .map(|t| t.name)
-                .unwrap_or_default();
-            format!(
-                "Welcome back, {}. You are parked at {terminal_name} in {} with {} dollars.",
-                p.name,
-                ctx.world.spoken_city(&p.current_city, None),
-                fmt_grouped(p.money(), 0)
-            )
-        };
+        // The terminal (or the resumed drive) says where and with what
+        // right behind this line.
+        let welcome = format!("Welcome back, {}.", p.name);
         ctx.say(&welcome);
         // This welcome is spoken first; a resumed drive already queues its own
         // lines, and only the plain city-menu hand-off needs telling not to
@@ -686,7 +676,7 @@ impl Menu for MainMenuState {
     }
 
     fn enter(&mut self, ctx: &mut GameContext) {
-        let sequence = reuse_loadable_saves_scan(|| {
+        let (sequence, ambience) = reuse_loadable_saves_scan(|| {
             // The base `Menu::enter`: rebuild the rows, play the open sound,
             // announce.
             self.refresh(ctx, true);
@@ -702,10 +692,15 @@ impl Menu for MainMenuState {
                     newest.as_ref()
                 }
             };
-            select_menu_music_sequence(profile.map(|p| p as &dyn MenuMusicProfile))
+            let profile = profile.map(|p| p as &dyn MenuMusicProfile);
+            (
+                select_menu_music_sequence(profile),
+                select_menu_ambience(profile),
+            )
         });
         let refs: Vec<&str> = sequence.iter().map(String::as_str).collect();
         ctx.play_music_sequence("menu", &refs);
+        ctx.audio.set_ambient(Some(ambience));
         let armed = UPDATE_CHECK
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -714,6 +709,10 @@ impl Menu for MainMenuState {
         if !armed {
             Self::arm_update_check(&ctx.settings);
         }
+    }
+
+    fn exit(&mut self, ctx: &mut GameContext) {
+        ctx.audio.set_ambient(None);
     }
 
     fn update(&mut self, ctx: &mut GameContext, dt: f64) {
@@ -813,7 +812,7 @@ impl Menu for MainMenuState {
             );
         }
         let text = format!(
-            "Welcome to Freight Fate, version {}. An audio trucking adventure across America. {warning}",
+            "Freight Fate {}. {warning}",
             updater::spoken_version(version())
         );
         ctx.say(text.trim_end());
@@ -874,7 +873,7 @@ impl Menu for MainMenuState {
             })
             .help(
                 "Drivers on duty, your orinks.net account, cloud backup \
-                 and restore, and sharing choices like Mastodon and Discord.",
+                 and restore, and Discord presence.",
             ),
         );
         items.push(
@@ -888,6 +887,12 @@ impl Menu for MainMenuState {
                 ctx.push_state(LearnSoundsState::new())
             })
             .help("Any sound the road uses, and what it means."),
+        );
+        items.push(
+            MenuItem::new("Practice keys and buttons", |_s: &mut Self, ctx| {
+                ctx.push_state(InputPracticeState::new())
+            })
+            .help("Names what each key or controller button does while driving."),
         );
         items.push(
             MenuItem::new("Settings", |_s: &mut Self, ctx| {
@@ -1053,12 +1058,14 @@ impl TextEntry for NameEntryState {
     }
 
     fn enter(&mut self, ctx: &mut GameContext) {
-        ctx.say(&format!(
-            "New career. Type your driver name, then Enter. Left and Right \
-             arrows review the letters, Home and End jump to the start or \
-             end. Escape cancels.{}",
-            crate::states::text_entry::KEYBOARD_HINT
-        ));
+        if crate::states::text_entry::touch_prompt(ctx) {
+            ctx.say(&format!(
+                "New career. Type your driver name. {}",
+                crate::states::text_entry::TOUCH_FIELD_HELP
+            ));
+            return;
+        }
+        ctx.say("New career. Type your driver name, then Enter.");
     }
 
     fn confirm(&mut self, ctx: &mut GameContext) {

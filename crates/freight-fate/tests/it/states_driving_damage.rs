@@ -191,10 +191,10 @@ fn test_cruise_says_once_that_limp_mode_owns_the_target() {
 
     let said: Vec<String> = logged_since(&app, from)
         .into_iter()
-        .filter(|line| line.contains("Cruise cannot hold") || line.contains("Limp mode"))
+        .filter(|line| line.contains("Limp mode"))
         .collect();
     assert_eq!(said.len(), 1, "{said:?}");
-    assert!(said[0].contains("65"), "{:?}", said[0]);
+    assert!(said[0].contains("Holding 45"), "{:?}", said[0]);
 }
 
 // -- the out-of-service wall ----------------------------------------------------------

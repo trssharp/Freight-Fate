@@ -35,10 +35,10 @@ pub fn chains_on_dry_interstate_at_70() -> Outcome {
     if rig.drive.truck().chains_on {
         findings.push("chains survived miles of bare pavement at 70".to_string());
     } else {
-        if rig.said("chain let go") == 0 {
+        if rig.said("chain broke") == 0 {
             findings.push("chain snap happened silently".to_string());
         }
-        if rig.said("chains are hammering") == 0 {
+        if rig.said("Too fast for chains") == 0 {
             findings.push("no overspeed-chain warning before the snap".to_string());
         }
         // 0.2 %/mi x40 bare x6 overspeed = 48 %/mi -> ~2.1 miles to scrap.

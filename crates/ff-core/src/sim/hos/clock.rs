@@ -157,8 +157,7 @@ fn keep_last<T>(items: &mut Vec<T>, max: usize) {
     }
 }
 
-const ENFORCEMENT_OFF: &str =
-    "Hours of service enforcement is off; the ELD clock still records time.";
+const ENFORCEMENT_OFF: &str = "Hours enforcement off.";
 const RESET_ADVICE: &str = "Sleep 10 hours at a rest stop to reset.";
 
 /// kind -> (clause after "you are", sentence that can lead a readout)
@@ -706,36 +705,41 @@ impl HosClock {
                 .map(|s| s.kind)
                 .collect();
             if blown == ["break"] {
-                return "Hours of service: past your break limit. \
-                        Take a 30-minute break at a rest stop."
-                    .to_string();
+                return "Hours of service: 30-minute break overdue.".to_string();
             }
             return "Hours of service: past your limit. Sleep 10 hours at a rest stop to reset."
                 .to_string();
         }
-        let status = self.status.replace('_', " ");
-        let suffix = match self.split_pending_summary() {
-            Some(pending) => format!(" {pending}"),
-            None => String::new(),
+        // The status is its own whole sentence per status, so a catalog
+        // translates "on duty not driving" with the sentence around it rather
+        // than as a loose fragment.
+        let status = match self.status.as_str() {
+            "driving" => "ELD status driving.".to_string(),
+            "on_duty_not_driving" => "ELD status on duty not driving.".to_string(),
+            "off_duty" => "ELD status off duty.".to_string(),
+            "sleeper_berth" => "ELD status sleeper berth.".to_string(),
+            other => format!("ELD status {}.", other.replace('_', " ")),
         };
-        if duty_left <= break_left {
-            return format!(
-                "ELD status {status}. Hours of service: \
-                 {} of driving left, \
-                 {} of duty window left.{suffix}",
+        let hours = if duty_left <= break_left {
+            format!(
+                "Hours of service: {} of driving left, {} left in the 14-hour window.",
                 duration_text(drive_left),
                 duration_text(duty_left),
-            );
+            )
+        } else {
+            format!(
+                "Hours of service: {} of driving left, 30-minute break due in {}, \
+                 {} left in the 14-hour window.",
+                duration_text(drive_left),
+                duration_text(break_left),
+                duration_text(duty_left),
+            )
+        };
+        let mut sentences = vec![status, hours];
+        if let Some(pending) = self.split_pending_summary() {
+            sentences.push(pending.to_string());
         }
-        format!(
-            "ELD status {status}. Hours of service: \
-             {} of driving left, \
-             break due in {}, \
-             duty window closes in {}.{suffix}",
-            duration_text(drive_left),
-            duration_text(break_left),
-            duration_text(duty_left),
-        )
+        sentences.join(" ")
     }
 
     // -- the one-answer readouts ------------------------------------------------
@@ -759,7 +763,10 @@ impl HosClock {
         if duty_left <= break_left {
             lines.push(format!("Duty window left: {}.", duration_text(duty_left)));
         } else {
-            lines.push(format!("Break due in {}.", duration_text(break_left)));
+            lines.push(format!(
+                "30-minute break due in {}.",
+                duration_text(break_left)
+            ));
             lines.push(format!(
                 "Duty window closes in {}.",
                 duration_text(duty_left)
@@ -810,12 +817,12 @@ impl HosClock {
             }
         } else {
             let spent = if fresh {
-                "no driving yet".to_string()
+                "nothing yet".to_string()
             } else {
-                format!("{driven} driving")
+                driven.clone()
             };
             format!(
-                "At the wheel so far: {spent}, {} on duty this shift",
+                "Driven {spent}. On duty {}",
                 duration_text(self.duty_min / 60.0)
             )
         };
@@ -849,7 +856,7 @@ impl HosClock {
             };
         } else {
             answer = format!(
-                "Break due in {}{}",
+                "30-minute break due in {}{}",
                 duration_text(break_left),
                 if terse { "" } else { " of driving" }
             );
@@ -860,10 +867,7 @@ impl HosClock {
                 answer.push_str(&if terse {
                     format!(", duty window {}", duration_text(duty_left))
                 } else {
-                    format!(
-                        ", but your duty window closes first, in {}",
-                        duration_text(duty_left)
-                    )
+                    format!(", {} left in the 14-hour window", duration_text(duty_left))
                 });
             }
         }
@@ -903,7 +907,7 @@ impl HosClock {
                 format!("{drive_text}, duty window {}", duration_text(duty_left))
             }
         } else if duty_binds {
-            format!("{duty_text}, before your driving time runs out. {drive_text}")
+            format!("{duty_text}. {drive_text}")
         } else {
             format!("{drive_text}. {duty_text}")
         };
@@ -982,24 +986,16 @@ impl HosClock {
         }
         let last = rest_events.last()?;
         if last.status == "sleeper_berth" && last.minutes >= SPLIT_LONG_ALT_MIN {
-            return Some(
-                "Sleeper split pending: pair this with 2 more hours at sleep-capable parking.",
-            );
+            return Some("Sleeper split open: 2 more hours off duty or in the sleeper to pair it.");
         }
         if last.status == "sleeper_berth" && last.minutes >= SPLIT_LONG_MIN {
-            return Some(
-                "Sleeper split pending: pair this with 3 more hours at sleep-capable parking.",
-            );
+            return Some("Sleeper split open: 3 more hours off duty or in the sleeper to pair it.");
         }
         if last.minutes >= SPLIT_SHORT_ALT_MIN {
-            return Some(
-                "Sleeper split pending: pair this with 7 more hours in the sleeper berth.",
-            );
+            return Some("Sleeper split open: 7 more hours in the sleeper to pair it.");
         }
         if last.minutes >= SPLIT_SHORT_MIN {
-            return Some(
-                "Sleeper split pending: pair this with 8 more hours in the sleeper berth.",
-            );
+            return Some("Sleeper split open: 8 more hours in the sleeper to pair it.");
         }
         None
     }

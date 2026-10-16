@@ -16,7 +16,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -188,10 +188,7 @@ impl BassBackend {
         if !bass_sys::native_available() {
             return Err(BassError::NOT_LOADED);
         }
-        let _ = safe::set_config(BASS_CONFIG_NET_TIMEOUT, RADIO_CONNECT_TIMEOUT_MS);
-        let _ = safe::set_config(BASS_CONFIG_NET_READTIMEOUT, RADIO_READ_TIMEOUT_MS);
-        let _ = safe::set_config(BASS_CONFIG_NET_BUFFER, RADIO_NET_BUFFER_MS);
-        let _ = safe::set_config(BASS_CONFIG_NET_PREBUF, RADIO_NET_PREBUF_PERCENT);
+        Self::configure_net();
         if Self::headless_requested() {
             Self::init_device(BASS_NO_SOUND_DEVICE)?;
             return Ok(false); // asked-for silence is not a fallback
@@ -203,6 +200,23 @@ impl BassBackend {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// The radio's network settings, and the name a station's server sees
+    /// for a listener: Freight Fate and its version, not BASS's own
+    /// "BASS/2.4". BASS keeps the agent string for the life of the process,
+    /// so it is handed over once however many engines come up.
+    fn configure_net() {
+        let _ = safe::set_config(BASS_CONFIG_NET_TIMEOUT, RADIO_CONNECT_TIMEOUT_MS);
+        let _ = safe::set_config(BASS_CONFIG_NET_READTIMEOUT, RADIO_READ_TIMEOUT_MS);
+        let _ = safe::set_config(BASS_CONFIG_NET_BUFFER, RADIO_NET_BUFFER_MS);
+        let _ = safe::set_config(BASS_CONFIG_NET_PREBUF, RADIO_NET_PREBUF_PERCENT);
+        static AGENT: Once = Once::new();
+        AGENT.call_once(|| {
+            if let Err(err) = safe::set_net_agent(&radio_user_agent()) {
+                log::warn!("Radio user agent not set ({err}); stations see BASS's default");
+            }
+        });
     }
 
     pub(super) fn headless_requested() -> bool {
@@ -225,10 +239,7 @@ impl BassBackend {
         if !bass_sys::native_available() {
             return Err(BassError::NOT_LOADED);
         }
-        let _ = safe::set_config(BASS_CONFIG_NET_TIMEOUT, RADIO_CONNECT_TIMEOUT_MS);
-        let _ = safe::set_config(BASS_CONFIG_NET_READTIMEOUT, RADIO_READ_TIMEOUT_MS);
-        let _ = safe::set_config(BASS_CONFIG_NET_BUFFER, RADIO_NET_BUFFER_MS);
-        let _ = safe::set_config(BASS_CONFIG_NET_PREBUF, RADIO_NET_PREBUF_PERCENT);
+        Self::configure_net();
         if no_sound {
             Self::init_device(BASS_NO_SOUND_DEVICE)?;
         } else {
@@ -916,3 +927,26 @@ impl BassBackend {
 
 #[path = "bass_backend.rs"]
 mod backend_impl;
+
+/// What a radio station's server sees as the listener's player.
+pub(crate) fn radio_user_agent() -> String {
+    format!(
+        "FreightFate/{} (+https://orinks.net/freight-fate)",
+        crate::app::version()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::radio_user_agent;
+
+    #[test]
+    fn stations_see_freight_fate_and_its_version() {
+        let agent = radio_user_agent();
+        assert!(
+            agent.starts_with(&format!("FreightFate/{} ", crate::app::version())),
+            "{agent}"
+        );
+        assert!(!agent.contains("BASS"), "{agent}");
+    }
+}

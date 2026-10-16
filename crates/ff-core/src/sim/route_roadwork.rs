@@ -342,10 +342,10 @@ fn minutes_words(hours: f64) -> String {
 }
 
 /// One spot in dispatch's words: "one lane closed on I-70 near Topeka, 5
-/// miles at 45 miles per hour, about 3 minutes".
+/// miles, 45 miles per hour, about 3 minutes".
 pub fn spot_text(spot: &ConstructionSpot, settings: &Settings) -> String {
     format!(
-        "{} on {} near {}, {} at {}, {}",
+        "{} on {} near {}, {}, {}, {}",
         spot.closure_words(),
         spot.road,
         spot.near_city,
@@ -654,7 +654,7 @@ mod tests {
             "{line}"
         );
         assert!(
-            line.contains("5 miles at 45 miles per hour, about "),
+            line.contains("5 miles, 45 miles per hour, about "),
             "{line}"
         );
         assert!(line.ends_with("No quicker way around."), "{line}");

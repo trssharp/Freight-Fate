@@ -14,6 +14,7 @@ fn main() {
     build_ios_bridge();
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let root = manifest.ancestors().nth(2).unwrap().to_path_buf();
+    write_catalog_list(&root);
     let os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let dir = root
@@ -189,4 +190,35 @@ fn link_clang_runtime() {
         "cargo:rustc-link-arg={resource_dir}/lib/darwin/libclang_rt.{}.a",
         if simulator { "iossim" } else { "ios" }
     );
+}
+
+/// Compile every `lang/*.po` into the game, so a translator's new language
+/// needs its file and nothing else: `$OUT_DIR/catalogs.rs` is the
+/// `(code, text)` list `app::language` includes.
+fn write_catalog_list(root: &std::path::Path) {
+    let lang = root.join("lang");
+    println!("cargo:rerun-if-changed={}", lang.display());
+    let mut codes: Vec<(String, PathBuf)> = fs::read_dir(&lang)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("po"))
+        .filter_map(|path| {
+            let code = path.file_stem()?.to_str()?.to_string();
+            Some((code, path))
+        })
+        .collect();
+    codes.sort();
+    let mut out = String::from("&[\n");
+    for (code, path) in &codes {
+        println!("cargo:rerun-if-changed={}", path.display());
+        out.push_str(&format!(
+            "    ({code:?}, include_str!({:?})),\n",
+            path.display().to_string()
+        ));
+    }
+    out.push(']');
+    let dest = PathBuf::from(env::var("OUT_DIR").unwrap()).join("catalogs.rs");
+    fs::write(dest, out).expect("catalog list written");
 }

@@ -464,6 +464,7 @@ impl DrivingState {
         self.trip.traffic_manager.player_lane_target = self.lane_change_target;
         self.update_exit_preparation(ctx, dt);
         self.resume_speed_control_if_ready(ctx, braking);
+        self.apply_chain_speed_cap(ctx);
         self.update_cruise(ctx, dt, braking, hand_accelerating, clutch_disengaged);
         self.update_keeper(ctx, dt, braking, hand_accelerating, clutch_disengaged);
         // The keeper's held snub, for the same reason and by the same rule:
@@ -567,6 +568,9 @@ impl DrivingState {
         // On the ramp the highway odometer holds and the ramp consumes the
         // movement instead; the trip records how far the truck rolled either way.
         self.trip.on_ramp = self.ramp_mi.is_some();
+        // The yard is announced when the truck has turned into it, not when
+        // it rolls over the driveway's milepost on its way past the turn.
+        self.trip.yard_entry_held = self.driveway_turn_pending();
         for event in self.trip.update(dt) {
             self.handle_trip_event(ctx, &event);
         }
@@ -657,6 +661,8 @@ impl DrivingState {
         self.update_brake_heat_cue(ctx, dt);
         self.update_traction_cues(ctx);
         self.update_chain_law(ctx);
+        self.update_chain_checkpoint_hold(ctx);
+        self.update_chain_carry(ctx);
         // The destination approach assist used to run here -- after the
         // physics step, which is why its brake never reached the truck. It
         // now runs with the other assists' pedal floors, ahead of t.update().

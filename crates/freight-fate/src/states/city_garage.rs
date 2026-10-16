@@ -3,7 +3,7 @@
 
 use ff_core::models::business::{is_owner_operator, player_pays_operating_costs};
 use ff_core::models::economy::{damage_severity_mult, Economy, REPAIR_COST_PER_PCT};
-use ff_core::models::profile::Profile;
+use ff_core::models::profile::{Profile, CHAIN_REPAIR_LINKS_PER_SET};
 use ff_core::pyfmt::{fmt_f, fmt_grouped, round_py_n};
 use ff_core::sim::vehicle::COMPONENT_SERVICE_LIMIT_PCT;
 
@@ -31,6 +31,8 @@ pub const TRUCK_WASH_COST: f64 = 35.0;
 pub const WINTER_TIRE_PREMIUM: f64 = 1.25;
 pub const CHAIN_SET_COST: f64 = 750.0;
 pub const TERMINAL_CHAINS_MIN: f64 = 10.0;
+/// Restocking the two spare chain repair links. UNVERIFIED retail price.
+pub const CHAIN_REPAIR_LINKS_COST: f64 = 25.0;
 
 fn record_terminal_duty(ctx: &mut GameContext, start_hour: f64, end_hour: f64, note: &str) {
     let terminal = crate::states::city::home_terminal(ctx);
@@ -128,10 +130,7 @@ impl GarageState {
             return "Fuel: tank is full".to_string();
         }
         if !player_pays_operating_costs(&p.business_status) {
-            return format!(
-                "Refuel assigned company tractor: {} gallons, carrier billed",
-                fmt_f(need, 0)
-            );
+            return format!("Refuel: {} gallons", fmt_f(need, 0));
         }
         let cost = ctx.economy.fuel_cost(&Self::region(ctx), need);
         format!(
@@ -147,10 +146,7 @@ impl GarageState {
             return "Repairs: no damage".to_string();
         }
         if !player_pays_operating_costs(&p.business_status) {
-            return format!(
-                "Repair assigned company tractor: {} percent damage, carrier billed",
-                fmt_f(p.truck_damage_pct(), 0)
-            );
+            return format!("Repair: {} percent damage", fmt_f(p.truck_damage_pct(), 0));
         }
         let cost = Economy::repair_cost(p.truck_damage_pct());
         format!(
@@ -168,20 +164,17 @@ impl GarageState {
             return;
         }
         if !player_pays_operating_costs(&profile(ctx).business_status) {
-            let money = {
+            {
                 let p = profile_mut(ctx);
                 p.set_truck_fuel_gal(tank);
                 p.game_hours += TERMINAL_FUEL_MIN / 60.0;
                 p.hos.on_duty(TERMINAL_FUEL_MIN);
-                p.money()
-            };
+            }
             ctx.save_profile();
             ctx.audio.play("vehicle/fuel_pump");
             ctx.say(&format!(
-                "Tank filled on the carrier fuel account. Fueling took {} minutes. You have {} \
-                 dollars.",
-                fmt_f(TERMINAL_FUEL_MIN, 0),
-                fmt_grouped(money, 0)
+                "Tank filled, {} minutes.",
+                fmt_f(TERMINAL_FUEL_MIN, 0)
             ));
             ctx.award_achievement("route_refuel");
             self.refresh(ctx, true);
@@ -378,10 +371,7 @@ impl GarageState {
             return format!("Tires: {} tread, top shape", Self::compound_word(ctx));
         }
         if !player_pays_operating_costs(&p.business_status) {
-            return format!(
-                "Replace tires on assigned company tractor: {} percent wear, carrier billed",
-                fmt_f(wear, 0)
-            );
+            return format!("Replace tires: {} percent wear", fmt_f(wear, 0));
         }
         let cost = round_py_n(wear * Self::tire_cost_per_pct(ctx), 2);
         format!(
@@ -399,10 +389,7 @@ impl GarageState {
             return "Brakes: top shape".to_string();
         }
         if !player_pays_operating_costs(&p.business_status) {
-            return format!(
-                "Brake job on assigned company tractor: {} percent wear, carrier billed",
-                fmt_f(wear, 0)
-            );
+            return format!("Brake job: {} percent wear", fmt_f(wear, 0));
         }
         let cost = round_py_n(wear * BRAKE_SERVICE_COST_PER_PCT, 2);
         format!(
@@ -419,11 +406,7 @@ impl GarageState {
             return "Engine: running like new".to_string();
         }
         if !player_pays_operating_costs(&p.business_status) {
-            return format!(
-                "Engine overhaul on assigned company tractor: \
-                 {} percent wear, carrier billed",
-                fmt_f(wear, 0)
-            );
+            return format!("Engine overhaul: {} percent wear", fmt_f(wear, 0));
         }
         let cost = round_py_n(wear * ENGINE_OVERHAUL_COST_PER_PCT, 2);
         format!(
@@ -440,10 +423,7 @@ impl GarageState {
             return "Wash: truck is clean".to_string();
         }
         if !player_pays_operating_costs(&p.business_status) {
-            return format!(
-                "Wash assigned company tractor: {} percent road grime, carrier billed",
-                fmt_f(grime, 0)
-            );
+            return format!("Wash: {} percent road grime", fmt_f(grime, 0));
         }
         format!(
             "Wash truck: {} percent road grime for {} dollars",
@@ -605,16 +585,13 @@ impl GarageState {
                 "Buy snow chains"
             };
             if carrier {
-                return format!("{what}: carrier billed");
+                return what.to_string();
             }
             return format!("{what}: {} dollars", fmt_grouped(CHAIN_SET_COST, 0));
         }
         if wear >= 1.0 {
             if carrier {
-                return format!(
-                    "Replace snow chains: {} percent worn, carrier billed",
-                    fmt_f(wear, 0)
-                );
+                return format!("Replace snow chains: {} percent worn", fmt_f(wear, 0));
             }
             return format!(
                 "Replace snow chains: {} percent worn, {} dollars",
@@ -639,6 +616,7 @@ impl GarageState {
                 let p = profile_mut(ctx);
                 p.set_chains_owned(true);
                 p.set_chain_wear_pct(0.0);
+                p.set_chain_repair_links(CHAIN_REPAIR_LINKS_PER_SET);
                 p.game_hours += TERMINAL_CHAINS_MIN / 60.0;
                 p.game_hours
             };
@@ -663,6 +641,7 @@ impl GarageState {
             p.spend(CHAIN_SET_COST);
             p.set_chains_owned(true);
             p.set_chain_wear_pct(0.0);
+            p.set_chain_repair_links(CHAIN_REPAIR_LINKS_PER_SET);
             p.game_hours += TERMINAL_CHAINS_MIN / 60.0;
             (p.game_hours, p.money())
         };
@@ -677,6 +656,37 @@ impl GarageState {
             fmt_grouped(CHAIN_SET_COST, 0),
             fmt_grouped(money, 0)
         ));
+        self.refresh(ctx, true);
+    }
+
+    pub fn restock_chain_links(&mut self, ctx: &mut GameContext) {
+        let carrier = !player_pays_operating_costs(&profile(ctx).business_status);
+        if !carrier && profile(ctx).money() < CHAIN_REPAIR_LINKS_COST {
+            ctx.audio.play("ui/error");
+            ctx.say(&format!(
+                "Repair links cost {} dollars.",
+                fmt_grouped(CHAIN_REPAIR_LINKS_COST, 0)
+            ));
+            return;
+        }
+        let money = {
+            let p = profile_mut(ctx);
+            if !carrier {
+                p.spend(CHAIN_REPAIR_LINKS_COST);
+            }
+            p.set_chain_repair_links(CHAIN_REPAIR_LINKS_PER_SET);
+            p.money()
+        };
+        save_equipment_change(ctx);
+        ctx.audio.play("ui/notify");
+        if carrier {
+            ctx.say("Two chain repair links are in the side box, carrier billed.");
+        } else {
+            ctx.say(&format!(
+                "Two chain repair links are in the side box. You have {} dollars left.",
+                fmt_grouped(money, 0)
+            ));
+        }
         self.refresh(ctx, true);
     }
 
@@ -919,8 +929,11 @@ impl Menu for GarageState {
                 |s: &mut Self, ctx| s.buy_chains(ctx),
             )
             .help(
-                "Chains go on from the pause menu when stopped in snow or ice. They grind \
-                 apart on bare pavement. Company drivers bill the carrier.",
+                "A chain set is seven chains: four for the drive tires, one for a trailer \
+                 tire, and two spares, the most any state here asks of a semi, plus two \
+                 repair links. Put chains on from the pause menu once you're stopped in snow \
+                 or ice. They wear out fast on bare pavement. Company drivers bill the \
+                 carrier.",
             ),
             MenuItem::new(
                 Label::dynamic(|_s: &Self, ctx| Self::brake_label(ctx)),
@@ -944,6 +957,21 @@ impl Menu for GarageState {
             )
             .help("Company drivers bill the carrier, owner-operators pay."),
         ]);
+        // Spare repair links ride with the set; the shop restocks them.
+        if profile(ctx).chains_owned()
+            && profile(ctx).chain_repair_links() < CHAIN_REPAIR_LINKS_PER_SET
+        {
+            items.push(
+                MenuItem::new(
+                    format!(
+                        "Restock chain repair links: {} dollars",
+                        fmt_grouped(CHAIN_REPAIR_LINKS_COST, 0)
+                    ),
+                    |s: &mut Self, ctx| s.restock_chain_links(ctx),
+                )
+                .help("A spare link fixes a broken chain on the shoulder in about 15 minutes."),
+            );
+        }
         if owner {
             items.extend([
                 MenuItem::new("Upgrades", |s: &mut Self, ctx| s.upgrades(ctx)).help(

@@ -45,7 +45,7 @@ fn test_air_ready_announces_once_while_the_parking_brake_is_set() {
     d.update_air_brake_announcements(&mut app.ctx, true, false, false, false);
     let said = app.event_lines();
     assert_eq!(said.len(), 1);
-    assert!(said[0].contains("Air pressure ready"));
+    assert_eq!(said[0], "Air ready.");
     // A second pass with the flag already set says nothing more.
     d.update_air_brake_announcements(&mut app.ctx, true, false, false, false);
     assert_eq!(app.event_lines().len(), 1);
@@ -59,7 +59,7 @@ fn test_the_air_brake_lockout_says_why_the_truck_will_not_roll() {
     d.maybe_say_air_brake_lockout(&mut app.ctx);
     let said = app.event_lines();
     assert_eq!(said.len(), 1);
-    assert!(said[0].starts_with("Engine off. Start the engine first"));
+    assert_eq!(said[0], "Engine off.");
     // The cue timer holds it off for four seconds, however hard the driver
     // leans on the accelerator.
     d.maybe_say_air_brake_lockout(&mut app.ctx);
@@ -181,7 +181,7 @@ fn test_braking_below_the_hazard_speed_clears_it_and_says_so() {
     assert!(app
         .event_lines()
         .iter()
-        .any(|line| line == "Past the deer. Well done."));
+        .any(|line| line == "Clear of the deer."));
 }
 
 #[test]
@@ -569,13 +569,15 @@ fn test_the_descent_advisory_names_controls_the_driver_actually_has() {
     let mut app = TestApp::new();
     let mut d = a_drive(&mut app);
     d.trip.truck.transmission.automatic = true;
-    let said = d.descend_advice(&app.ctx);
+    let said = d.descend_advice(&mut app.ctx);
     assert!(!said.to_lowercase().contains("pick your gear"));
-    assert!(said.starts_with("Set the engine brake with"));
+    assert!(said.starts_with("Set the jake with"));
 
-    // The manual box keeps the gear advice, because it can act on it.
+    // A manual box hears the same: the jake is the action.
     d.trip.truck.transmission.automatic = false;
-    assert!(d.descend_advice(&app.ctx).starts_with("Pick your gear"));
+    assert!(d
+        .descend_advice(&mut app.ctx)
+        .starts_with("Set the jake with"));
 
     // With the jake already on, J turns it OFF: the agent drive into Edwards
     // (2026-09-24) heard "Set the engine brake with J", pressed it, and got
@@ -583,14 +585,33 @@ fn test_the_descent_advisory_names_controls_the_driver_actually_has() {
     // to be told.
     d.trip.truck.engine_brake_stage = 2;
     assert_eq!(
-        d.descend_advice(&app.ctx),
+        d.descend_advice(&mut app.ctx),
         "Pick your gear before it starts."
     );
     d.trip.truck.transmission.automatic = true;
-    assert_eq!(d.descend_advice(&app.ctx), "");
+    assert_eq!(d.descend_advice(&mut app.ctx), "");
     d.trip.truck.engine_brake_stage = 0;
     d.auto_jake = true; // armed, sitting at stage zero on the flat
-    assert_eq!(d.descend_advice(&app.ctx), "");
+    assert_eq!(d.descend_advice(&mut app.ctx), "");
+}
+
+#[test]
+fn test_the_descent_advisory_stops_teaching_once_the_jake_is_known() {
+    // Heard on every downgrade, "Set the engine brake with J" got old for a
+    // driver who already uses it (player report, 2026-10). Switching the jake
+    // on a few times retires it; the grade line itself stays.
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    d.trip.truck.transmission.automatic = true;
+    assert!(d.descend_advice(&mut app.ctx).starts_with("Set the jake"));
+    for _ in 0..ff_core::spoken_advice::RETIRE_AFTER {
+        d.toggle_engine_brake(&mut app.ctx); // on
+        d.toggle_engine_brake(&mut app.ctx); // off
+    }
+    assert_eq!(d.descend_advice(&mut app.ctx), "");
+    d.trip.truck.transmission.automatic = false;
+    // A manual box is a different binding count: it is taught afresh.
+    assert!(d.descend_advice(&mut app.ctx).starts_with("Set the jake"));
 }
 
 // -- ignored: the roadside screens a settled stop pushes ------------------------------
@@ -709,7 +730,7 @@ fn test_a_hot_ramp_speaks_one_assist_line_not_two() {
     assert!(
         app.event_lines()
             .iter()
-            .any(|text| text.contains("Curve assistance slowing.")),
+            .any(|text| text.contains("Slowing for the bend.")),
         "silencing the ramp case must not silence a real mainline bend"
     );
 }

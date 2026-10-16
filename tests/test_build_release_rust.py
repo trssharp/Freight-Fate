@@ -698,6 +698,11 @@ def test_macos_stage_is_a_player_ready_app_bundle(tmp_path, monkeypatch):
         "USER_MANUAL.html",
         "ALPHA_TEST_BOOK.md",
         "ALPHA_TEST_BOOK.html",
+        "translations/freight-fate.pot",
+        "translations/extra.pot",
+        "translations/README.md",
+        "translations/es.po",
+        "translations/glossary/en.md",
     ):
         assert (resources / name).is_file()
     frameworks = app / "Contents" / "Frameworks"
@@ -1242,6 +1247,8 @@ def test_full_macos_bundle_verification_reads_packs_from_resources(tmp_path, mon
         "USER_MANUAL.html",
         "ALPHA_TEST_BOOK.md",
         "ALPHA_TEST_BOOK.html",
+        "translations/freight-fate.pot",
+        "translations/README.md",
         "SOUND_CREDITS.md",
         "freight_fate/sounds.pak",
         "freight_fate/music.pak",
@@ -1309,6 +1316,8 @@ def test_macos_staged_payload_rejects_each_missing_runtime_library(
         "USER_MANUAL.html",
         "ALPHA_TEST_BOOK.md",
         "ALPHA_TEST_BOOK.html",
+        "translations/freight-fate.pot",
+        "translations/README.md",
         "SOUND_CREDITS.md",
         "freight_fate/sounds.pak",
         "freight_fate/music.pak",
@@ -1627,7 +1636,8 @@ def test_channel3000_download_config_uses_public_defaults(monkeypatch):
     monkeypatch.delenv("FREIGHT_FATE_CHANNEL3000_URL", raising=False)
     monkeypatch.delenv("FREIGHT_FATE_CHANNEL3000_SHA256", raising=False)
     url, sha = build_release.channel3000_download_config()
-    assert url == "https://www.orinks.net/downloads/channel3000.pak"
+    assert url == build_release.DEFAULT_CHANNEL3000_URL
+    assert url.startswith("https://")
     assert sha == build_release.DEFAULT_CHANNEL3000_SHA256
     assert len(sha) == 64
 

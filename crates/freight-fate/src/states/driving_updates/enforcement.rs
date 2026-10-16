@@ -196,17 +196,19 @@ impl DrivingState {
         self.reset_pull_over_tracker();
         self.pull_over_compliance = PULL_OVER_START_COMPLIANCE;
         self.pull_over_prev_mph = self.trip.truck.speed_mph();
-        let where_ = match self.trip.active_post_at(self.trip.position_mi) {
-            Some(post) => post.reason().to_string(),
-            None => "highway enforcement".to_string(),
+        // The signal key is named until the exit signal has been used a few
+        // times (the same counter the stop callouts retire on).
+        let speed = ctx.settings.speed_text(self.trip.truck.speed_mph());
+        let zone = ctx.settings.speed_text(limit);
+        let message = if self.instruction_retired(ctx, "take_exit") {
+            format!("Lights and siren behind you. {speed} in a {zone} zone. Signal and stop on the shoulder.")
+        } else {
+            format!(
+                "Lights and siren behind you. {speed} in a {zone} zone. Signal with {} and stop on \
+                 the shoulder.",
+                ctx.control_hint("take_exit")
+            )
         };
-        let signal_hint = ctx.control_hint("take_exit");
-        let message = format!(
-            "Lights and siren behind you. A trooper on this {where_} clocked you at {} in a {} \
-             zone. Signal with {signal_hint} and stop on the shoulder.",
-            ctx.settings.speed_text(self.trip.truck.speed_mph()),
-            ctx.settings.speed_text(limit)
-        );
         self.arm_pull_over(ctx, &message);
         ctx.controller.rumble.alert();
     }
@@ -346,17 +348,16 @@ impl DrivingState {
                 // its own, before a word is spoken.
                 ctx.audio
                     .play_with("events/weigh_station_warning", 0.7, 0.0);
-                // Action first, and both keys through control_hint. The old
-                // line hard-coded "press T", and T at speed planned a sleep
-                // stop past the scale -- the instruction itself marched a
-                // tester into the bypass charge (report, 2026-08-12).
+                // No keys: the old line hard-coded "press T", and T at speed
+                // planned a sleep stop past the scale -- the instruction
+                // itself marched a tester into the bypass charge (report,
+                // 2026-08-12). The reminder nearer the scale names the exit.
                 // A transponder truck's verdict is rolled BEFORE the notice
                 // is worded (silent, deterministic, so this is the same
-                // verdict either way): a green truck used to be told "Signal
-                // for the scale exit" and then, one sentence later, that it
-                // needed no exit -- the notice contradicting itself a breath
+                // verdict either way): a green truck used to be told to pull
+                // in and then, one sentence later, that it needed no exit -- the notice contradicting itself a breath
                 // too late (adversarial battery). A red truck, and every
-                // truck without a transponder, still gets the full pull-in
+                // truck without a transponder, still gets the pull-in
                 // instruction, which stays true for them.
                 let mut verdict = String::new();
                 if ctx
@@ -367,14 +368,9 @@ impl DrivingState {
                     verdict = self.roll_transponder_verdict(&stop, &key);
                 }
                 let instruction = if verdict == "green" {
-                    "Your transponder answers it at road speed.".to_string()
+                    "Transponder bypass."
                 } else {
-                    format!(
-                        "All trucks must pull in. Signal for the scale exit with {}. Stopped at \
-                         the scale, press {} to check in.",
-                        ctx.control_hint("take_exit"),
-                        ctx.control_hint("rest")
-                    )
+                    "All trucks must pull in."
                 };
                 // Bound here and moved into the gate below, not read from the
                 // sweep when the gate runs: the validity test has to compare

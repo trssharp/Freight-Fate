@@ -6,10 +6,9 @@ Ogg Opus, kept out of ``music.pak`` (which the game reads whole into memory)
 in a pack of its own that the game opens only when someone tunes in. The
 plan is ``docs/superpowers/plans/2026-10-06-channel-3000.md``.
 
-The clips live on the orphan ``channel3000-clips`` branch, never merged::
+The clips are not in git (see ``docs/channel3000/README.md``); point the
+tool at a local folder of them::
 
-    git fetch origin channel3000-clips
-    git worktree add ../c3k-clips origin/channel3000-clips
     uv run python tools/build_channel3000.py ../c3k-clips
 
 That folder holds ``clips/<key>.opus`` and ``clips.json``. This tool checks

@@ -2,7 +2,7 @@
 //! per-frame draw that turns an observation into a pull-over.
 
 use ff_core::models::enforcement::{
-    CHAIN_LAW_FINE, FOLLOWING_TOO_CLOSE_FINE, LANE_MISUSE_FINE, LIGHTS_FINE, UNSAFE_DAMAGE_FINE,
+    chain_law_fine, FOLLOWING_TOO_CLOSE_FINE, LANE_MISUSE_FINE, LIGHTS_FINE, UNSAFE_DAMAGE_FINE,
 };
 use ff_core::pyfmt::{py_str_float, round_py_n};
 use ff_core::pyrandom::PyRandom;
@@ -60,7 +60,11 @@ impl DrivingState {
         // the entry citation makes (`update_chain_law`). Snow anywhere used
         // to let a scale or a patrol in Chicago write "running the chain
         // control without chains" (seasonal audit, 2026-10-01).
-        let chain_level = if self.trip.chain_law_area_at(position).is_some() {
+        // Colorado Level 1 leaves a tandem-drive truck unchained, and
+        // Wyoming Level 1 takes snow tires (`rig_compliant_at`).
+        let chain_level = if self.trip.chain_law_area_at(position).is_some()
+            && !self.trip.rig_compliant_at(position)
+        {
             self.trip.chain_law_level()
         } else {
             0
@@ -543,7 +547,7 @@ impl DrivingState {
                     "A trooper on this {reason} saw you running the chain control without chains \
                      on the drives."
                 ),
-                CHAIN_LAW_FINE,
+                chain_law_fine(self.trip.state_code_at(self.trip.position_mi).as_deref()),
                 "Back on the highway. Chain up before the next control.".to_string(),
             );
         }

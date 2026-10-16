@@ -36,7 +36,9 @@ permissions:
 
 concurrency:
   group: career-19-snapshot
-  cancel-in-progress: true
+  # A scheduled start queues behind a running build instead of cancelling
+  # it, so the backup start can never kill a late primary run.
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 env:
   PYTHON_VERSION: "3.12"
@@ -97,6 +99,7 @@ jobs:
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SCHEDULE: ${{ github.event.schedule }}
         run: |
           echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -123,6 +126,15 @@ jobs:
             exit 0
           fi
 
+          # The backup start builds only when the primary start never made
+          # today's snapshot (dropped, or failed past its retry).
+          if [ "$SCHEDULE" = "37 8 * * *" ] \
+            && gh release view "1.9-tester-$(date -u +%Y%m%d)" >/dev/null 2>&1; then
+            echo "Today's snapshot already exists; the backup start has nothing to do."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           LAST_TAG=$(git tag --list "1.9-tester-*" --sort=-version:refname | head -1)
           if [ -z "$LAST_TAG" ]; then
             echo "should_build=true" >> "$GITHUB_OUTPUT"
@@ -142,6 +154,25 @@ jobs:
             --latest-stable-tag "$LATEST_STABLE_TAG" \
             --exclude-stable-notes latest-stable-notes.md \
             >> "$GITHUB_OUTPUT"
+
+      - name: Fold the accepted community stations
+        # Every build ships the stations accepted on orinks.net up to the
+        # moment it was cut. Folded once here so all three platforms ship the
+        # same list. This used to be a daily job committing to dev, which
+        # dev's required checks refuse from the workflow token. When the site
+        # cannot be read the tool leaves the committed copy alone and the
+        # build ships that, since players also download the list at launch.
+        if: steps.check.outputs.should_build == 'true'
+        run: |
+          python3 tools/fold_community_stations.py \
+            || echo "::warning::Could not read the accepted stations; shipping the committed copy."
+
+      - uses: actions/upload-artifact@v7
+        if: steps.check.outputs.should_build == 'true'
+        with:
+          name: community-stations
+          path: data/radio_community.json
+          retention-days: 7
 
   format:
     # Formatting is the same on every platform, so it is checked once, on
@@ -217,6 +248,12 @@ jobs:
         # per-push workflow (rust.yml) leaves out run here, and only here.
         # They are headless driving logic, so the other runners skip them.
         run: cargo test -p ff-core -p freight-fate
+
+      - name: Ship the accepted community stations
+        uses: actions/download-artifact@v7
+        with:
+          name: community-stations
+          path: data
 
       - name: Build the portable release
         run: ./build-release.ps1 --tag "${{ needs.prepare.outputs.tag }}"
@@ -355,6 +392,12 @@ jobs:
             echo "MACOS_NOTARY_KEY_ID=$ASC_KEY_ID"
             echo "MACOS_NOTARY_ISSUER_ID=$ASC_ISSUER_ID"
           } >> "$GITHUB_ENV"
+
+      - name: Ship the accepted community stations
+        uses: actions/download-artifact@v7
+        with:
+          name: community-stations
+          path: data
 
       - name: Build the macOS release
         # --smoke boots the PACKAGED app for five frames with dummy drivers:
@@ -510,6 +553,12 @@ jobs:
         env:
           RUSTFLAGS: --cfg ci_quick
         run: cargo test -p ff-core -p freight-fate
+
+      - name: Ship the accepted community stations
+        uses: actions/download-artifact@v7
+        with:
+          name: community-stations
+          path: data
 
       - name: Build the Linux release
         # --smoke boots the staged tarball payload for five frames with dummy

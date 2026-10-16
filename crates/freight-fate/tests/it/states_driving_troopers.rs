@@ -708,19 +708,14 @@ fn test_weigh_station_warning_is_spoken_before_bypass() {
         .filter(|line| line.contains("Open weigh station ahead"))
         .collect();
     assert_eq!(notices.len(), 1, "{notices:#?}");
-    // The notice teaches the exit key first; the rest key only once stopped
-    // at the scale. "Press T" at speed plans a sleep stop, which is the
-    // instruction that used to march drivers into the bypass.
+    // The notice names no key: "Press T" at speed plans a sleep stop, which
+    // is the instruction that used to march drivers into the bypass.
     assert!(
-        notices[0].contains("Signal for the scale exit with X"),
+        notices[0].ends_with("All trucks must pull in."),
         "{}",
         notices[0]
     );
-    assert!(
-        notices[0].contains("Stopped at the scale, press T to check in"),
-        "{}",
-        notices[0]
-    );
+    assert!(!notices[0].contains("press T"), "{}", notices[0]);
     // Its own earcon, not the shared inspection cue (owner ruling,
     // 2026-08-14): testers could not tell the scale-ahead warning apart from
     // being looked at for something else.
@@ -1184,9 +1179,9 @@ fn test_out_of_service_stop_shuts_down_the_engine() {
     let text =
         with_top::<EnforcementStopState, _>(&mut app, |stop, _| stop.outcome_text().to_lowercase());
     assert!(text.contains("shut down the engine"), "{text}");
-    // Ten hours parked with the engine off bleeds the air down, so the driver
-    // needs the restart instruction to get moving again.
-    assert!(text.contains("start the engine"), "{text}");
+    // Ten hours parked with the engine off bleeds the air down, so the
+    // outcome says where the truck stands.
+    assert!(text.contains("engine off, air"), "{text}");
 }
 
 #[test]

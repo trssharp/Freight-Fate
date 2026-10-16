@@ -74,7 +74,7 @@ pub fn scale_check_in_guidance() -> Outcome {
 
     // Jerry's press: T immediately, mid-announcement in real audio.
     rig.press(Key::T);
-    if rig.said("Planned sleep stop selected") > 0 {
+    if rig.said("Sleep stop planned") > 0 {
         findings.push(
             "T mid scale warning planned a sleep stop past the scale instead of deferring"
                 .to_string(),

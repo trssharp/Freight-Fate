@@ -131,7 +131,7 @@ mod console {
     /// Start menu -- and that launch stays completely detached: not attached
     /// to any console, so it cannot be killed by a Ctrl-C meant for the shell
     /// or by that shell's window closing. Every path that PRINTS needs an
-    /// argument to reach it: `--help`, `-h`, `/?`, an unrecognised switch
+    /// argument to reach it: `--help`, `-h`, `/?`, an unrecognized switch
     /// (which prints the usage and exits 2), `--list-break-scenarios`,
     /// `--break-scenario`, `--break-battery`, `--playtest-sandbox`,
     /// `--playtest-road`, `--smoke`, `--headless`. Keying on "any argument at
@@ -190,7 +190,7 @@ fn run(args: &[String]) -> i32 {
         print!("{USAGE}");
         return 0;
     }
-    // An unrecognised switch used to fall through to `CliOptions::parse`, which
+    // An unrecognized switch used to fall through to `CliOptions::parse`, which
     // ignores what it does not know -- so `--help` LAUNCHED THE GAME. Someone
     // asking what the flags are gets a window and a main menu instead of an
     // answer, and on a machine already running a copy the single-instance
@@ -202,7 +202,7 @@ fn run(args: &[String]) -> i32 {
                 .iter()
                 .any(|k| *k == a.as_str() || a.starts_with(&format!("{k}=")))
     }) {
-        eprintln!("freightfate: unrecognised switch {unknown}\n");
+        eprintln!("freightfate: unrecognized switch {unknown}\n");
         eprint!("{USAGE}");
         return 2;
     }
@@ -678,7 +678,7 @@ fn playtest_road(args: &[String]) -> i32 {
         let mut guard = freight_fate::single_instance::SingleInstanceGuard::new();
         if !guard.acquire() {
             eprintln!(
-                "Freight Fate is already running. Close it first -- a second window would \
+                "Freight Fate is already running. Close it first. A second window would \
                  start rolling behind the one you are looking at."
             );
             return 1;

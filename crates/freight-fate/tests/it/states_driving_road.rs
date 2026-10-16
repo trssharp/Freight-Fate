@@ -206,10 +206,7 @@ fn test_the_lane_you_came_out_of_is_called_open_once_you_are_past() {
     clear_the_box_truck(&mut drive);
     drive.update_lane_gap(&mut app.ctx, 0.1);
 
-    assert_eq!(
-        app.event_lines(),
-        vec!["Clear of the box truck. Right lane open.".to_string()]
-    );
+    assert_eq!(app.event_lines(), vec!["Right lane open.".to_string()]);
 }
 
 #[test]
@@ -331,7 +328,7 @@ fn test_passing_on_the_right_calls_the_left_lane_open() {
 
     assert_eq!(
         app.event_lines().last().map(String::as_str),
-        Some("Clear of the car. Left lane open.")
+        Some("Left lane open.")
     );
 }
 
@@ -611,7 +608,7 @@ fn test_a_tenth_of_a_mile_back_names_it_as_illegal() {
         "{spoken}"
     );
     assert!(
-        spoken.contains("Backing on a travelled lane is illegal"),
+        spoken.contains("Backing on a traveled lane is illegal"),
         "{spoken}"
     );
 }
@@ -665,8 +662,10 @@ fn test_zone_violation_warns_before_any_fine() {
     assert_eq!(drive.jake_zone_fines, 0);
     assert_eq!(profile_of(&app.ctx).money(), money);
     let spoken = app.event_lines().join(" ");
-    assert!(spoken.contains("No engine brake zone"), "{spoken}");
-    assert!(spoken.contains("Buffalo"), "{spoken}");
+    assert!(
+        spoken.contains("No engine brake zone. Switch it off."),
+        "{spoken}"
+    );
 }
 
 #[test]
@@ -685,7 +684,7 @@ fn test_keeping_the_jake_on_past_the_grace_draws_a_fine() {
     assert_eq!(profile_of(&app.ctx).money(), money - JAKE_ZONE_FINES[0]);
     let spoken = app.event_lines().join(" ");
     assert!(spoken.contains("150 dollar"), "{spoken}");
-    assert!(spoken.contains("engine braking"), "{spoken}");
+    assert!(spoken.contains("Engine brake citation"), "{spoken}");
 }
 
 #[test]
@@ -764,10 +763,9 @@ fn test_cruise_jake_releases_entering_a_zone_with_a_spoken_reason() {
     assert_eq!(drive.cruise_jake_stage, 0);
     let spoken = app.event_lines().join(" ");
     assert!(
-        spoken.contains("Cruise is holding the engine brake off"),
+        spoken.contains("No engine brake zone, Buffalo."),
         "{spoken}"
     );
-    assert!(spoken.contains("Buffalo"), "{spoken}");
     drive.update_engine_brake_zone(&mut app.ctx, JAKE_ZONE_GRACE_S + 5.0);
     assert_eq!(drive.jake_zone_fines, 0);
 }
@@ -787,7 +785,7 @@ fn test_curve_assist_jake_releases_in_zone_with_its_own_reason() {
     assert!(!drive.curve_assist_jake);
     let spoken = app.event_lines().join(" ");
     assert!(
-        spoken.contains("curve assist is using the brakes"),
+        spoken.contains("No engine brake zone, Buffalo."),
         "{spoken}"
     );
     drive.update_engine_brake_zone(&mut app.ctx, JAKE_ZONE_GRACE_S + 5.0);
@@ -1171,7 +1169,7 @@ fn test_cruise_owns_up_to_a_limp_cap_once_per_engagement() {
 
     drive.announce_limp_cruise_cap(&mut app.ctx);
     let spoken = app.event_lines().join(" ");
-    assert!(spoken.contains("the truck is in limp mode"), "{spoken}");
+    assert!(spoken.contains("Limp mode. Holding"), "{spoken}");
     assert!(drive.limp_cruise_said);
 
     app.clear_speech();
@@ -1806,3 +1804,26 @@ fn test_the_worst_band_reached_survives_a_shoulder_repair() {
 
 #[path = "states_driving_road/quiet_speech.rs"]
 mod quiet_speech;
+
+#[test]
+fn test_a_car_passing_the_truck_is_not_a_lane_opening() {
+    // Passers come up the lane beside now. One going by the truck is not
+    // one the truck overtook, and "Left lane open" for every one of them
+    // was four lines in three minutes (owner drive, 2026-10-09).
+    let mut app = TestApp::new();
+    let mut drive = a_gap_drive(&mut app);
+    rolling(&mut drive, 60.0);
+    app.clear_speech();
+    drive.lane.lane = 1;
+    drive.update_lane_gap(&mut app.ctx, 0.1); // settled in the left lane
+    drive.lane.lane = 0; // and back right: the left lane is watched
+    let alongside = npc(drive.trip.position_mi, 1, 70.0, "car", "passer");
+    drive.trip.traffic_manager.vehicles = vec![alongside];
+    drive.update_lane_gap(&mut app.ctx, 0.1);
+    drive.trip.traffic_manager.vehicles =
+        vec![npc(drive.trip.position_mi + 0.9, 1, 70.0, "car", "passer")];
+    for _ in 0..20 {
+        drive.update_lane_gap(&mut app.ctx, 0.1);
+    }
+    assert!(openings(&app).is_empty(), "{:?}", openings(&app));
+}

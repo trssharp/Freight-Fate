@@ -417,7 +417,7 @@ pub fn screen_lane_contradictions(
 /// The baked HPMS terrain class, or None where the bake has nothing.
 ///
 /// Absence stays absence: a leg HPMS never classified must not be read as
-/// level, because the curve screen treats level ground as licence to remove
+/// level, because the curve screen treats level ground as license to remove
 /// geometry.
 pub fn parse_hpms_terrain(
     raw: Option<&Value>,

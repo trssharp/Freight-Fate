@@ -35,7 +35,6 @@ impl DrivingState {
     pub fn try_rest_stop(&mut self, ctx: &mut GameContext) {
         let rest_hint = ctx.control_hint("rest");
         let exit_hint = ctx.control_hint("take_exit");
-        let status_hint = ctx.control_hint("status_menu");
         if self.pull_over.is_some() {
             self.set_status("Rest-stop planning unavailable during a police stop.");
             self.say_plain(
@@ -109,19 +108,17 @@ impl DrivingState {
 
         if let Some(active) = self.ramp_stop.clone() {
             let active_is_selected = self.is_selected_stop(Some(&active));
+            // What the assist does is the manual's to explain (owner,
+            // 2026-10-14); the line only owes the driver's own job.
             let assist = if ctx.settings.destination_approach_assist {
-                "Facility stopping assistance armed. It stops at the entrance once the ramp \
-                 control is clear."
+                ""
             } else {
-                "Facility stopping assistance off. Stop at the entrance."
+                " Stop at the entrance."
             };
             let message = if active_is_selected {
-                format!(
-                    "On the selected ramp for {}. {assist}",
-                    active.spoken_name()
-                )
+                format!("On the selected ramp for {}.{assist}", active.spoken_name())
             } else {
-                format!("On the ramp for {}. {assist}", active.spoken_name())
+                format!("On the ramp for {}.{assist}", active.spoken_name())
             };
             self.set_status(message.clone());
             // The cab confirming a control the player just worked. At the
@@ -179,14 +176,7 @@ impl DrivingState {
         if let Some(selected) = self.selected_rest_stop() {
             let ahead = selected.at_mi - self.trip.position_mi;
             if ahead <= 0.0 {
-                self.say_plain(
-                    ctx,
-                    format!(
-                        "{} is behind you. Assistance off. Press {rest_hint} to plan the next \
-                         suitable rest stop, or, stopped at this route point, to open its menu.",
-                        selected.spoken_name()
-                    ),
-                );
+                self.say_plain(ctx, format!("{} is behind you.", selected.spoken_name()));
                 return;
             }
             self.speak_selected_rest_stop(ctx, &selected, true, None, false);
@@ -195,14 +185,7 @@ impl DrivingState {
 
         if let Some(stop) = stop.as_ref() {
             if stop.at_mi <= self.trip.position_mi {
-                self.say_plain(
-                    ctx,
-                    format!(
-                        "{} is behind you. Press {rest_hint} to plan the next suitable rest stop, \
-                         or, stopped at this route point, to open its menu.",
-                        stop.spoken_name()
-                    ),
-                );
+                self.say_plain(ctx, format!("{} is behind you.", stop.spoken_name()));
                 return;
             }
         }
@@ -212,10 +195,7 @@ impl DrivingState {
                 self.set_status(format!("Exit signal active for {}.", active.spoken_name()));
                 self.say_plain(
                     ctx,
-                    format!(
-                        "The exit for {} is already selected. Press {exit_hint} to cancel it.",
-                        active.spoken_name()
-                    ),
+                    format!("The exit for {} is already selected.", active.spoken_name()),
                 );
                 return;
             }
@@ -260,14 +240,7 @@ impl DrivingState {
             HosRestChoice::NotNeeded | HosRestChoice::NoReachable => candidates.first().cloned(),
         }) else {
             self.set_status("No sleep-capable route stop ahead on this route.");
-            self.say_plain(
-                ctx,
-                format!(
-                    "No sleep-capable route stop is ahead on this route. Press {status_hint} for \
-                     the upcoming route points. Away from a route point, emergency shoulder \
-                     sleep is available."
-                ),
-            );
+            self.say_plain(ctx, "No sleep stop ahead. Shoulder sleep available.");
             return;
         };
         if let Some(current) = self.trip.planned_stop().cloned() {
@@ -276,8 +249,7 @@ impl DrivingState {
                 self.say_plain(
                     ctx,
                     format!(
-                        "Your planned stop remains {}. {} is also ahead. Move the plan from its \
-                         stop details on the route map.",
+                        "Planned stop stays {}. {} is also ahead.",
                         current.spoken_name(),
                         candidate.spoken_name()
                     ),
@@ -397,46 +369,50 @@ impl DrivingState {
         } else {
             format!(" at {}", stop.exit_label)
         };
+        // What the stopping assistance does, and when the exit will be
+        // called, is the manual's to explain (owner, 2026-10-14). The line
+        // owes only the stop and, when the driver stops, that job.
         let assist = if ctx.settings.destination_approach_assist {
-            "Facility stopping assistance on. Once you signal and take the exit lane, it stops \
-             at the entrance."
+            ""
         } else {
-            "Facility stopping assistance off. Stop at the entrance."
+            " Stop at the entrance."
         };
         let prefix = if repeated {
             if self.selected_stop_break {
-                "Still selected for a 30-minute break".to_string()
+                "Still planned for a 30-minute break"
             } else {
-                "Still selected".to_string()
+                "Still planned"
             }
         } else {
             match hos_purpose {
-                Some((HosRestPurpose::Break, true)) => "Planned 30-minute break stop selected as the last legally reachable fallback before your next break limit".to_string(),
-                Some((HosRestPurpose::Break, false)) => "Planned 30-minute break stop selected with time to spare before your next break limit".to_string(),
-                Some((HosRestPurpose::SleepForBreak, true)) => "Planned sleep stop selected as the last legally reachable fallback before your next break limit. Sleep here to reset the break clock".to_string(),
-                Some((HosRestPurpose::SleepForBreak, false)) => "Planned sleep stop selected with time to spare before your next break limit. Sleep here to reset the break clock".to_string(),
-                Some((HosRestPurpose::Sleep, true)) => "Planned sleep stop selected as the last legally reachable fallback before your next sleep limit".to_string(),
-                Some((HosRestPurpose::Sleep, false)) => "Planned sleep stop selected with time to spare before your next sleep limit".to_string(),
-                None if no_reachable_hos_stop => "Nearest sleep stop selected, but no route stop is estimated reachable before your next hours limit. Find a safe place to stop sooner".to_string(),
-                None => "Planned sleep stop selected".to_string(),
+                Some((HosRestPurpose::Break, true)) => {
+                    "Break stop planned, the last one before your break limit"
+                }
+                Some((HosRestPurpose::Break, false)) => "Break stop planned",
+                Some((HosRestPurpose::SleepForBreak, true)) => {
+                    "Sleep stop planned for your break, the last one before your break limit"
+                }
+                Some((HosRestPurpose::Sleep, true)) => {
+                    "Sleep stop planned, the last one before your sleep limit"
+                }
+                Some((HosRestPurpose::SleepForBreak, false)) => "Sleep stop planned for your break",
+                Some((HosRestPurpose::Sleep, false)) => "Sleep stop planned",
+                None if no_reachable_hos_stop => {
+                    "Nearest sleep stop planned, but none is reachable before your hours limit. \
+                     Stop somewhere safe sooner"
+                }
+                None => "Sleep stop planned",
             }
         };
         // Inside the exit window the signal is the next thing to do; beyond
-        // it the exit cannot be signalled yet, and saying "press X" to a
-        // driver twenty miles out asks for a press that does nothing.
+        // it the exit is called when it comes.
         let next_step = if ahead <= self.exit_window_mi() {
-            format!(
-                "Press {} to signal for this exit.",
-                ctx.control_hint("take_exit")
-            )
+            format!(" {}", self.exit_signal_instruction())
         } else {
-            format!(
-                "Its exit will be announced. Press {} to signal then.",
-                ctx.control_hint("take_exit")
-            )
+            String::new()
         };
         let message = format!(
-            "{prefix}, {}, {distance} ahead{exit_text}. {next_step} {assist}",
+            "{prefix}, {}, {distance} ahead{exit_text}.{next_step}{assist}",
             stop.spoken_name()
         );
         self.set_status(message.clone());
@@ -512,7 +488,7 @@ impl DrivingState {
             ctx.push_state(
                 TimedMessageState::new(
                     "Pulling into stop",
-                    &format!("Stopped at {name}. Brakes set; menu opening in a moment."),
+                    &format!("Stopped at {name}. Menu opening."),
                     &format!("Stopped at {name}. Menu opening."),
                     STOP_PULL_IN_WAIT_S,
                     move |ctx: &mut GameContext| {

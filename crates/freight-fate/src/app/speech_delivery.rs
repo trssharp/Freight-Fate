@@ -263,8 +263,8 @@ impl GameContext {
         let announce = self.event_speaks(Some(SpeechCategory::Status));
         let awarded = self.award_achievement_with(achievement_id, false, announce);
         if let (false, Some(awarded)) = (announce, awarded) {
-            self.message_log
-                .add(&awarded.award.message.normal, MessageCategory::General);
+            let line = self.tr(&awarded.award.message.normal);
+            self.message_log.add(&line, MessageCategory::General);
         }
     }
 
@@ -366,6 +366,10 @@ impl GameContext {
     /// The silenced branch's rendering: the rung's rendering, falling back
     /// to the normal text when terse drops the line whole.
     fn render_silenced(&self, spoken: &Spoken) -> String {
+        self.tr(&self.render_silenced_english(spoken))
+    }
+
+    fn render_silenced_english(&self, spoken: &Spoken) -> String {
         if spoken.is_pair {
             let rendered = spoken.message.render(self.settings.renders_terse());
             if rendered.is_empty() {
@@ -379,7 +383,15 @@ impl GameContext {
     }
 
     /// The speaking branch's rendering; `None` for a pair terse drops whole.
+    /// The line is translated here, after the speech mode picked it, so
+    /// the pacer, message review and the transcript all hold what the
+    /// player actually heard.
     fn render_spoken(&self, spoken: &Spoken) -> Option<String> {
+        self.render_spoken_english(spoken)
+            .map(|text| self.tr(&text))
+    }
+
+    fn render_spoken_english(&self, spoken: &Spoken) -> Option<String> {
         if spoken.is_pair {
             let rendered = spoken.message.render(self.settings.renders_terse());
             if rendered.is_empty() {
@@ -681,7 +693,10 @@ impl GameContext {
                 cut = self
                     .event_pacer
                     .note_interrupt(&text, priority, category, valid);
-            } else if self.event_pacer.should_flush(&text, priority, valid) {
+            } else if self
+                .event_pacer
+                .should_flush(&text, priority, category, valid)
+            {
                 // The channel is backed up past the point of truth: purging
                 // and speaking fresh IS the queued line's honest delivery.
                 // The purge can still have cut a line that was genuinely

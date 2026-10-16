@@ -100,7 +100,8 @@ fn test_hos_plan_reports_breaks_sleeps_and_route_stop_coverage() {
     let plan = plan_hos(route.miles(), Some(&route), Some(world()), None);
     assert!(plan.drive_h > route.miles() / 70.0);
     assert!(plan.break_stop_count >= 1);
-    assert!(plan.summary().contains("Legal HOS plan"));
+    assert!(plan.summary().contains(" driving hours"));
+    assert!(plan.summary().contains("Break stops: "));
 }
 
 #[test]

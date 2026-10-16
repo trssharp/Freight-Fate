@@ -237,7 +237,7 @@ fn test_the_exit_speed_is_spoken_once_in_the_deceleration_lane_and_braked_for_th
             .app
             .event_lines()
             .iter()
-            .any(|line| line.starts_with("Exit speed 49. You take exit 42")),
+            .any(|line| line.starts_with("Exit speed 49. Exit 42")),
         "{}",
         harness.transcript_text()
     );
@@ -263,9 +263,7 @@ fn test_the_exit_speed_is_spoken_once_in_the_deceleration_lane_and_braked_for_th
     assert!(entry <= 49.0 + 2.0, "reached the curve at {entry:.1}");
     assert_eq!(said(&harness), 1, "{}", harness.transcript_text());
     assert!(
-        harness
-            .transcript_text()
-            .contains("Exit speed assistance slowing for the ramp."),
+        harness.transcript_text().contains("Slowing for the ramp."),
         "{}",
         harness.transcript_text()
     );
@@ -351,7 +349,7 @@ fn test_nothing_on_the_approach_names_the_ramp_speed() {
     let approach: Vec<String> = harness
         .transcript()
         .into_iter()
-        .filter(|line| !line.contains("You take"))
+        .filter(|line| !line.contains("Exit speed"))
         .collect();
     let approach = approach.join("\n");
     assert!(!approach.contains("49"), "{approach}");
@@ -372,9 +370,7 @@ fn test_curve_assistance_alone_brakes_before_the_ramp_curve() {
     let entry = to_the_ramp_curve(&mut harness);
     assert!(entry <= 49.0 + 2.0, "met the curve at {entry:.1}");
     assert!(
-        harness
-            .transcript_text()
-            .contains("Curve assistance slowing for the ramp."),
+        harness.transcript_text().contains("Slowing for the ramp."),
         "{}",
         harness.transcript_text()
     );

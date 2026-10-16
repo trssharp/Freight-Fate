@@ -49,6 +49,7 @@ pub use record::{
 use crate::models::business_constants::is_owner_operator;
 use crate::models::solvency::{debt_owed, debt_rung, money_text};
 use crate::pyfmt::{round_py_int, round_py_n};
+use crate::settings::ScoreDisplay;
 use crate::sim::season::{date_text, weekday_name, CAREER_START_DAY_OF_YEAR, DAYS_PER_YEAR};
 
 pub const HOURS_PER_DAY: f64 = 24.0;
@@ -58,12 +59,12 @@ pub const HOURS_PER_DAY: f64 = 24.0;
 /// Speeding this far over the posted limit is a serious traffic violation, not
 /// an expensive inconvenience.
 pub const SERIOUS_SPEED_MPH_OVER: f64 = 15.0;
-/// Convictions count against each other for three years (the 383.51 licence
+/// Convictions count against each other for three years (the 383.51 license
 /// ladder; this is the law, not the carrier).
 pub const SERIOUS_WINDOW_DAYS: i64 = 3 * 365;
 /// How far back the carrier's record review, the insurer's surcharge and the
 /// reputation weight look: one game year. 391.25 says three, and that is
-/// what the licence ladder above keeps, but the clock only moves on the road
+/// what the license ladder above keeps, but the clock only moves on the road
 /// -- a game day per delivery, in practice -- so a three-year hold on
 /// equipment and money was one no career ever drove off (owner, 2026-09-14).
 pub const REVIEW_WINDOW_DAYS: i64 = 365;
@@ -168,7 +169,7 @@ pub const CITATION_REPEAT_STEP: f64 = 0.5;
 // 2,700 then 3,600 for a bypass -- and that is the intended shape rather than
 // a gap. Past that the deterrent is the record, not the wallet: the serious
 // violation ladder and the suspension tiers above keep escalating for the
-// whole career, and losing the licence costs far more than any fine.
+// whole career, and losing the license costs far more than any fine.
 pub const CITATION_REPEAT_MAX_MULTIPLIER: f64 = 2.0;
 /// A fine earned inside an active construction zone is doubled. That is the
 /// real rule, not a game rule -- Nevada, Texas and Pennsylvania all double the
@@ -192,8 +193,40 @@ pub const UNSAFE_DAMAGE_FINE: f64 = 2300.0;
 /// and California and New York both pass 1,000 on a first offense; the federal
 /// exposure standing behind them reaches 10,000.
 pub const WEIGH_STATION_BYPASS_FINE: f64 = 1800.0;
-/// Colorado's chain-law citation: 500 dollars plus a 79-dollar surcharge.
+/// The chain-law citation where no state figure has been sourced (CA, WA,
+/// NV, ID, MT, UT): UNVERIFIED placeholder, the old Colorado figure,
+/// until each state's own schedule is read.
 pub const CHAIN_LAW_FINE: f64 = 580.0;
+/// Colorado: 500 plus 79 (csp.colorado.gov/chain-law-information; the
+/// CDOT freight fact sheet of Aug 2026 prints 78).
+pub const CHAIN_LAW_FINE_CO: f64 = 579.0;
+/// Oregon: trucks not chaining where required, 880 dollars (ODOT winter
+/// commercial vehicle page).
+pub const CHAIN_LAW_FINE_OR: f64 = 880.0;
+/// Colorado: blocking a lane for not chaining, 1,000 plus 157
+/// (csp.colorado.gov/chain-law-information). For a future stuck-in-the-lane
+/// outcome.
+pub const CHAIN_BLOCKING_FINE_CO: f64 = 1157.0;
+/// Wyoming: 250 dollars for not chaining where required (WYDOT chain law;
+/// W.S. 31-5-956).
+pub const CHAIN_LAW_FINE_WY: f64 = 250.0;
+/// Wyoming: 750 dollars when the violation causes a road closure. Closures
+/// aren't modeled yet, so this is for a future outcome.
+pub const CHAIN_CLOSURE_FINE_WY: f64 = 750.0;
+/// Colorado: a commercial vehicle with no chains aboard on a carry corridor
+/// in season, 100 plus 32 (CDOT freight fact sheet, Aug 2026).
+pub const CHAIN_CARRY_FINE_CO: f64 = 132.0;
+
+/// The chain-law citation in `state` (two-letter code). Only Colorado,
+/// Oregon and Wyoming are sourced; every other state keeps the placeholder.
+pub fn chain_law_fine(state: Option<&str>) -> f64 {
+    match state {
+        Some("CO") => CHAIN_LAW_FINE_CO,
+        Some("OR") => CHAIN_LAW_FINE_OR,
+        Some("WY") => CHAIN_LAW_FINE_WY,
+        _ => CHAIN_LAW_FINE,
+    }
+}
 /// Following too closely is a serious traffic violation under 49 CFR 383.51
 /// Table 2 -- two inside three years disqualify the CDL for 60 days -- so it is
 /// priced as one, not as the fender-bender it looks like from the cab.
@@ -439,7 +472,7 @@ pub fn speeding_citation_fine(mph_over: f64, prior_citations: i64, construction_
 /// How many citations this career already carries, for the repeat scaling.
 ///
 /// Tolerates a profile with no record at all: a career that predates the
-/// licence file is a first offender, not a crash.
+/// license file is a first offender, not a crash.
 pub fn career_citations<P: StandingProfile + ?Sized>(profile: &P) -> i64 {
     profile
         .driving_record()
@@ -468,7 +501,11 @@ pub fn is_serious_speed(mph_over: f64) -> bool {
 // -- dispatch access --------------------------------------------------------
 
 /// How far dispatch trusts this driver right now.
+///
+/// The band is decided from the rounded score the player hears, so a spoken
+/// "40 out of 100" never sits beside a "guarded" trust line.
 pub fn trust_band(reputation: f64) -> &'static str {
+    let reputation = round_py_int(reputation.clamp(0.0, 100.0)) as f64;
     if reputation >= REPUTATION_FULL_BOARD {
         return TRUST_FULL;
     }
@@ -479,6 +516,30 @@ pub fn trust_band(reputation: f64) -> &'static str {
         return TRUST_POOR;
     }
     TRUST_LAST_CHANCE
+}
+
+/// The plain-language reputation band, using the rounded score players hear.
+pub fn reputation_band_word(score: f64) -> &'static str {
+    match round_py_int(score.clamp(0.0, 100.0)) {
+        90..=100 => "Outstanding",
+        75..=89 => "Well regarded",
+        60..=74 => "Established",
+        40..=59 => "Unproven",
+        28..=39 => "Shaky",
+        16..=27 => "Damaged",
+        _ => "Ruined",
+    }
+}
+
+/// A reputation score in the player's preferred spoken form.
+pub fn reputation_text(score: f64, mode: ScoreDisplay) -> String {
+    let word = reputation_band_word(score);
+    let number = round_py_int(score.clamp(0.0, 100.0));
+    match mode {
+        ScoreDisplay::Both => format!("{word}. {number} out of 100."),
+        ScoreDisplay::Percent => format!("{number} out of 100."),
+        ScoreDisplay::Description => format!("{word}."),
+    }
 }
 
 /// How many loads dispatch will still put in front of this driver.
@@ -538,7 +599,7 @@ pub fn band_decline_penalty(band: &str) -> i64 {
 /// What a trust band means, without saying what brings it back.
 ///
 /// Split out because "clean on-time runs rebuild it" stopped being true once
-/// money and the licence fed the same band: a driver whose service is fine
+/// money and the license fed the same band: a driver whose service is fine
 /// and whose debt is the problem can run clean forever and watch nothing
 /// move. The way back has to name the thing that is actually holding it.
 pub fn trust_band_text(band: &str) -> &'static str {
@@ -547,7 +608,7 @@ pub fn trust_band_text(band: &str) -> &'static str {
     }
     if band == TRUST_GUARDED {
         return "Dispatch trust: guarded. Dispatch is holding back some of the \
-                freight and fewer refusals.";
+                freight and allows fewer refusals.";
     }
     if band == TRUST_POOR {
         return "Dispatch trust: poor. You are back to assigned loads whatever your \
@@ -556,6 +617,24 @@ pub fn trust_band_text(band: &str) -> &'static str {
     }
     "Dispatch trust: last chance. One assigned load at a time, no refusals, \
      and the carrier is deciding whether to keep you."
+}
+
+/// What a trust band means, after its label: the sentences that follow
+/// "Dispatch trust: full." Each is a whole literal, so a translation finds
+/// it when a reputation number stands between the label and the meaning.
+pub fn trust_band_meaning(band: &str) -> &'static str {
+    if band == TRUST_FULL {
+        return "You get the whole board.";
+    }
+    if band == TRUST_GUARDED {
+        return "Dispatch is holding back some of the freight and allows fewer refusals.";
+    }
+    if band == TRUST_POOR {
+        return "You are back to assigned loads whatever your level, the board is down \
+                to two, and the good freight is going to other drivers.";
+    }
+    "One assigned load at a time, no refusals, and the carrier is deciding whether \
+     to keep you."
 }
 
 /// Where the driver stands with dispatch on service alone, in one line.
@@ -567,10 +646,55 @@ pub fn trust_text(reputation: f64) -> String {
     format!("{} Clean on-time runs rebuild it.", trust_band_text(band))
 }
 
-// -- the whole picture: service, licence, and money -------------------------
+/// [`trust_text`] in the player's preferred score-display mode.
+pub fn trust_text_with_display(reputation: f64, mode: ScoreDisplay) -> String {
+    let band = trust_band(reputation);
+    let meaning = trust_band_meaning(band);
+    let rebuild = if band == TRUST_FULL {
+        ""
+    } else {
+        " Clean on-time runs rebuild it."
+    };
+    format!("{} {meaning}{rebuild}", trust_score_head(reputation, mode))
+}
+
+/// The opening of a trust line. The number is always labelled as reputation
+/// so it never reads as a trust score of its own.
+///
+/// Each band is a whole English literal so a translation can agree in gender
+/// with "confianza" without changing the bare word "full", which lane assist
+/// also uses.
+fn trust_score_head(reputation: f64, mode: ScoreDisplay) -> String {
+    let band = trust_band(reputation);
+    let number = round_py_int(reputation.clamp(0.0, 100.0));
+    // Percentage-only drops reputation's band word elsewhere; trust has no
+    // number of its own, so the trust band stays in Percent too.
+    match mode {
+        ScoreDisplay::Both | ScoreDisplay::Percent => match band {
+            TRUST_FULL => {
+                format!("Dispatch trust: full. Reputation {number} out of 100.")
+            }
+            TRUST_GUARDED => {
+                format!("Dispatch trust: guarded. Reputation {number} out of 100.")
+            }
+            TRUST_POOR => {
+                format!("Dispatch trust: poor. Reputation {number} out of 100.")
+            }
+            _ => format!("Dispatch trust: last chance. Reputation {number} out of 100."),
+        },
+        ScoreDisplay::Description => match band {
+            TRUST_FULL => "Dispatch trust: full.".to_string(),
+            TRUST_GUARDED => "Dispatch trust: guarded.".to_string(),
+            TRUST_POOR => "Dispatch trust: poor.".to_string(),
+            _ => "Dispatch trust: last chance.".to_string(),
+        },
+    }
+}
+
+// -- the whole picture: service, license, and money -------------------------
 
 // Dispatch trust is one ladder with three inputs, not three ladders. Service
-// has always fed it. The licence and what the driver owes now feed the same
+// has always fed it. The license and what the driver owes now feed the same
 // rungs, because a yard that will not give a driver its good freight is the
 // same yard that will not give them its good iron, for the same reasons.
 //
@@ -603,7 +727,7 @@ pub fn worst_band(bands: &[&str]) -> &'static str {
     BAND_ORDER[band_index(worst)]
 }
 
-/// A licence that is not valid takes the seat, whatever the service record.
+/// A license that is not valid takes the seat, whatever the service record.
 ///
 /// Only a suspension counts, never a serious violation on its own. A
 /// suspension is a fact with a date on it that the driver can already hear
@@ -645,7 +769,7 @@ fn under_carrier_review<P: StandingProfile + ?Sized>(profile: &P) -> bool {
 
 /// What the carrier's annual record review makes of this driver.
 ///
-/// Unlike the licence band, a violation on its own DOES count here -- but
+/// Unlike the license band, a violation on its own DOES count here -- but
 /// only inside the review window, and the hold names the day the window
 /// empties, so it is never a hold no amount of good driving can clear. A
 /// driver already at the fleet of last resort cannot be let go again, so the
@@ -802,11 +926,11 @@ pub fn record_consequence_text<P: StandingProfile + ?Sized>(profile: &P) -> Stri
             return String::new();
         }
         let percent = round_py_int((surcharge - 1.0) * 100.0);
-        return format!(
-            "Your insurance reserve is up {percent} percent for it, on every settlement. It \
-             comes down as the record ages out, and is gone {}.",
-            record_clears_text(profile, |citations, serious| citations + serious > 0)
-        );
+        let until = record_clears_text(profile, |citations, serious| citations + serious > 0);
+        if until.is_empty() {
+            return format!("Insurance surcharge: {percent} percent.");
+        }
+        return format!("Insurance surcharge: {percent} percent until {until}.");
     }
     if !under_carrier_review(profile) {
         return String::new();
@@ -871,10 +995,8 @@ pub fn career_ended<P: StandingProfile + ?Sized>(profile: &P) -> bool {
 
 /// The terminal greeting's sentence for a career that is over.
 pub fn career_ended_text() -> &'static str {
-    "Your driving career is over: the CDL is disqualified for life. There is no dispatch, no \
-     board and no buy-in. Your money, levels, achievements, road journal and record stay as \
-     they are, and Close out this career on this menu removes the save and its cloud backups \
-     when you want them gone."
+    "Your CDL is disqualified for life, so this career cannot drive again. Close out this \
+     career removes the save."
 }
 
 /// The notice the terminal reads once, the first time the driver comes in
@@ -884,7 +1006,7 @@ pub fn career_ended_text() -> &'static str {
 pub fn disqualification_notice_lines() -> Vec<String> {
     vec![
         "That was the second major offense on your CDL. Under the federal rules a second \
-         major offense disqualifies a commercial licence for life, and there is no waiting \
+         major offense disqualifies a commercial license for life, and there is no waiting \
          it out."
             .to_string(),
         "No carrier can put you in a seat, the dispatch board is closed to you, and the \
@@ -958,8 +1080,27 @@ use crate::models::career::xp_rate_clause;
 /// a timer, and never for a driver in full trust beyond the one plain line
 /// they already heard.
 pub fn dispatch_trust_line<P: StandingProfile + ?Sized>(profile: &P) -> String {
+    dispatch_trust_line_with_display(profile, ScoreDisplay::Both)
+}
+
+/// [`dispatch_trust_line`] in the player's preferred score-display mode.
+pub fn dispatch_trust_line_with_display<P: StandingProfile + ?Sized>(
+    profile: &P,
+    mode: ScoreDisplay,
+) -> String {
     let band = standing_band(profile);
-    let mut parts = vec![trust_band_text(band).to_string()];
+    let service_sets_band = band == trust_band(profile.career_reputation());
+    let mut parts = vec![if service_sets_band {
+        let suffix = trust_band_text(band)
+            .strip_prefix(&format!("Dispatch trust: {band}."))
+            .unwrap_or("");
+        format!(
+            "{}{suffix}",
+            trust_score_head(profile.career_reputation(), mode)
+        )
+    } else {
+        trust_band_text(band).to_string()
+    }];
     let way_back = standing_way_back(profile);
     if !way_back.is_empty() {
         parts.push(way_back);
@@ -1139,12 +1280,10 @@ pub fn suspension_board_line<P: StandingProfile + ?Sized>(profile: &P) -> String
 pub fn suspension_refusal_line<P: StandingProfile + ?Sized>(profile: &P) -> String {
     let record = record_of(profile);
     if record.lifetime_disqualified {
-        return "You cannot take driving work with a lifetime CDL disqualification. \
-                Escape goes back to the terminal."
-            .to_string();
+        return "You cannot take driving work with a lifetime CDL disqualification.".to_string();
     }
     format!(
-        "You cannot take this job while your CDL is {}. It clears {}. Escape goes back to the board.",
+        "You cannot take this job while your CDL is {}. It clears {}.",
         status_verb(record),
         clears_text(profile)
     )
@@ -1165,8 +1304,7 @@ pub fn suspension_drive_refusal_line<P: StandingProfile + ?Sized>(profile: &P) -
         "suspension"
     };
     format!(
-        "You cannot drive, not even bobtail, while your CDL is {verb}. The {noun} ends {}. \
-         Wait out the CDL suspension is on the terminal menu.",
+        "You cannot drive, not even bobtail, while your CDL is {verb}. The {noun} ends {}.",
         clears_text(profile)
     )
 }

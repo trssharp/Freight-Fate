@@ -145,7 +145,7 @@ fn test_chain_checkpoint_is_seeded_and_fines_past_the_midpoint() {
     );
     assert!((money(&app) - (1000.0 - CHAIN_LAW_FINE)).abs() < 0.01);
     assert!((with_drive(&drive, |d| d.ticket_fines_paid) - CHAIN_LAW_FINE).abs() < 0.01);
-    // Booked on the licence file like every other citation: charged and
+    // Booked on the license file like every other citation: charged and
     // spoken but never recorded, a career of these still read as a clean
     // safety record (owner report, 2026-09-12).
     assert_eq!(citations(&app), 1);
@@ -296,19 +296,25 @@ fn test_compliance_ends_the_matter() {
     assert!((money(&app) - 1000.0).abs() < 0.01);
     drop(app);
 
-    // Winter tires satisfy Level 1 but not Level 2.
+    // Winter tires never excuse a semi, at Level 1 or Level 2: Caltrans,
+    // WSDOT and ODOT chain trucks regardless of tires.
     let mut app = TestApp::new();
     let drive = law_drive(
         &mut app,
         Law {
             seed: 1,
             level: 1,
+            position: 2.0,
             tire_type: TIRE_WINTER,
             ..Law::default()
         },
     );
     tick(&mut app, &drive);
-    assert!(spoken(&app).is_empty(), "{:?}", spoken(&app));
+    assert!(
+        spoken(&app).iter().any(|s| s.contains("without chains")),
+        "{:?}",
+        spoken(&app)
+    );
     drop(app);
 
     let mut app = TestApp::new();
@@ -346,4 +352,349 @@ fn test_no_post_sees_a_chain_law_off_the_posted_grade() {
     };
     assert!(sample_at(6.0), "on the posted grade the law applies");
     assert!(!sample_at(20.0), "ten miles past the grade it does not");
+}
+
+#[test]
+fn test_winter_tires_on_a_level_1_law_still_get_the_checkpoint() {
+    let mut app = TestApp::new();
+    let seed = (0..40)
+        .find(|seed| {
+            PyRandom::new_from_str(&format!("{seed}:chain-law:0:1")).random()
+                < CHAIN_LAW_CHECKPOINT_CHANCE
+        })
+        .expect("some seed is caught");
+    let drive = law_drive(
+        &mut app,
+        Law {
+            seed,
+            level: 1,
+            tire_type: TIRE_WINTER,
+            ..Law::default()
+        },
+    );
+    tick(&mut app, &drive);
+    assert!(
+        spoken(&app)
+            .iter()
+            .any(|s| s.contains("chain-law citation")),
+        "{:?}",
+        spoken(&app)
+    );
+    assert!(money(&app) < 1000.0);
+}
+
+fn over_speed_line(imperial: bool) -> String {
+    let mut app = TestApp::new();
+    app.ctx.settings.imperial_units = imperial;
+    let drive = a_drive(&mut app);
+    with_drive(&drive, |d| {
+        d.trip.truck.chains_on = true;
+        d.trip.truck.velocity_mps = 45.0 * 0.44704;
+        d.chains_fast_active = false;
+    });
+    app.clear_speech();
+    drive_and_ctx(&drive, &mut app, |d, ctx| d.update_traction_cues(ctx));
+    app.ctx.run_deferred();
+    spoken(&app)
+        .into_iter()
+        .find(|s| s.starts_with("Too fast for chains"))
+        .unwrap_or_else(|| panic!("no over-speed line in {:?}", spoken(&app)))
+}
+
+#[test]
+fn test_the_chain_over_speed_line_is_a_sentence_with_its_unit() {
+    assert_eq!(
+        over_speed_line(true),
+        "Too fast for chains. Keep under 30 miles per hour."
+    );
+    let metric = over_speed_line(false);
+    assert!(metric.contains("kilometers per hour"), "{metric}");
+}
+
+#[test]
+fn test_a_cited_truck_with_chains_aboard_is_held_until_they_are_on() {
+    let mut app = TestApp::new();
+    let drive = law_drive(
+        &mut app,
+        Law {
+            seed: cited_seed(),
+            ..Law::default()
+        },
+    );
+    {
+        let p = app.ctx.profile.as_mut().expect("a career");
+        p.set_chains_owned(true);
+        p.set_chain_wear_pct(0.0);
+    }
+    with_drive(&drive, |d| d.trip.truck.chain_wear_pct = 0.0);
+    tick(&mut app, &drive);
+    assert!(
+        spoken(&app)
+            .iter()
+            .any(|s| s.contains("can't go on until your chains are on")),
+        "{:?}",
+        spoken(&app)
+    );
+    assert!(with_drive(&drive, |d| d.chain_checkpoint_hold));
+    assert!(with_drive(&drive, |d| d.trip.truck.parking_brake));
+
+    // Releasing the brake and rolling: held again.
+    with_drive(&drive, |d| {
+        d.trip.truck.parking_brake = false;
+        d.trip.truck.velocity_mps = 5.0;
+    });
+    app.clear_speech();
+    drive_and_ctx(&drive, &mut app, |d, ctx| {
+        d.update_chain_checkpoint_hold(ctx)
+    });
+    app.ctx.run_deferred();
+    assert_eq!(with_drive(&drive, |d| d.trip.truck.velocity_mps), 0.0);
+    assert!(with_drive(&drive, |d| d.trip.truck.parking_brake));
+    assert!(spoken(&app)
+        .iter()
+        .any(|s| s.starts_with("Held at the chain checkpoint")));
+
+    // Chains on: waved through.
+    with_drive(&drive, |d| d.trip.truck.chains_on = true);
+    drive_and_ctx(&drive, &mut app, |d, ctx| {
+        d.update_chain_checkpoint_hold(ctx)
+    });
+    assert!(!with_drive(&drive, |d| d.chain_checkpoint_hold));
+}
+
+#[test]
+fn test_a_cited_truck_with_no_chains_aboard_is_not_held() {
+    let mut app = TestApp::new();
+    let drive = law_drive(
+        &mut app,
+        Law {
+            seed: cited_seed(),
+            ..Law::default()
+        },
+    );
+    app.ctx
+        .profile
+        .as_mut()
+        .expect("a career")
+        .set_chains_owned(false);
+    tick(&mut app, &drive);
+    assert!(
+        spoken(&app)
+            .iter()
+            .any(|s| s.contains("You have no chains aboard")),
+        "{:?}",
+        spoken(&app)
+    );
+    assert!(!with_drive(&drive, |d| d.chain_checkpoint_hold));
+}
+
+#[test]
+fn test_california_always_staffs_its_checkpoints() {
+    use freight_fate::states::driving_core::chain_law_checkpoint_chance;
+    assert_eq!(chain_law_checkpoint_chance(Some("CA")), 1.0);
+    assert_eq!(
+        chain_law_checkpoint_chance(Some("CO")),
+        CHAIN_LAW_CHECKPOINT_CHANCE
+    );
+}
+
+/// A Denver-Silverthorne run on I-70 with a clear sky, inside a chain area,
+/// past its midpoint, on a given day of the career year (day 80 is March 21).
+fn carry_drive(app: &mut TestApp, day_of_year: f64, chains: bool) -> SharedState {
+    carry_drive_between(app, "Denver", "Silverthorne", day_of_year, chains)
+}
+
+fn carry_drive_between(
+    app: &mut TestApp,
+    origin: &str,
+    destination: &str,
+    day_of_year: f64,
+    chains: bool,
+) -> SharedState {
+    let drive = a_drive_between(app, origin, destination, "Carrier");
+    {
+        let p = app.ctx.profile.as_mut().expect("a career");
+        p.set_money(1000.0);
+        p.set_chains_owned(chains);
+        p.set_chain_wear_pct(0.0);
+    }
+    with_drive(&drive, |d| {
+        d.trip.weather.current = WeatherKind::Clear;
+        d.trip.career_hours = Some((day_of_year - 80.0) * 24.0 + 12.0);
+        d.trip.game_minutes = 0.0;
+        d.trip.chain_law_areas = vec![(0.0, 10.0)];
+        d.trip.position_mi = 6.0;
+        d.trip.truck.chain_wear_pct = 0.0;
+        d.trip.truck.velocity_mps = 20.0;
+        d.trip.zones = Vec::new();
+    });
+    app.clear_speech();
+    drive
+}
+
+fn carry_tick(app: &mut TestApp, drive: &SharedState) {
+    drive_and_ctx(drive, app, |d, ctx| d.update_chain_carry(ctx));
+    app.ctx.run_deferred();
+}
+
+/// A seed whose carry roll is caught.
+fn carry_seed() -> i64 {
+    (0..40)
+        .find(|seed| {
+            PyRandom::new_from_str(&format!("{seed}:chain-carry:0")).random()
+                < CHAIN_LAW_CHECKPOINT_CHANCE
+        })
+        .expect("some seed is caught")
+}
+
+#[test]
+fn test_no_chains_aboard_on_i70_in_october_is_a_132_dollar_citation() {
+    let mut app = TestApp::new();
+    let drive = carry_drive(&mut app, 288.0, false); // October 15
+    with_drive(&drive, |d| d.trip_seed = carry_seed());
+    let date = with_drive(&drive, |d| {
+        ff_core::sim::season::date_text(d.trip.current_career_hours().unwrap())
+    });
+    assert_eq!(date, "October 15");
+    carry_tick(&mut app, &drive);
+    let lines = spoken(&app);
+    assert!(
+        lines
+            .iter()
+            .any(|s| s.starts_with("Colorado requires chains aboard")),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|s| s.contains("Citation, 132 dollars")),
+        "{lines:?}"
+    );
+    assert!((money(&app) - 868.0).abs() < 0.01);
+}
+
+#[test]
+fn test_the_carry_rule_is_quiet_in_july_and_with_chains_aboard() {
+    let mut app = TestApp::new();
+    let drive = carry_drive(&mut app, 196.0, false); // July 15
+    with_drive(&drive, |d| d.trip_seed = carry_seed());
+    carry_tick(&mut app, &drive);
+    assert!(spoken(&app).is_empty(), "{:?}", spoken(&app));
+    drop(app);
+
+    let mut app = TestApp::new();
+    let drive = carry_drive(&mut app, 288.0, true);
+    with_drive(&drive, |d| d.trip_seed = carry_seed());
+    carry_tick(&mut app, &drive);
+    assert!(spoken(&app).is_empty(), "{:?}", spoken(&app));
+}
+
+#[test]
+fn test_montana_warns_about_carrying_chains_in_season_without_a_fine() {
+    let mut app = TestApp::new();
+    let drive = carry_drive_between(&mut app, "Missoula", "Butte", 288.0, false);
+    with_drive(&drive, |d| d.trip_seed = carry_seed());
+    assert_eq!(
+        with_drive(&drive, |d| d.trip.state_code_at(6.0)).as_deref(),
+        Some("MT")
+    );
+    carry_tick(&mut app, &drive);
+    carry_tick(&mut app, &drive);
+    let lines = spoken(&app);
+    let warned = lines
+        .iter()
+        .filter(|s| {
+            *s == "Montana requires trucks to carry chains from October 1 to April 30. You have none."
+        })
+        .count();
+    assert_eq!(warned, 1, "{lines:?}");
+    assert!((money(&app) - 1000.0).abs() < 0.01);
+
+    // A fresh drive (or a resume) in the same season stays quiet: the
+    // profile remembers the season.
+    let profile = app.ctx.profile.clone();
+    drop(app);
+    let mut app = TestApp::new();
+    let drive = carry_drive_between(&mut app, "Missoula", "Butte", 300.0, false);
+    let p = app.ctx.profile.as_mut().expect("a career");
+    p.truck_conditions = profile.expect("a career").truck_conditions;
+    p.set_chains_owned(false);
+    carry_tick(&mut app, &drive);
+    assert!(spoken(&app).is_empty(), "{:?}", spoken(&app));
+
+    // Next season (October a year on), it is said again.
+    with_drive(&drive, |d| {
+        d.trip.career_hours = Some((288.0 + 365.0 - 80.0) * 24.0 + 12.0)
+    });
+    carry_tick(&mut app, &drive);
+    assert!(
+        spoken(&app)
+            .iter()
+            .any(|s| s.starts_with("Montana requires")),
+        "{:?}",
+        spoken(&app)
+    );
+    drop(app);
+
+    // July: nothing to say.
+    let mut app = TestApp::new();
+    let _drive = carry_drive_between(&mut app, "Missoula", "Butte", 196.0, false);
+    carry_tick(&mut app, &_drive);
+    assert!(spoken(&app).is_empty(), "{:?}", spoken(&app));
+}
+
+#[test]
+fn test_wyoming_level_1_warns_and_cites_a_truck_on_all_season_tires() {
+    let mut app = TestApp::new();
+    let drive = a_drive_between(&mut app, "Cheyenne", "Laramie", "Wyoming");
+    app.ctx
+        .profile
+        .as_mut()
+        .expect("a career")
+        .set_money(1000.0);
+    let seed = (0..40)
+        .find(|seed| {
+            PyRandom::new_from_str(&format!("{seed}:chain-law:0:1")).random()
+                < CHAIN_LAW_CHECKPOINT_CHANCE
+        })
+        .expect("some seed is caught");
+    with_drive(&drive, |d| {
+        d.trip_seed = seed;
+        d.trip.weather.current = WeatherKind::Snow;
+        d.trip.chain_law_areas = vec![(0.0, 10.0)];
+        d.trip.position_mi = 6.0;
+        d.trip.truck.chains_on = false;
+        d.trip.truck.tire_type = "all_season".to_string();
+        d.trip.truck.velocity_mps = 20.0;
+        d.trip.zones = Vec::new();
+    });
+    app.clear_speech();
+    tick(&mut app, &drive);
+    let lines = spoken(&app);
+    assert!(
+        lines
+            .iter()
+            .any(|s| s == "Rolling into an active chain law without snow tires or chains."),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|s| s.contains("chain-law citation, 250 dollars")),
+        "{lines:?}"
+    );
+    drop(app);
+
+    // Snow tires satisfy Wyoming Level 1.
+    let mut app = TestApp::new();
+    let drive = a_drive_between(&mut app, "Cheyenne", "Laramie", "Wyoming");
+    with_drive(&drive, |d| {
+        d.trip_seed = seed;
+        d.trip.weather.current = WeatherKind::Snow;
+        d.trip.chain_law_areas = vec![(0.0, 10.0)];
+        d.trip.position_mi = 6.0;
+        d.trip.truck.tire_type = TIRE_WINTER.to_string();
+        d.trip.truck.velocity_mps = 20.0;
+    });
+    app.clear_speech();
+    tick(&mut app, &drive);
+    assert!(spoken(&app).is_empty(), "{:?}", spoken(&app));
 }

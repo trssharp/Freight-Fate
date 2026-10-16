@@ -10,8 +10,8 @@ use ff_core::settings::Settings;
 use super::settings::{Adjust, SettingsCategoryState};
 use super::settings_actions::{
     acc_gap_label, assist_preset_label, backup_announcements_label, cue_loudness_label,
-    descent_level_label, event_voice_label, hos_label, lane_keeping_label, output_label,
-    pace_label, update_channel,
+    descent_level_label, event_voice_label, hos_label, lane_keeping_label, language_label,
+    output_label, pace_label, score_display_label, update_channel,
 };
 use super::shortcuts::{ShortcutDevice, ShortcutsState};
 use super::touch_gestures::TouchGesturesState;
@@ -43,6 +43,19 @@ fn pct(level: f64) -> i64 {
 
 fn dyn_label(f: impl Fn(&Settings) -> String + 'static) -> Label<SettingsCategoryState> {
     Label::dynamic(move |_s, ctx| f(&ctx.settings))
+}
+
+/// The Controller row: the setting, and while it is on, the pad the game
+/// is listening to, so a player can tell whether their controller was found.
+fn controller_label(ctx: &GameContext) -> String {
+    if !ctx.settings.controller_enabled {
+        return "Controller: disabled".to_string();
+    }
+    if ctx.controller.connected() {
+        format!("Controller: enabled, {} connected", ctx.controller.name())
+    } else {
+        "Controller: enabled, none connected".to_string()
+    }
 }
 
 fn adjust(f: impl Fn(&mut SettingsCategoryState, &mut GameContext, i64) + 'static) -> Adjust {
@@ -125,12 +138,12 @@ pub(super) const DRIVING_ASSIST_SPECS: [(&str, &str, &str); 12] = [
     (
         "descent_speed_control",
         "Descent speed control",
-        "With adaptive cruise on, holds a steep downgrade at the speed your truck can take it at with its load, on the engine brake and short brake applications. Balanced and Interactive capture a lower target when you brake. Interactive also caps every descent at 55 miles per hour and intervenes harder.",
+        "With adaptive cruise on, holds a steep downhill grade at the speed your truck can take it at with its load, on the engine brake and short brake applications. Balanced and Interactive capture a lower target when you brake. Interactive also caps every descent at 55 miles per hour and intervenes harder.",
     ),
     (
         "exit_speed_assist",
         "Exit speed assistance",
-        "For a signalled exit: slows a truck too fast for the gore, keeps the approach within 10 miles per hour of road speed, and brakes in the exit lane to the exit speed. You still take the exit.",
+        "For a signaled exit: slows a truck too fast for the gore, keeps the approach within 10 miles per hour of road speed, and brakes in the exit lane to the exit speed. You still take the exit.",
     ),
     (
         "destination_approach_assist",
@@ -212,6 +225,17 @@ impl SettingsCategoryState {
     pub(super) fn speech_control_specs(&self, ctx: &GameContext) -> Vec<SpeechSpec> {
         let speech = &ctx.speech;
         let mut specs = vec![
+            SpeechSpec {
+                label: dyn_label(|s| format!("Language: {}", language_label(s))),
+                action: adjust(|s, ctx, d| s.cycle_language(ctx, d)),
+                help: "Automatic follows your system language. Radio and \
+                       recorded voices stay in English.",
+            },
+            SpeechSpec {
+                label: dyn_label(|s| format!("Score display: {}", score_display_label(s))),
+                action: adjust(|s, ctx, d| s.cycle_score_display(ctx, d)),
+                help: "Choose whether reputation and dispatch trust read both their descriptive band and score, only the score, or only the description. A trust score is spoken only when service sets its band.",
+            },
             SpeechSpec {
                 label: dyn_label(|s| {
                     format!("Driving speech: {}", s.driving_speech.replace('_', " "))
@@ -418,6 +442,7 @@ impl SettingsCategoryState {
                 adjust(|s, ctx, d| s.toggle_real_fuel_prices(ctx, d)),
                 adjust(|s, ctx, d| s.toggle_real_parking(ctx, d)),
                 adjust(|s, ctx, d| s.toggle_live_weather_calendar(ctx, d)),
+                adjust(|s, ctx, d| s.toggle_facility_streets(ctx, d)),
             ],
             "controls" => vec![
                 adjust(|s, ctx, d| s.toggle_units(ctx, d)),
@@ -589,6 +614,16 @@ impl SettingsCategoryState {
                      the career date advances at midnight and seasons pass while \
                      weather still comes from the real world.",
                 ),
+                row(
+                    dyn_label(|s| format!("Facility streets: {}", on_off(s.facility_streets))),
+                    adjust(|s, ctx, d| s.toggle_facility_streets(ctx, d)),
+                    "On, you drive the real streets between the highway and a \
+                     facility, turn by turn. Off, as in version 1.8, the exit ramp \
+                     ends at the facility gate with no light or stop sign, a \
+                     loaded run leaves straight onto the highway, and a pickup in \
+                     town is one stretch of road. \
+                     Applies from your next drive.",
+                ),
                 back_row(),
             ],
             "controls" => vec![
@@ -635,16 +670,7 @@ impl SettingsCategoryState {
                      everywhere. Automatic transmission only.",
                 ),
                 row(
-                    dyn_label(|s| {
-                        format!(
-                            "Controller: {}",
-                            if s.controller_enabled {
-                                "enabled"
-                            } else {
-                                "disabled"
-                            }
-                        )
-                    }),
+                    Label::dynamic(|_s, ctx| controller_label(ctx)),
                     adjust(|s, ctx, d| s.toggle_controller(ctx, d)),
                     "Game-controller input alongside the keyboard, which \
                      always stays active. The first connected controller is \

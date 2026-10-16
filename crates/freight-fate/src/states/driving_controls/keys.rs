@@ -250,11 +250,20 @@ impl DrivingState {
             Action::SafeSpeed => self.speak_safe_speed(ctx),
             Action::HosWheel => self.speak_hos_wheel_time(ctx),
             Action::LastAnnouncement => self.speak_last_announcement(ctx),
+            // The key itself is answered on every screen before a state
+            // sees it; this arm is the F2 list's row.
+            Action::CopyLastSpoken => crate::states::base::copy_last_spoken(ctx),
             Action::Grade => self.speak_grade(ctx),
             Action::LaneLocator => self.toggle_lane_locator(ctx),
             Action::Upcoming => self.speak_upcoming(ctx, 15.0),
             Action::Radio => self.toggle_radio(ctx),
             Action::RadioFavorite => self.toggle_radio_favorite(ctx),
+            Action::RadioTuneNext
+            | Action::RadioTunePrev
+            | Action::RadioVolumeUp
+            | Action::RadioVolumeDown
+            | Action::RadioCategoryNext
+            | Action::RadioCategoryPrev => {}
             Action::RadioNowPlaying => self.speak_radio_now_playing(ctx),
             Action::RadioStatus => self.speak_radio_status(ctx),
             Action::Accelerate | Action::Brake | Action::EmergencyBrake | Action::Straighten => {}
@@ -313,6 +322,7 @@ impl DrivingState {
         }
         self.lane_change_target = Some(target);
         self.pass_returning = false; // the driver's own move now
+        self.keeping_lane_change = false;
         self.lane_change_timer = LANE_TAP_CHANGE_S;
         self.lane_signal_timer = 0.0;
         let pan = if direction > 0 { -0.6 } else { 0.6 };

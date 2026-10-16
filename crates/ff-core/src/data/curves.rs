@@ -1314,7 +1314,7 @@ mod tests {
     fn test_absence_of_a_terrain_class_is_never_read_as_level() {
         // The safe direction, and the reason this reads a bake rather than a rule.
         //
-        // Screening treats level ground as licence to delete geometry, so a leg
+        // Screening treats level ground as license to delete geometry, so a leg
         // HPMS never classified must keep every curve it has. Absence of evidence
         // is not evidence of flatness -- getting this backwards would quietly
         // strip curves from exactly the legs we know least about.

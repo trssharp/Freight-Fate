@@ -12,6 +12,8 @@ visual display mirrors all speech for sighted players and helpers.
 
 ## Features
 
+Score display in Settings, Speech can read reputation and dispatch trust as both a description and number, percentage only, or description only. A trust line reads, for example, "Dispatch trust: full. Reputation 85 out of 100."
+
 - **Career mode** — accept jobs inside metro freight markets, deadhead to
   specific origin facilities, deliver to specific receivers, earn money and
   experience, level through a 30-rank trucking career, unlock cargo
@@ -78,7 +80,7 @@ visual display mirrors all speech for sighted players and helpers.
 
 ## Download and play
 
-1. Open [Freight Fate releases](https://github.com/Orinks/Freight-fate/releases).
+1. Open [Freight Fate releases](https://github.com/orinks-games/Freight-Fate/releases).
 2. Choose the latest numbered stable release. Stable is recommended for most
    players. If you want to test Career 1.9, choose the newest prerelease build.
    Its dated tag looks like `1.9-tester-20260829`, spoken as "1 point 9 tester,
@@ -92,14 +94,14 @@ visual display mirrors all speech for sighted players and helpers.
    tarball and an AppImage each for PCs (`-linux-x64.tar.gz`,
    `-linux-x86_64.AppImage`) and for ARM64 machines such as the Blazie BT
    Speak and BT Braille or a Raspberry Pi (`-linux-arm64.tar.gz`,
-   `-linux-aarch64.AppImage`); the player manual says how to tell which
-   you need.
+   `-linux-aarch64.AppImage`). Choose the archive for your machine's
+   processor. AppImages run directly; tarballs need extracting.
 4. Extract the zip file. On Windows, open the extracted `FreightFate` folder
    and run `FreightFate.exe`. On an Apple Silicon Mac, move `FreightFate.app`
-   to Applications and follow the first-launch instructions in the player
-   manual.
+   to Applications. If macOS blocks the first launch, open System Settings,
+   choose Privacy & Security, and allow Freight Fate to open.
 
-For a complete player-facing guide to installing, careers, dispatch, driving,
+For a complete player-facing guide to careers, dispatch, driving,
 route stops, saves, settings, audio, speech, and troubleshooting, see the
 [Freight Fate Player Manual](docs/user-manual.md).
 
@@ -121,7 +123,7 @@ Install these prerequisites first:
 Then clone Career 1.9 and run the game:
 
 ```powershell
-git clone https://github.com/Orinks/Freight-Fate.git
+git clone https://github.com/orinks-games/Freight-Fate.git
 cd Freight-Fate
 uv sync --group dev
 uv run python tools/fetch_bass.py
@@ -219,6 +221,7 @@ speech and driving events.
 | Ctrl+Period | Jump to the newest message |
 | Left / Right bracket | Switch between all messages, general messages, and driving events |
 | Ctrl+C | Copy the message you are on |
+| Ctrl+Shift+C | Copy the last thing the game said, on any screen |
 
 #### Driving
 
@@ -253,7 +256,7 @@ Speed control:
 | Key | Action |
 | --- | --- |
 | K | Automatic speed control on / off. Parked with the brake set, it latches a high idle instead |
-| Shift+K | Resume the last speed after braking cancelled it |
+| Shift+K | Resume the last speed after braking canceled it |
 | Plus / minus (keypad too) | Raise / lower the remembered open-road target by 5 |
 
 Route actions:
@@ -346,10 +349,21 @@ Hold the right bumper (RB) as a modifier for a second layer of driving bindings:
 | RB + A | Start / stop engine |
 | RB + B | Fuel and range |
 | RB + Y | Release / set parking brake |
-| RB + D-pad Up | Next listed highway exit |
+| RB + D-pad Up | Route progress |
 | RB + D-pad Down | Open a route stop, or emergency shoulder sleep away from stops, when fully stopped. |
 | RB + D-pad Left / Right | Lower / raise the open-road cruise target |
 | RB + Start | Driving status menu |
+
+#### Radio
+
+| Button | Action |
+| --- | --- |
+| Right stick left / right | Tune to the previous / next station |
+| Right stick down / up | Lower / raise radio volume (hold to repeat) |
+| RB + right stick up / down | Radio on / off; save or unsave the current station as a favorite |
+| RB + right stick left / right | Previous / next radio category |
+| RB + left stick click (L3) | Radio status |
+| RB + Back / Select | What the radio is playing |
 
 The left and right triggers are analog: hold them wherever you like for partial
 throttle or braking, rather than the ramped hold the arrow keys use. There is no

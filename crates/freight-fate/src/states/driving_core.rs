@@ -240,20 +240,21 @@ pub fn route_event_sound(event: &TripEvent) -> Option<&'static str> {
     }
 }
 
-/// `_traffic_vehicle_sound`: the pass whoosh for the NPC vehicle on the event.
+/// The earcon for a slower vehicle ahead: the slowing-traffic cue, or the
+/// trooper's own pass when it is a trooper. The vehicle's own sound is its
+/// traffic loop once it is near; a pass whoosh here, with the vehicle still a
+/// quarter mile up the road, sounded like something going by that never did
+/// (owner drive, 2026-10-09).
 pub fn traffic_vehicle_sound(event: &TripEvent) -> &'static str {
-    let vehicle_class = event
+    let trooper = event
         .data
         .npc_vehicle
         .as_ref()
-        .map(|v| v.vehicle_class.trim().to_lowercase())
-        .unwrap_or_default();
-    match vehicle_class.as_str() {
-        "state trooper" => "traffic/trooper_pass",
-        "semi" => "traffic/semi_pass",
-        "box truck" => "traffic/box_truck_pass",
-        "car" => "traffic/car_pass",
-        _ => "events/traffic_slowing",
+        .is_some_and(|v| v.vehicle_class.trim().eq_ignore_ascii_case("state trooper"));
+    if trooper {
+        "traffic/trooper_pass"
+    } else {
+        "events/traffic_slowing"
     }
 }
 
@@ -594,7 +595,7 @@ impl Instructor for Tutorial {
             let text = if ctx.settings.automatic_transmission {
                 format!(
                     "At air ready, press {} to release the parking brake, then hold {} to \
-                     accelerate. The transmission shifts for you.",
+                     accelerate.",
                     ctx.control_hint("parking_brake"),
                     ctx.control_hint("accelerate")
                 )
@@ -650,7 +651,7 @@ impl Instructor for Tutorial {
             self.stage = 3;
             let text = format!(
                 "Rolling. {} for your speed, {} for a full report, {} for all the controls. Brake \
-                 hard at a hazard warning; {} stops fast. Safe travels.",
+                 hard at a hazard warning; {} stops fast.",
                 ctx.control_hint("speed"),
                 ctx.control_hint("status_menu"),
                 ctx.control_hint("help"),
@@ -743,7 +744,27 @@ impl RadioPlaybackBackend for DrivingRadioBackend<'_> {
         _volume: f64,
     ) -> Result<(), RadioPlaybackError> {
         let reception = self.reception_for(station);
-        self.driving.radio_signal_factor = signal_volume_factor(&reception);
+        self.start(&reception)
+    }
+
+    fn play_reception(
+        &mut self,
+        reception: &RadioReception,
+        _volume: f64,
+    ) -> Result<(), RadioPlaybackError> {
+        self.start(reception)
+    }
+
+    fn stop_radio(&mut self) {
+        self.ctx.audio.stop_music_with(600);
+    }
+}
+
+impl DrivingRadioBackend<'_> {
+    /// Start `reception.station` at the volume its signal supports.
+    fn start(&mut self, reception: &RadioReception) -> Result<(), RadioPlaybackError> {
+        let station = &reception.station;
+        self.driving.radio_signal_factor = signal_volume_factor(reception);
         if station.source_type == PERSONAL_PLAYLIST_SOURCE_TYPE {
             self.driving.apply_radio_volume(self.ctx);
             // A playlist with nothing playable in it must reach the dial's
@@ -781,10 +802,6 @@ impl RadioPlaybackBackend for DrivingRadioBackend<'_> {
             self.driving.start_station_rotation(self.ctx, station, 900);
         }
         Ok(())
-    }
-
-    fn stop_radio(&mut self) {
-        self.ctx.audio.stop_music_with(600);
     }
 }
 

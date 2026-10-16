@@ -76,10 +76,10 @@ fn a_headless_smoke_run_boots_five_frames_and_exits_cleanly() {
     // The real main menu greets the player on entry, as it does in Python.
     let first = &app.main_lines()[0];
     assert!(
-        first.starts_with("Welcome to Freight Fate, version "),
+        first.starts_with("Freight Fate "),
         "unexpected first line: {first}"
     );
-    assert!(first.contains("An audio trucking adventure across America."));
+    assert!(!first.contains("An audio trucking adventure across America."));
 }
 
 #[test]
@@ -169,10 +169,7 @@ fn test_full_game_flow_headless() {
     app.push_state(MainMenuState::new());
     assert!(is::<MainMenuState>(&app));
     assert_eq!(app.visible_lines()[0], "Freight Fate");
-    let welcome = format!(
-        "Welcome to Freight Fate, version {}.",
-        updater::spoken_version(version())
-    );
+    let welcome = format!("Freight Fate {}.", updater::spoken_version(version()));
     assert!(app.main_lines().iter().any(|line| line.contains(&welcome)));
 
     // navigate to "New career" and select it
@@ -251,9 +248,8 @@ fn test_full_game_flow_headless() {
     // very key the drive below presses next.
     assert!(!departure.contains("Departing now"), "{departure}");
     assert!(departure.contains("Engine off."), "{departure}");
-    assert!(!departure.contains("Legal HOS plan"), "{departure}");
-    assert!(!departure.contains("Fuel-capable stops"), "{departure}");
-    assert!(!departure.contains("Parking notes"), "{departure}");
+    assert!(!departure.contains("Break stops:"), "{departure}");
+    assert!(!departure.contains("Fuel stops:"), "{departure}");
 
     // start the engine and drive the whole trip with simulated input
     key(&mut app, Key::E);

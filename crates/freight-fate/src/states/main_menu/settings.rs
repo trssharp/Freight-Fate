@@ -416,7 +416,8 @@ impl SettingsCategoryState {
         save_settings(&ctx.settings);
         ctx.audio.play("ui/menu_select");
         let text = self.current_text(ctx);
-        if !ctx.speech.say_adjustment_preview(setting, &text, true) {
+        let heard = ctx.tr(&text);
+        if !ctx.speech.say_adjustment_preview(setting, &heard, true) {
             ctx.say(&text);
         }
     }

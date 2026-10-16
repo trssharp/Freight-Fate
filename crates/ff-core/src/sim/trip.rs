@@ -69,7 +69,7 @@ pub const PACENOTE_LEAD_FLOOR_S: f64 = 30.0;
 /// call's "then left/right" tail INSTEAD of getting its own call.
 pub const PACENOTE_LINK_GAP_MI: f64 = 0.3;
 
-/// A signalled exit gets the same real-time treatment as a hard bend, over
+/// A signaled exit gets the same real-time treatment as a hard bend, over
 /// the road the truck genuinely needs to reach ramp speed, widened so the
 /// clock is already real by the time anything has to start shedding.
 pub const EXIT_APPROACH_DECOMPRESS_SLACK: f64 = 1.5;
@@ -367,6 +367,11 @@ pub struct Trip {
     /// Whether the current entered zone's ZONE_ENTER colour line has been
     /// spoken.
     pub zone_entry_spoken: bool,
+    /// Set by the drive while the turn into the yard or lot is still ahead
+    /// or unsettled: the yard's entry line waits for the truck to have
+    /// actually turned in, so a truck that overruns the driveway is not told
+    /// it is in the yard before it is told it missed the turn.
+    pub yard_entry_held: bool,
     pub announced_speed_limit: Option<f64>,
     pub warned_limit_drops: Vec<f64>,
     /// Posted-limit values already spoken for the CURRENT posting.
@@ -519,6 +524,7 @@ impl Trip {
             charged_tolls: HashSet::new(),
             entered_zone: None,
             zone_entry_spoken: true,
+            yard_entry_held: false,
             announced_speed_limit: None,
             warned_limit_drops: Vec::new(),
             limit_drop_preannounced: Vec::new(),
@@ -662,8 +668,8 @@ impl Trip {
             return Some("curve assist shedding speed");
         }
         if self.armed_exit_decompression() {
-            // And for a signalled exit (Shane, 2026-08-15).
-            return Some("signalled exit");
+            // And for a signaled exit (Shane, 2026-08-15).
+            return Some("signaled exit");
         }
         if self.scale_reminder_hold() && self.truck.speed_mph() > SCALE_BYPASS_MPH {
             // And from an open scale's last reminder to its gore: at full

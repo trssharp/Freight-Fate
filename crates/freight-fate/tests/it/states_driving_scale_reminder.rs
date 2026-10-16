@@ -783,6 +783,9 @@ fn a_pause_with_no_open_scale_announced_adds_nothing() {
     let mut rig = ten_times_rig();
     let (_closed, open) = closed_then_open(&mut rig.drive);
     rig.drive.truck_mut().velocity_mps = mph_to_mps(61.0);
+    // Just inside the notice's lead, wherever the spoken notice sizes it.
+    let lead_mi = rig.drive.scale_notice_lookahead_mi(&rig.app.ctx);
+    rig.drive.trip.position_mi = open.at_mi - lead_mi + 0.05;
     pause_and_resume(&mut rig);
     // Not announced yet: the notice, not a re-announcement, is what speaks
     // it -- on this very frame, and only once.

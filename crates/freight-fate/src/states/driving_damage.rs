@@ -563,7 +563,7 @@ impl DrivingState {
 
     /// Say once per engagement that limp mode, not the grade, owns the target.
     ///
-    /// Mirrors the "cruise is flat out and still losing the grade" cue: the
+    /// Mirrors the "Cruise down to 38 on this grade" cue: the
     /// set speed is unreachable for a reason the driver cannot see, so name it
     /// and name what cruise is holding instead.
     pub fn announce_limp_cruise_cap(&mut self, ctx: &mut GameContext) {
@@ -577,15 +577,7 @@ impl DrivingState {
             return;
         }
         self.limp_cruise_said = true;
-        let message = if self.terse_speech(ctx) {
-            format!("Limp mode. Holding {}.", ctx.settings.speed_text(cap))
-        } else {
-            format!(
-                "Cruise cannot hold {}; the truck is in limp mode. Holding {}.",
-                ctx.settings.speed_text(target),
-                ctx.settings.speed_text(cap)
-            )
-        };
+        let message = format!("Limp mode. Holding {}.", ctx.settings.speed_text(cap));
         // ROUTE, not the ambient default: cruise is silently holding a lower
         // speed than the driver set, the same class as the adaptive-cruise
         // easing line -- an assist changing what the truck does is a

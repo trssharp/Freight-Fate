@@ -68,7 +68,9 @@ mod tests_portable;
 mod tests_python_fixture;
 
 pub use condition::{fresh_condition, truck_tank_gal, CONDITION_FIELDS};
-pub use paths::{data_dir, game_root, profiles_dir, save_root, SaveRoots, DATA_DIR_ENV};
+pub use paths::{
+    data_dir, data_dir_if_allowed, game_root, profiles_dir, save_root, SaveRoots, DATA_DIR_ENV,
+};
 pub use signing::{
     decode_save_bytes, encode_save_bytes, is_signature_valid, signature_for,
     signature_for_with_secret, ProfileIntegrityError,
@@ -79,6 +81,9 @@ pub type ConditionRecord = Map<String, Value>;
 
 // The 1.9 line's per-truck condition records are plain dicts, so the
 // TruckCondition dataclass the mainline introduced is not used here.
+/// Repair links that come with a chain set, and the garage restocks to.
+pub const CHAIN_REPAIR_LINKS_PER_SET: i64 = 2;
+
 pub const SAVE_VERSION: i64 = 11;
 
 // The release line careers are created on, stamped into every save (the
@@ -450,7 +455,7 @@ pub struct Profile {
     pub selection_score: f64,
     // Times this driver has been placed out of service, roadside or at a
     // scale. Feeds the safety record; kept on the profile rather than the
-    // licence file because it is a carrier fact, not a licensing one.
+    // license file because it is a carrier fact, not a licensing one.
     pub out_of_service_events: i64,
     pub market: Market,
     /// hours-of-service shift clock
@@ -835,6 +840,26 @@ impl Profile {
     }
     pub fn set_chain_wear_pct(&mut self, value: f64) {
         self.set_condition("chain_wear_pct", Value::from(value));
+    }
+
+    /// The Montana chain season (`mt_chain_season_id`) whose carry warning
+    /// was last spoken, so it is said once a season, not once a drive.
+    pub fn mt_chain_warned_season(&self) -> Option<i64> {
+        self.condition()
+            .and_then(|rec| rec.get("mt_chain_warned_season"))
+            .and_then(Value::as_i64)
+    }
+    pub fn set_mt_chain_warned_season(&mut self, season: i64) {
+        self.set_condition("mt_chain_warned_season", Value::from(season));
+    }
+
+    /// Spare repair links in the side box; a set comes with two
+    /// (`CHAIN_REPAIR_LINKS_PER_SET`). Older saves read as a full kit.
+    pub fn chain_repair_links(&self) -> i64 {
+        self.condition_f64("chain_repair_links", CHAIN_REPAIR_LINKS_PER_SET as f64) as i64
+    }
+    pub fn set_chain_repair_links(&mut self, value: i64) {
+        self.set_condition("chain_repair_links", Value::from(value.max(0)));
     }
 
     /// Put the saved rig condition onto a fresh `TruckState` at trip start.

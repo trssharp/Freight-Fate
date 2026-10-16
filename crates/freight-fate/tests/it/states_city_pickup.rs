@@ -221,7 +221,7 @@ fn test_walking_a_bad_trailer_finds_it_and_offers_the_refusal() {
     let lines = app.main_lines();
     let found = lines
         .iter()
-        .position(|line| line.starts_with("Walking"))
+        .position(|line| line.contains("Take it and the write-up"))
         .unwrap_or_else(|| panic!("no walk-around line: {lines:?}"));
     assert!(lines[found].contains(defect), "{lines:?}");
     assert!(lines[found].contains(&unit.number));
@@ -325,15 +325,17 @@ fn test_pickup_save_and_departure_keep_speed_control_session() {
     );
 
     assert!(with_state::<PickupFacilityState, _>(&app, |p, _| p.speed_control_armed));
-    assert!(app.main_lines().iter().any(|line| line
-        .contains("Automatic speed control is paused; open-road target 47 miles per hour")));
+    assert!(app
+        .main_lines()
+        .iter()
+        .any(|line| line.contains("Speed control paused, target 47 miles per hour.")));
 
     with_state_mut::<PickupFacilityState, _>(&mut app, |p, ctx| p.status(ctx));
     assert!(app
         .main_lines()
         .last()
         .unwrap()
-        .contains("open-road target 47 miles per hour"));
+        .contains("target 47 miles per hour"));
 
     key(&mut app, Key::Return); // check in
     let snapshot = profile(&app).active_trip.clone().unwrap();
@@ -386,7 +388,7 @@ fn test_owner_operator_route_menu_lists_routes_and_starts_one() {
     assert!(is::<RouteSelectState>(&app));
     let rows = labels::<RouteSelectState>(&app);
     assert!(rows[0].starts_with("Route 1:"));
-    assert!(rows[0].contains("Fuel-capable stops:"));
+    assert!(rows[0].contains("Fuel stops:"));
     assert_eq!(rows.last().unwrap(), "Back to pickup facility");
     // W speaks a forecast rather than moving the cursor.
     let index_before = index::<RouteSelectState>(&app);
@@ -402,7 +404,8 @@ fn test_owner_operator_route_menu_lists_routes_and_starts_one() {
     key(&mut app, Key::Home);
     key(&mut app, Key::Return);
     assert!(is::<DrivingState>(&app));
-    assert!(app
+    // The route screen named the destination; the drive does not repeat it.
+    assert!(!app
         .main_lines()
         .iter()
         .any(|line| line.contains("Navigation set for")));
@@ -1034,7 +1037,7 @@ fn test_accepting_job_starts_drivable_pickup_leg() {
     let dispatch: Vec<String> = app
         .main_lines()
         .into_iter()
-        .filter(|text| text.contains("Dispatch accepted from"))
+        .filter(|text| text.starts_with("Accepted."))
         .collect();
     assert!(!dispatch.is_empty());
     assert!(dispatch.last().unwrap().contains("Deadhead"));
@@ -1079,7 +1082,7 @@ fn test_pickup_facility_waits_for_full_stop() {
     assert!(
         events
             .iter()
-            .any(|line| line.contains("Stop, set the parking brake with P")),
+            .any(|line| line.contains("Stop and set the parking brake.")),
         "{events:?}"
     );
 

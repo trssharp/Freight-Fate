@@ -411,7 +411,7 @@ fn test_tableau_audio_defers_while_the_players_own_stop_is_active() {
 #[test]
 fn test_a_post_that_already_caught_the_player_never_also_runs_its_tableau() {
     // Once this post has had its own look at the player, its tableau story --
-    // "a bear has somebody stopped" -- no longer makes sense.
+    // "a trooper has somebody stopped" -- no longer makes sense.
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, "Presence");
     let log = app.record_audio();
@@ -828,12 +828,10 @@ fn test_the_same_road_twice_produces_the_same_outcome() {
 #[test]
 fn test_scale_notice_lookahead_sample_covers_the_real_sentence() {
     // The spoken lead is sized from a sample; it must not undershoot the real
-    // wording with a long stop name and the longest control phrases.
+    // wording with a long stop name.
     let real = concat!(
         "Open weigh station ahead in two miles, Northbound Platte River ",
-        "Port of Entry. All trucks must pull in. Signal for the scale ",
-        "exit with right bumper plus D-pad down. Stopped at the scale, ",
-        "press right bumper plus D-pad down to check in."
+        "Port of Entry. All trucks must pull in."
     );
     assert!(
         ramp_arrival_grace_seconds(SCALE_NOTICE_SAMPLE, 0.0)
@@ -1123,10 +1121,6 @@ fn test_rest_key_at_speed_defers_to_the_open_scale() {
     let spoken = app.event_lines().join(" ");
     assert!(spoken.contains("Weigh station first"), "{spoken}");
     assert!(spoken.contains("All trucks must stop"), "{spoken}");
-    assert!(
-        spoken.contains("Rest planning waits until you are past the scale"),
-        "{spoken}"
-    );
     assert_eq!(
         drive.trip.planned_stop_key.as_deref(),
         Some(plaza.key().as_str())
@@ -1377,7 +1371,7 @@ fn test_facility_stopping_assistance_brakes_for_a_scale_entrance() {
     assert!(app
         .event_lines()
         .iter()
-        .any(|line| line.contains("Facility stopping assistance taking the pedals")));
+        .any(|line| line.contains("Slowing for the entrance.")));
 }
 
 #[test]
@@ -1400,7 +1394,7 @@ fn test_facility_stopping_assistance_does_not_coast_to_a_stop_short_of_the_scale
     assert!(app
         .event_lines()
         .iter()
-        .any(|line| line.contains("Facility stopping assistance taking the pedals")));
+        .any(|line| line.contains("Slowing for the entrance.")));
     const { assert!(FACILITY_LANE_ROLL_MPH == 12.0) };
     const { assert!(ARRIVAL_FINAL_CREEP_MI == 200.0 / 5280.0) };
 }

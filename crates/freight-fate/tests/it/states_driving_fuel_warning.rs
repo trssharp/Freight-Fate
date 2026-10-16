@@ -73,10 +73,7 @@ fn test_crossing_fifteen_percent_speaks_once() {
 
     let lines = low_fuel_lines(&app);
     assert_eq!(lines.len(), 1, "{lines:?}");
-    assert_eq!(
-        lines[0],
-        "Low fuel warning, 15 percent. Find a fuel stop soon."
-    );
+    assert_eq!(lines[0], "Fuel low: 15 percent.");
     assert!(drive.low_fuel_said);
     assert!(
         log.borrow()
@@ -136,10 +133,7 @@ fn test_refilling_above_then_dropping_again_speaks_again() {
 
     let lines = low_fuel_lines(&app);
     assert_eq!(lines.len(), 1, "{lines:?}");
-    assert_eq!(
-        lines[0],
-        "Low fuel warning, 14 percent. Find a fuel stop soon."
-    );
+    assert_eq!(lines[0], "Fuel low: 14 percent.");
     assert!(drive.low_fuel_said);
 }
 

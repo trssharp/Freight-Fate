@@ -169,9 +169,7 @@ impl DrivingState {
                         let what = self.crossing_description();
                         self.say_terminal_hold(
                             ctx,
-                            &format!(
-                                "{at} the {noun}. {what}; assistance is holding for your gap."
-                            ),
+                            &format!("{at} the {noun}. {what}."),
                             SpeechCategory::Navigation,
                         );
                     }
@@ -192,11 +190,7 @@ impl DrivingState {
                 // assist) that just took the brakes, same as the stop-sign
                 // sibling above (automation-handoff sweep, 2026-08-20, the
                 // deferred 2026-08-15 audit).
-                self.say_terminal_hold(
-                    ctx,
-                    "Stopped at the red light. Assistance is holding the brakes for green.",
-                    SpeechCategory::Confirmation,
-                );
+                self.say_terminal_hold(ctx, "Red light.", SpeechCategory::Confirmation);
             }
             return;
         }
@@ -246,10 +240,7 @@ impl DrivingState {
             let rolled_here = self.ramp_green_roll_said
                 && matches!(self.ramp_control.as_str(), "yield" | "roundabout");
             if !rolled_here {
-                self.say_route_confirmation(
-                    ctx,
-                    format!("Route-transition assistance braking for the {what}."),
-                );
+                self.say_route_confirmation(ctx, format!("Braking for the {what}."));
             }
         }
     }
@@ -281,7 +272,7 @@ impl DrivingState {
                 "signal" | "stop" | "yield" | "roundabout"
             );
         if !controlled {
-            self.say_route_confirmation(ctx, "Route-transition assistance slowing.");
+            self.say_route_confirmation(ctx, "Slowing for the ramp.");
             return;
         }
         // Spend the line the terminal would have said for this same act: the
@@ -302,10 +293,7 @@ impl DrivingState {
                 self.terminal_noun()
             }
         };
-        self.say_route_confirmation(
-            ctx,
-            format!("Route-transition assistance slowing for the {what}."),
-        );
+        self.say_route_confirmation(ctx, format!("Slowing for the {what}."));
     }
 
     /// Take the truck through a terminal it may roll -- a green, or a yield
@@ -342,10 +330,7 @@ impl DrivingState {
         if !self.ramp_green_roll_said {
             self.ramp_green_roll_said = true;
             self.pause_speed_control(ctx, true);
-            self.say_route_confirmation(
-                ctx,
-                format!("Route-transition assistance slowing for {what}."),
-            );
+            self.say_route_confirmation(ctx, format!("Slowing for {what}."));
         }
     }
 
@@ -538,15 +523,12 @@ impl DrivingState {
                     }
                 }
             } else if met == CrossMeeting::Empty {
-                self.say_confirmation_interrupt(
-                    ctx,
-                    "You crept through the red light. Nothing was crossing this time.",
-                );
+                self.say_confirmation_interrupt(ctx, "Rolled the red light.");
             } else {
                 ctx.audio.play_with(&cue, 1.0, pan);
                 self.say_confirmation_interrupt(
                     ctx,
-                    "You crept through the red light. Cross traffic leans on the horn.",
+                    "Rolled the red light. Cross traffic leans on the horn.",
                 );
             }
             self.cite_signal_run(ctx, "the red light", RED_LIGHT_FINE);
@@ -671,15 +653,12 @@ impl DrivingState {
                 }
             }
         } else if met == CrossMeeting::Empty {
-            self.say_confirmation_interrupt(
-                ctx,
-                &format!("You rolled the stop sign{place}. Nothing was crossing this time."),
-            );
+            self.say_confirmation_interrupt(ctx, &format!("Rolled the stop sign{place}."));
         } else {
             ctx.audio.play_with(&cue, 1.0, pan);
             self.say_confirmation_interrupt(
                 ctx,
-                &format!("You rolled the stop sign{place}. Cross traffic leans on the horn."),
+                &format!("Rolled the stop sign{place}. Cross traffic leans on the horn."),
             );
         }
         self.cite_signal_run(ctx, "the stop sign", STOP_SIGN_FINE);
@@ -844,7 +823,7 @@ impl DrivingState {
     /// sign until the driver drove it up to the entrance, where the assist
     /// took the pedals again (agent drive, Chicago to Gary, 2026-09-01). The
     /// owner's ruling: the assist goes from the signal to the entrance, hands
-    /// off. With it on, the release names the assist and arms the pull-ahead;
+    /// off. With it on, the release arms the pull-ahead and says no more;
     /// with it off, the release is the driver's, exactly as before.
     ///
     /// `clear` is the stopped release ("Clear; pull ahead"); a green or a gap
@@ -869,7 +848,7 @@ impl DrivingState {
         if self.approach_pull_ahead_available(ctx) {
             self.approach_pull_ahead = true;
             let clear = if clear { " Clear." } else { "" };
-            return format!("{lead}{clear} Facility stopping assistance is taking you {whither}.");
+            return format!("{lead}{clear}");
         }
         if clear {
             format!("{lead} Clear; pull ahead {whither}.")

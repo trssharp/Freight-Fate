@@ -279,7 +279,7 @@ impl DrivingState {
     /// Falling asleep at the wheel is not a scrape: 49 CFR 392.3 forbids
     /// driving impaired by fatigue, and to a carrier this is a preventable
     /// safety incident. The first one costs standing; from the second on it
-    /// is a violation the licence answers for.
+    /// is a violation the license answers for.
     pub fn record_fatigue_event(&mut self, ctx: &mut GameContext) -> String {
         if ctx.profile.is_none() || self.enforcement_bypassed(ctx) {
             return String::new();
@@ -302,8 +302,8 @@ impl DrivingState {
         self.trip.truck.set_parking_brake();
         self.place_out_of_service(ctx);
         format!(
-            "Out of service for fatigue, {:.0} hours off duty. It is now {}. Hours of service \
-             reset, and the delivery deadline kept counting.",
+            "Out of service for fatigue, {:.0} hours off duty. It is now {}. Driving and duty \
+             clocks reset, and the delivery deadline kept counting.",
             enforcement::FATIGUE_OUT_OF_SERVICE_HOURS,
             clock_text(self.trip.local_hour())
         )

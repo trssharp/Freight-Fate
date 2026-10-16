@@ -52,6 +52,12 @@ impl DrivingState {
             // "Stop sign at ramp end. Limit 70").
             return "none".to_string();
         }
+        if stop.stop_type == "delivery_destination" && !self.facility_streets_on {
+            // Facility streets off is the 1.8 arrival: the ramp runs into
+            // the facility, with no light or sign at its end (owner,
+            // 2026-10-11).
+            return "none".to_string();
+        }
         // A stop matched to its interchange at bake time reads that record
         // and no other. The mile-marker search is only for a stop with no
         // match: a stop's mile is a projection, a mile or three off as often

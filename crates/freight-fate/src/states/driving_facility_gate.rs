@@ -270,7 +270,7 @@ impl DrivingState {
         }
         let facility = self.approach_facility_text(ctx);
         Some(format!(
-            "The gate at {facility} is {} ahead. Stop there to check in.",
+            "Gate at {facility}, {} ahead.",
             self.closing_text(remaining)
         ))
     }
@@ -332,14 +332,11 @@ impl DrivingState {
         self.cancel_cruise(ctx, false);
         let target = ctx.settings.speed_text(FACILITY_GATE_LIMIT_MPH);
         let mut message = if self.terse_speech(ctx) {
-            format!(
-                "Missed the gate: too fast. Safe turnaround. Gate ahead again; slow to {target}."
-            )
+            format!("Missed the gate, too fast. Slow to {target}.")
         } else {
             format!(
-                "You carried past the gate at {}, too fast for the entrance. You loop back \
-                 through the next safe turnaround. The gate is ahead again; slow to {target} this \
-                 time. The clock is still running.",
+                "Missed the gate at {}, too fast for the entrance. You turned around, and the \
+                 gate is ahead again. Slow to {target}.",
                 self.destination_facility_text(ctx)
             )
         };

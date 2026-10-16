@@ -46,16 +46,12 @@ use crate::states::driving_updates::pending::EnforcementStopParams;
 
 /// Leaving a stop menu. The engine is whatever it already was: "starts the
 /// engine" over a running one sent the driver's press to shut it down.
-pub fn back_on_the_road_line(ctx: &GameContext, engine_on: bool) -> String {
-    let brake = ctx.control_hint("parking_brake");
+pub fn back_on_the_road_line(engine_on: bool) -> String {
     if engine_on {
-        return format!("Back on the road. Parking brake set. {brake} releases the brake.");
+        "Parking brake set.".to_string()
+    } else {
+        "Engine off, parking brake set.".to_string()
     }
-    let engine = ctx.control_hint("engine");
-    format!(
-        "Back on the road. Parking brake set. {engine} starts the engine, {brake} releases the \
-         brake."
-    )
 }
 
 /// Where the career clock stands right now, mid-trip included.
@@ -100,7 +96,7 @@ pub fn major_offense_text(ctx: &GameContext, kind: &str, hours: f64) -> String {
     if kind == enforcement::SUSPENSION_LIFETIME {
         return format!(
             "That is your second major offense. Under federal rules a second major offense \
-             disqualifies a commercial licence for life, so this driver will not drive \
+             disqualifies a commercial license for life, so this driver will not drive \
              commercially again. Nothing is taken away: {name} keeps every dollar, the truck, \
              and the whole record, and you can open this career any time to look back over it. \
              Rest, repairs, and the garage still work here, and the dispatch \
@@ -214,7 +210,7 @@ impl DrivingState {
         } else {
             format!(
                 "That is {} that you have run off the road asleep. Driving impaired by fatigue \
-                 is a federal violation, so this one counts against your licence as well as {} \
+                 is a federal violation, so this one counts against your license as well as {} \
                  points off your reputation. {}",
                 times_now_text(count),
                 fmt_f(hit, 0),

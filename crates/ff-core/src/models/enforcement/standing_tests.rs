@@ -56,7 +56,7 @@ fn the_record_lifts_off_reputation_after_a_game_year_though_the_review_still_see
     p.game_hours = booked + 300.0 * HOURS_PER_DAY;
     assert_eq!(p.standing(), 80.0);
     // A year and a day: the points are back, and the carrier's review has
-    // let it go too, while the licence ladder still counts it for three.
+    // let it go too, while the license ladder still counts it for three.
     p.game_hours = booked + (REPUTATION_WINDOW_DAYS as f64 + 1.0) * HOURS_PER_DAY;
     assert_eq!(p.standing(), 90.0);
     assert_eq!(p.driving_record.serious_in_review_window(p.game_hours), 0);
@@ -121,7 +121,7 @@ fn a_crash_counts_as_a_serious_event_and_ages_out_like_one() {
         "a crash weighs on the safety record as a serious violation does"
     );
     assert!(score_for_profile(&p, 0.0) > before);
-    // Not a citation, and not a serious violation on the licence ladder.
+    // Not a citation, and not a serious violation on the license ladder.
     assert_eq!(p.driving_record.unexplained_citations(), 0);
     assert!(p.driving_record.serious_violations.is_empty());
     // A year on, it has aged out of both windows.
