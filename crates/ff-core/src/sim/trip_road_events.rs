@@ -10,7 +10,9 @@ use crate::sim::trip::Trip;
 use crate::sim::trip_models::*;
 use crate::sim::trip_route_helpers::stop_offset_for_direction;
 use crate::sim::weather::WeatherKind;
-use crate::speech_text::{hazard_call, in_lane_hazard_call, toll_charged, SpokenMessage};
+use crate::speech_text::{
+    hazard_call, in_lane_hazard_call_named, passing_hazard_call, toll_charged, SpokenMessage,
+};
 
 impl Trip {
     pub fn traffic_pressure_intensity(&self, mile: f64, kind: &str) -> f64 {
@@ -132,7 +134,15 @@ impl Trip {
         let legs = self.route.legs.clone();
         for (i, (start, leg)) in self.leg_starts.clone().iter().zip(legs.iter()).enumerate() {
             let forward = self.route.cities[i] == leg.a;
+            let tunnel_toll_text = leg
+                .corridor()
+                .tunnel
+                .as_ref()
+                .map(|tunnel| tunnel.toll_text.clone());
             for toll in leg.toll_events() {
+                if !toll.applies_to_direction(forward) {
+                    continue;
+                }
                 let offset = stop_offset_for_direction(toll.at_mi, leg.miles, forward);
                 let at_mi = start + offset;
                 let key = format!("{i}:{}:{}", py_str_float(toll.at_mi), toll.name);
@@ -159,14 +169,19 @@ impl Trip {
                     event: toll.clone(),
                     amount: toll.amount,
                 });
-                self.emit(
-                    TripEventKind::TollCharged,
+                let spoken = if let Some(text) = tunnel_toll_text.as_ref() {
+                    SpokenMessage::new(text.clone())
+                } else {
                     toll_charged(
                         &toll.method_label(),
                         &toll.name,
                         &fmt_f(toll.amount, 0),
                         toll.estimated,
-                    ),
+                    )
+                };
+                self.emit(
+                    TripEventKind::TollCharged,
+                    spoken,
                     TripEventData {
                         toll: Some(toll.clone()),
                         amount: Some(toll.amount),
@@ -338,8 +353,8 @@ impl Trip {
                 };
                 // "Or change lanes" is only true advice where there is
                 // somewhere to send it (playtest report, US-285, 2026-08-12).
-                let message =
-                    in_lane_hazard_call(&format!("{} {where_}.", py_capitalize(&reason)), side);
+                let body = format!("{} {where_}.", py_capitalize(&reason));
+                let message = in_lane_hazard_call_named(&body, side, &self.open_side_spoken(side));
                 self.emit(
                     TripEventKind::Hazard,
                     message,
@@ -351,6 +366,8 @@ impl Trip {
                         // brake-alone still has to reach ITS speed rather
                         // than the road-spanning safe speed.
                         in_lane: Some(true),
+                        open_side: Some(side),
+                        pass_message: passing_hazard_call(&body, side),
                         name: Some(format!("the {reason}")),
                         ..Default::default()
                     },
@@ -393,7 +410,7 @@ impl Trip {
                 .unwrap_or_default();
             let body = format!("{first}{}.", chars.as_str());
             let message = if in_lane {
-                in_lane_hazard_call(&body, side)
+                in_lane_hazard_call_named(&body, side, &self.open_side_spoken(side))
             } else {
                 hazard_call("Brake now!", &body)
             };

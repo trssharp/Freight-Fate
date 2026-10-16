@@ -6,17 +6,20 @@
 //! would have built and pin what happens on it.
 
 use crate::states_city_support::*;
+use ff_core::data::seasonal_weight::{seasonal_gvw_cap_kg, strictest_on_route};
 use ff_core::models::business::LEASED_OWNER_OPERATOR;
 use ff_core::models::jobs::{cargo_type, Job};
 use ff_core::models::trailer_yard::{
     preloaded_trailer, DROP_HOOK_MIN, LIVE_LOAD_MIN, TRAILER_SWAP_MIN,
 };
+use ff_core::sim::vehicle::{TrailerSet, TruckState, KG_PER_TON};
 use freight_fate::app::testing::TestApp;
+use freight_fate::app::GameContext;
 use freight_fate::states::base::{Key, TimedMessageState};
 use freight_fate::states::city::CityMenuState;
 use freight_fate::states::city_pickup::{
     job_origin_exists, pickup_snapshot, PickupFacilityState, PickupOptions, PickupSnapshotOptions,
-    RouteSelectState,
+    RouteSelectState, SEASONAL_WEIGHT_REROUTE_NOTE,
 };
 use freight_fate::states::driving::DrivingState;
 use freight_fate::states::driving_pause_states::PauseMenuState;
@@ -407,6 +410,114 @@ fn test_owner_operator_route_menu_lists_routes_and_starts_one() {
         .any(|line| line.contains("Navigation set for")));
 }
 
+fn seasonal_hours(month: u32, day: u32, hour: f64) -> f64 {
+    use chrono::Datelike;
+
+    let ordinal = f64::from(
+        chrono::NaiveDate::from_ymd_opt(2001, month, day)
+            .expect("test date is valid")
+            .ordinal(),
+    );
+    (ordinal - 80.0).rem_euclid(365.0) * 24.0 + hour
+}
+
+fn route_selection_at(
+    job: Job,
+    calendar_hours: f64,
+) -> (Vec<ff_core::data::world_models::Route>, Vec<String>) {
+    let mut app = TestApp::new();
+    career(&mut app, "Seasonal Route", "anchorage_ak_us");
+    {
+        let p = profile_mut(&mut app);
+        p.business_status = LEASED_OWNER_OPERATOR.to_string();
+        p.owned_trucks = vec!["rig".to_string()];
+        p.sync_calendar_to(calendar_hours);
+    }
+    let pickup = loaded_pickup(&app, job);
+    app.push_state(pickup);
+    app.clear_speech();
+    key(&mut app, Key::Return);
+    assert!(is::<RouteSelectState>(&app));
+    let routes = with_state::<RouteSelectState, _>(&app, |state, _| state.routes.clone());
+    (routes, app.main_lines())
+}
+
+#[test]
+fn seasonal_route_menu_drops_overweight_lanes_but_keeps_summer_options() {
+    let mut app = TestApp::new();
+    let world = app.ctx.world;
+    let active_hours = seasonal_hours(5, 1, 12.0);
+    let options = world
+        .supported_route_options("anchorage_ak_us", "fairbanks_ak_us", 3)
+        .expect("supported route options");
+    assert!(
+        options
+            .iter()
+            .any(|route| strictest_on_route(route, active_hours).is_some()),
+        "Anchorage to Fairbanks options must include a spring-restricted lane"
+    );
+    assert!(
+        options
+            .iter()
+            .any(|route| strictest_on_route(route, active_hours).is_none()),
+        "Anchorage to Fairbanks options must include an unrestricted lane"
+    );
+    let restricted_route = options
+        .iter()
+        .find(|route| strictest_on_route(route, active_hours).is_some())
+        .expect("a restricted option");
+
+    career(&mut app, "Seasonal Route", "anchorage_ak_us");
+    {
+        let p = profile_mut(&mut app);
+        p.business_status = LEASED_OWNER_OPERATOR.to_string();
+        p.owned_trucks = vec!["rig".to_string()];
+        p.sync_calendar_to(active_hours);
+    }
+    let mut truck = TruckState::new(profile(&app).truck_specs());
+    profile(&app).load_truck_condition(&mut truck);
+    truck.trailer_set = TrailerSet::legacy_trip_on_route(
+        cargo_type("general").unwrap().key,
+        world,
+        Some(restricted_route),
+    );
+    let restricted_cap = seasonal_gvw_cap_kg(&truck, 85);
+    let legal_gross = truck.trailer_set.legal_gvw_kg;
+    let weight_tons = ((restricted_cap + legal_gross) / 2.0 - truck.tare_kg()) / KG_PER_TON;
+    assert!(weight_tons > 0.0);
+    assert!(restricted_cap < legal_gross);
+
+    let job = Job::new(
+        cargo_type("general").unwrap(),
+        weight_tons,
+        "anchorage_ak_us",
+        "Anchorage freight terminal",
+        "fairbanks_ak_us",
+        options[0].miles(),
+        18_000.0,
+        48.0,
+    );
+    drop(app);
+    let (spring_routes, spring_speech) = route_selection_at(job.clone(), active_hours);
+    assert!(spring_routes
+        .iter()
+        .all(|route| strictest_on_route(route, active_hours).is_none()));
+    assert_eq!(
+        SEASONAL_WEIGHT_REROUTE_NOTE,
+        "Routes where spring weight limits would make this load overweight are not offered."
+    );
+    assert!(spring_speech
+        .iter()
+        .any(|line| line.contains(SEASONAL_WEIGHT_REROUTE_NOTE)));
+
+    let summer_hours = seasonal_hours(7, 1, 12.0);
+    let (summer_routes, summer_speech) = route_selection_at(job, summer_hours);
+    assert_eq!(summer_routes.len(), options.len());
+    assert!(!summer_speech
+        .iter()
+        .any(|line| line.contains(SEASONAL_WEIGHT_REROUTE_NOTE)));
+}
+
 // -- the stale-facility guard ------------------------------------------------------------
 
 #[test]
@@ -606,6 +717,62 @@ fn test_speed_control_stays_paused_until_departure() {
     assert_eq!(keeper, None);
 }
 
+/// Roll into the pickup with adaptive cruise set to 55, stop at the gate the
+/// way `stop` does, load, and depart: the loaded run starts with the same
+/// session and the same 55 (tester report, 2026-09-28).
+fn cruise_survives_the_pickup(
+    assist: bool,
+    stop: impl FnOnce(&mut DrivingState, &mut GameContext),
+) {
+    let mut app = TestApp::new();
+    app.ctx.settings.destination_approach_assist = assist;
+    accept_pickup_drive(&mut app);
+    with_state_mut::<DrivingState, _>(&mut app, |d, ctx| {
+        d.trip.truck.start_engine();
+        d.trip.truck.set_air_ready(false);
+        d.engage_cruise(ctx, 55.0, false);
+        d.trip.position_mi = d.trip.total_miles();
+        d.trip.finished = true;
+        d.trip.truck.velocity_mps = 0.0;
+        d.trip.truck.parking_brake = false;
+        d.update_frame(ctx, 1.0 / 60.0);
+        stop(d, ctx);
+    });
+    app.ctx.run_deferred();
+    finish_timed_state(&mut app);
+    let session = with_state::<PickupFacilityState, _>(&app, |p, _| {
+        (p.speed_control_armed, p.speed_control_target_mph)
+    });
+    assert_eq!(session, (true, Some(55.0)));
+
+    key(&mut app, Key::Return); // check in
+    key(&mut app, Key::Return); // load, or drop and hook
+    finish_timed_state(&mut app);
+    select::<PickupFacilityState>(&mut app, "Depart for destination");
+    let session = with_state::<DrivingState, _>(&app, |d, _| {
+        (d.speed_control_armed, d.speed_control_target_mph)
+    });
+    assert_eq!(session, (true, Some(55.0)));
+}
+
+#[test]
+fn test_cruise_setting_survives_the_pickup_with_the_stopping_assist() {
+    cruise_survives_the_pickup(true, |d, ctx| {
+        // The assist holds at the entrance; Enter continues in.
+        d.update_frame(ctx, 1.0 / 60.0);
+        d.open_ready_facility_arrival(ctx);
+    });
+}
+
+#[test]
+fn test_cruise_setting_survives_setting_the_parking_brake_at_the_pickup() {
+    cruise_survives_the_pickup(false, |d, ctx| {
+        // The gate asks for the parking brake, then T opens the facility.
+        d.toggle_parking_brake(ctx);
+        d.update_frame(ctx, 1.0 / 60.0);
+    });
+}
+
 #[test]
 fn test_arming_by_hand_at_the_gate_still_works() {
     let mut app = TestApp::new();
@@ -797,6 +964,31 @@ fn test_a_shut_down_load_says_nothing_about_fuel() {
     load_out(&mut app);
     let loaded_line = app.main_lines().last().unwrap().to_lowercase();
     assert!(!loaded_line.contains("idling"), "{loaded_line}");
+}
+
+/// Checked in with the engine running, then shut down for the load: the dock
+/// hour burns nothing, and the report says the idling came before the
+/// shutdown -- a bare "burned idling" after loading read as the engine having
+/// run through the load (tester report, 2026-09-28).
+#[test]
+fn test_shutting_down_after_check_in_stops_the_idle_before_the_load() {
+    let mut app = TestApp::new();
+    pickup_running(&mut app);
+    select::<PickupFacilityState>(&mut app, "Check in at shipping office");
+    select::<PickupFacilityState>(&mut app, SHUT_DOWN);
+    let before_load = with_state::<PickupFacilityState, _>(&app, |p, _| p.truck.fuel_gal);
+    select::<PickupFacilityState>(&mut app, "Load cargo at dock");
+    finish_timed_state(&mut app);
+
+    let (engine_on, after_load) =
+        with_state::<PickupFacilityState, _>(&app, |p, _| (p.truck.engine_on, p.truck.fuel_gal));
+    assert!(!engine_on);
+    assert_eq!(after_load, before_load);
+    let loaded_line = app.main_lines().last().unwrap().to_lowercase();
+    assert!(
+        loaded_line.contains("burned idling before you shut down"),
+        "{loaded_line}"
+    );
 }
 
 #[test]

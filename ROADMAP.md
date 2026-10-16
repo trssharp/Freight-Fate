@@ -42,6 +42,148 @@ bookmarks usable.
 
 ## 1.9 in flight (ships from `dev` and `main`)
 
+- [x] Channel 3000 on 87.7 (owner, 2026-10-06): the owner's TV programming on
+      a daypart schedule by the truck's local hour, from its own
+      `channel3000.pak`, opened on first tune-in; off the dial without the
+      pack, and in no changelog or manual (`ff_core::channel3000`).
+
+- [x] Billboards that notice the drive (owner, 2026-09-30): when an
+      everyday pool sign comes up, Big Jim answers a collision, a citation
+      or an out-of-service order since the last one, once; church signs and
+      all-night diners take every other sign for a drowsy driver or between
+      one and five in the morning; a holiday's week (New Year's, the Fourth
+      of July, Halloween, Thanksgiving, Christmas, on the date the player
+      hears) takes every third. Placed attraction signs never change, and no
+      line names an exit or a service (`data/billboards_dynamic.rs`).
+- [ ] Billboards could also react to the cargo in the trailer and to the
+      weather (owner, 2026-09-30: "at least one and two" shipped first).
+
+- [x] Placed billboards face one way (owner, 2026-09-30): every placed
+      attraction sign was heard from both sides of the road, and 128 of the
+      230 say "ahead" or "next exit", so "Meridian is ahead" played just
+      after leaving Meridian and the Wall Drug countdown played after the
+      exit eastbound. A landmark now carries `directions`, and a billboard
+      defaults to the direction its sheet was written for; the other side
+      hears the random roadside pool. The sign-sheet bake mirrors a
+      milepost onto a leg stored the other way round, which it used to skip:
+      Cadillac Ranch, Tucumcari Tonite and Bates House of Turkey stood at
+      the wrong end of their legs. Wall Drug and South of the Border now
+      count down in both directions (`data/spider/signsheets/countdowns-2026-09-30.md`),
+      and their "ahead" lines left the corridor pools, whose state anchor
+      cannot tell which side of the attraction the truck is on. The South
+      Carolina welcome no longer says every driver has been reading about
+      the sombrero tower for three hundred miles. Seven more pool lines
+      that said "next exit" or "ahead" about one place, and were read
+      anywhere in their state either way, are placed at that place
+      (`signsheets/pool-moves-2026-09-30.md`); the Rockies line rides the
+      Denver approach, and The Thing's duplicate of its own countdown is cut.
+      A sweep now fails any placed billboard the landmark spacing drops.
+      An audit of all 245 placed signs against each attraction's real
+      location moved or flipped 130 and removed 29
+      (`signsheets/audit-fixes-2026-09-30.md`): signs on the wrong leg,
+      after their place, too far out, silenced by spacing, or describing
+      the city just left; Goats on the Roof, Prairie Dog Town and the
+      Buellton Pea Soup Andersen's are closed. The Thing is a pull-in
+      stop at I-10 Exit 322 (its pumps bobtail-only, its truck parking
+      assumed) with countdowns from both sides. The copy was checked
+      against what each place is today and the owner approved the
+      corrections (`signsheets/copy-updates-2026-09-30.md`, the pools and
+      the state welcomes): song credits, prices, closures, and Pea Soup
+      Andersen's moved from closed Buellton to Santa Nella on I-5. Seven
+      Tennessee attractions are signed both ways
+      (`signsheets/tennessee-2026-09-30.md`); the leg's own "Norris Museum
+      ahead" now faces southbound only. The states with almost no placed
+      signs were then signed in one pass (owner, 2026-09-30): 615 signs for
+      137 new attractions in Arkansas, Louisiana, Kansas, Colorado,
+      Washington, North Dakota, Minnesota, Wisconsin, New Jersey,
+      Delaware, Maryland (Ocean City from US 50 and US 13), Rhode Island,
+      Connecticut, Massachusetts and New Hampshire, each checked open
+      today and following the state's billboard law (none in DC; none on
+      Washington's scenic highways, Colorado's scenic byways or
+      Maryland's interstates). Texas and Florida followed: 596 signs, with
+      the Orlando theme parks plainly on I-4, none on Texas's scenic byways
+      or inside the cities that ban them. Florida's billboard bans moved the
+      older signs too: the ten in the Keys and on the 18-Mile Stretch are
+      roadside landmark callouts now, same copy, and two of the four on
+      Alligator Alley stand west of its toll plaza while the others are gone
+      (`signsheets/keys-alligator-alley-2026-09-30.md`). Sheet landmarks
+      face the way the sheet reads unless marked `facing: both`. The last
+      27 thin states followed on 2026-10-01 (owner: agents' recommendations
+      taken without a review file): about 1,700 more signs for 336
+      attractions, every state's billboard and scenic-byway law applied
+      (Oregon's permit cap, California's designated scenic highways, US 191's
+      Dinosaur Diamond, Kentucky's Country Music Highway, the Great River
+      Road), older one-way signs given their other side, and older signs on
+      newly found byways turned into landmark callouts
+      (`signsheets/*-2026-10-01.md`, `owner-decisions-2026-10-01.md`). The
+      map carries 3,237 placed signs.
+
+- [x] Audio levels (owner, 2026-10-03): all 426 music.pak tracks
+      normalized to -18 LUFS with static gain under a -1 dBTP ceiling
+      (spread 16.1 dB down to 4.2 dB; 23 peaky speech segments stop short at
+      the ceiling), and four sound-effect outliers raised to their peers
+      (`docs/audio-levels.md`). Slider defaults unchanged.
+- [ ] (Found along the way) Shift-sound bank variants 09, 11 and 15 (manual
+      and automatic) sit 5 to 11 dB under their siblings by momentary
+      loudness, with peaks too close to full scale for static gain. Needs a
+      peak limiter or replacement takes.
+- [x] New installs start on All assists (owner, 2026-09-30): first drives kept
+      going wrong at the wheel, city street corners above all, so the truck
+      steers until the driver steps down to Balanced. Saved settings keep
+      their preset. The Lane keeping help now reads the Steering guide and
+      Lane guide sound rows and says which way the lean points and what
+      carries it; it used to teach steering by the road sound.
+
+- [x] Letting go straightens (owner, 2026-09-30): with no steer key held
+      the truck squares itself with the road in every manual mode, the
+      straighten-up key's law built in. The heading a driver cannot see had
+      outlived every key -- a tap left a drift, a hold kept turning, an
+      unwind after a corner crossed into the next lane. Lane position stays
+      the driver's on lane keeping off.
+- [x] (Found along the way) The first corner out of Aberdeen Company Yard,
+      right at the gate, was failed as too fast (owner's drive, 2026-09-30).
+      Reproduced over the agent MCP: not a keeper fault. Setting the parking
+      brake at the yard cancels speed control, so nothing eased the truck,
+      and reaching the 10 mph corner at 18 on the throttle is a miss by the
+      rule; with the keeper left running it eases and takes the corner at 9.
+      The reproduction found a real fault instead: the lockout's queued
+      "Parking brake set. Press P to release it." was handed back after the
+      brake was released and spoke, interrupting, with the truck rolling.
+      The three lockout lines now speak only while their own reason holds.
+
+- [x] A hold toward a signed turn follows the road (owner, 2026-09-30): a
+      held key was about twice the wheel a city corner wants, on top of
+      curve assistance's own, so holding into a turn left the road. A hold
+      that starts toward the turn in play now hands over the road's own
+      wheel until it is released; steering away stays literal. The cost,
+      accepted: no cutting to the inside lane mid-turn.
+
+- [x] The engine lean asks for the wheel only where the wheel is the
+      driver's (owner ruling, 2026-09-30, narrowing 2026-09-18): with curve
+      assistance or partial lane keeping steering a bend, ramp curve or
+      corner, it carries drift alone; full lane keeping keeps the road's
+      shape. Street corners bend the lane model's road over their WB-67 arc,
+      so steering into one tracks it instead of crossing the lane (forum
+      report 448).
+- [ ] (Found along the way) Interchange connector arcs still have no
+      curvature in the lane model, so with lane keeping off and curve
+      assistance off their lean asks for steering the lane cannot answer.
+
+- [x] The driver's steer asks for a heading, not a turning rate (owner,
+      2026-09-30): players could not hold the lane centered because every
+      press was a full 0.2 g turn whose heading outlived the key, so a tap
+      left a drift and a two-second hold built eleven degrees and ran
+      through the next lane into the median. A key now asks for the heading
+      that crosses a lane in `LANE_CHANGE_S` (the full-mode tap change's
+      2.5 s), a stick for its share of it, and letting go asks for none. A
+      first try that ramped the key's lateral g over a measured tap time was
+      replaced the same day; the heading limit makes a tap a nudge by itself.
+
+- [x] One-time Driving assistance picker before the main menu (owner,
+      2026-09-30): every player, fresh install or existing, answers it once;
+      the cursor starts on their current preset, Escape keeps it, and a
+      Custom player gets a keep row first.
+
 - [x] Ramp-end traffic lights keep one seeded 62 to 80 second plan per
       intersection, with a 6 second yellow (the MUTCD ceiling; the spoken
       call eats the first second and a half) and a 7 second all-red so cross
@@ -83,10 +225,11 @@ bookmarks usable.
       stations are off the dial in Synthesized mode.
       - [x] Typed-in music seeds: Enter on Music seed opens the text field
             and takes a whole number; Left and Right still roll one.
-      - (Release gate) More synth voices per style: built, awaiting the owner's
-            listening pass. A strummed guitar, drawbar organ, bell and reed,
-            two or three per style (the higher rungs get three); the reed
-            takes the B sections' tune. Tick once Josh has heard them.
+      - (Release gate) More synth voices per style: built and shipping; the
+            owner replaced the listening pass with an agent-server check
+            2026-10-03. A strummed guitar,
+            drawbar organ, bell and reed, two or three per style (the higher
+            rungs get three); the reed takes the B sections' tune.
 
 - [x] Career balance integrity: a `MoneyGuard` shadow (balance bits XORed
       with a per-instance key) resyncs on every legitimate earn, spend, or
@@ -180,6 +323,15 @@ Costs the drive (found 2026-09-25, gate drive on I-70):
       downgrade call asked for J. Only the driver's own accelerator refuses
       it now.
 
+Costs the drive (found 2026-10-01, owner's drive into Chicago):
+
+- [x] Lane keeping on full held the middle lane through the destination
+      exit's gore, twice; it now moves to the right lane itself
+      ([October 1](#october-1-lane-keeping-moves-right-for-its-exit)).
+- [x] Chain law anywhere with a steep mile, chain controls and their CB
+      calls all year, and chain citations off the posted grade
+      ([October 1](#october-1-seasons)).
+
 World data (the rest of the 1.9 world-data list moved to
 [2.0](#world-data-deferred-from-19) on 2026-09-25):
 
@@ -192,26 +344,47 @@ Driving and platform:
 - [x] The speed keeper holds the next turn's speed when it is too close to
       build back up and brake again
       ([September 23](#september-23-agent-drive-into-abilene); PR #232).
-- [ ] Drop the whole-archive Prism link once a `prismer` release vendors
-      ethindp/prism#135
+- [x] Drop the whole-archive Prism link once a `prismer` release vendors
+      ethindp/prism#135: done with `prismer` 0.1.4
       ([September 21](#september-21-prism-from-the-prismer-crate)).
 
 The owner's:
 
-- [ ] Listening pass on the new synth voices per style
+- [x] Listening pass on the new synth voices per style: closed by owner
+      ruling 2026-10-03, replaced by the agent-server check below
       ([above](#19-in-flight-ships-from-dev-and-main)).
-- [ ] Listening pass and a longer drive over wear thresholds and
-      interrupted warnings ([September 11](#september-11-trucking-corrections)).
+- [x] Listening pass and a longer drive over wear thresholds and
+      interrupted warnings: closed by owner ruling 2026-10-03, replaced by
+      the agent-server check below
+      ([September 11](#september-11-trucking-corrections)).
+- [ ] Agent-server check of the synth voices (owner, 2026-10-03): with
+      Music source on Synthesized, step through the styles and confirm each
+      piece starts and the session log shows no audio error.
+- [x] Agent-server drive over wear thresholds and interrupted warnings
+      (owner, 2026-10-03). Done 2026-10-03 on a headless Linux build, Chicago
+      to Gary: tires and brakes staged just under 80 percent each warned
+      once as they crossed and never again on the drive; a tire warning cut
+      off by the pause menu was said again right after "Resumed" and not
+      repeated in the next minute. Engine wear has no `scenario` field, so
+      it was not staged; it runs the same per-component code. The
+      hours-of-service last-stop warning was not staged; its pause handling
+      is the same settle call as the wear warnings.
 - [x] The OneCore leak: closed by owner ruling 2026-09-24. The game-side
       workaround (enumerate voices only on a voice change) is the fix; any
       upstream report stays the owner's call
       ([September 12](#september-12-long-sessions-and-speech)).
 - [x] The eight remaining jazz songs, in the pack and on Nashville After
       Hours since 2026-09-25 ([September 13](#september-13-driver-directory)).
-- [ ] New station IDs for the 16 stations still without them; the
-      Roadhouse, Desert Rock and Neon Drive got theirs 2026-09-25
-      ([September 13](#september-13-driver-directory)).
-- [ ] The radio stream sweep (`--recheck-dead`) on release day.
+- [x] The radio stream sweep, 2026-10-03: every stream on the dial heard
+      twice from a GitHub runner (`tools/audit_radio_streams.py`, the
+      Radio stream sweep workflow), as the game's player asks for it.
+      Imported tier: 173 dead streams dropped, 28 moved to live addresses,
+      20 doubles and 9 streams of a different station removed. Curated:
+      about 40 stations moved, renamed to what they now are or pointed at
+      their network's one address (ABC on HLS, MPB Think Radio, Ocean State
+      Media, WPR News and WPR Music, WMMT, KNAU, KIOS, WESU), 5 retired,
+      7 wordy names shortened. Station names that already say the call
+      sign no longer have it spoken twice.
 - [ ] Push the `v1.9.0` tag on the commit to ship, last, after every other
       item here is closed.
 
@@ -225,6 +398,135 @@ into the release gate. Details stay in the linked dated sections, marked
 Everything found before 2026-09-25 moved to
 [2.0](#found-along-the-way-in-19-moved-to-20) that day.
 
+- [x] Driving speech audit (owner, 2026-10-03, from a player report): quiet
+      and urgent only no longer call out traffic, a line either rung leaves
+      out makes no sound, and quiet says cruise, keeper and work zone
+      updates short. Urgent only now says when a work zone turns cruise off.
+- [ ] A listening pass by the owner at quiet and urgent only, at the wheel.
+- [ ] The exit-call truth test (`test_the_exit_calls_name_the_road_that_is_really_left`)
+      failed once on the Linux ARM runner in the v1.9.1 tag build, hearing
+      only the two-mile call, and passed on re-run. It passed 80 of 80 runs
+      alone on x86_64 and in its module; the source of the nondeterminism is
+      not found yet.
+
+- [ ] Low fuel warning could also fire when remaining range is shorter than
+      the distance to the next fuel-capable stop (issue #272 shipped the
+      once-per-threshold 15 percent cue first; honest loaded range for the
+      range-based alternate is still open).
+
+- [x] More music on the Terrestrial dial (owner, 2026-10-03, from player
+      feedback): 156 commercial music stations in 35 states, each heard
+      playing and naming itself from an open network before it went in.
+- [ ] Transmitter coordinates for those 156; they sit at their city's
+      centre for now, and their ranges are by class or estimated.
+- [ ] Music stations for South Dakota and Maine, where none of the
+      2026-10-03 candidates played.
+- [ ] Daytime recheck of the stations silent on every night sample
+      (KMSA, WMUC, WVOF and 25 imported); retire those still silent.
+- [ ] Restore the 189 earlier-dropped imported stations that answered the
+      2026-10-03 sweep; needs the importer's caches to rebuild.
+- [ ] New station IDs for the 16 stations still without them, moved out
+      of the gate by the owner 2026-10-02 for a post-launch build. Made in
+      Suno that day, waiting on downloads (none left until October 21): a
+      "Short Sung ID" per station, two takes each, plus two Speech-tab
+      liners each; re-voice the liners with ElevenLabs after its
+      October 6 reset if the Suno ones are not downloaded
+      ([September 13](#september-13-driver-directory)).
+- [x] A truck parked with the cab radio on stayed on the live drivers
+      board all night: each new song counted as activity, so neither the
+      game's half-hour idle sign-off nor the site's idle filter fired
+      (2026-10-03, a driver at 0% for seven hours). Both now ignore the
+      radio clause; the site half is on orinks-net branch
+      claude/project-thread-ml6w19 awaiting deploy.
+- [x] Discord status could freeze on a long session: the IPC crate never
+      read Discord's reply to a status change, so replies piled up unread
+      and a refused change went unnoticed. The game now reads each reply
+      and reconnects on a refusal (2026-10-03). Whether the unread pile
+      was what froze it is inferred, not reproduced.
+- [ ] Simulated snow by region and month, not a hard Dec-Feb gate
+      ([October 1](#october-1-seasons)).
+- [x] Updater, issue 266: after "Restarting to finish the update" the window
+      stays up, unpumped, while every service shuts down (bounded, but up to
+      about twenty seconds), which macOS reports as not responding. Hide the
+      window first, or pump events through the quit. Pumped through the quit
+      (2026-10-03).
+- [x] A tester snapshot re-cut the same day (the 2026-10-03 release
+      candidate) kept that day's tag, so copies from the earlier run were
+      told they were up to date. Builds now record their commit and the
+      updater offers a same-tag rebuild on a different one (2026-10-03).
+      Copies built before this have no commit and still wait for the
+      next day's snapshot.
+- [ ] Updater, issue 266: a stalled download now fails after sixty idle
+      seconds, but its blocked read thread and socket linger until that read
+      returns or the game quits. A per-read socket timeout would end both.
+- [ ] Each chain-control state's own law on its signs and fines; every one
+      reads Colorado's today ([October 1](#october-1-seasons)).
+- [ ] Roadcheck on CVSA's announced dates under the live calendar
+      ([October 1](#october-1-seasons)).
+- [ ] Dawn and dusk from latitude and date, not fixed hours
+      ([October 1](#october-1-seasons)).
+- [ ] Trip weekday (weekend traffic, weekend scales) from the calendar
+      clock ([October 1](#october-1-seasons)).
+- [ ] Fewer simulated work zones in a snow-belt winter; deer strikes peaking
+      in November; holiday billboard windows on the real holiday
+      ([October 1](#october-1-seasons)).
+
+- [x] A CDL suspended at speed (a second run off the road asleep, or the
+      work-zone barrels) now ends the run on the shoulder the way a
+      roadside stop does; Escape on a stop that pulled the CDL no longer
+      drives on; a saved run on a pulled CDL closes out instead of resuming.
+      Ported from 2.0's PR #261 (2026-09-30).
+- [ ] An owner-operator can still start "Bobtail to a nearby city" on a
+      suspended or disqualified CDL; 2.0 refuses it (PR #259). On 1.9 a
+      bobtail on a pulled CDL ends at the next run-off, barrel strike,
+      roadside stop or reload (2026-09-30).
+- [ ] Placed attraction billboards speak in one direction only since
+      2026-09-30; the other side hears the random pool. Signs standing at
+      their attraction could be marked `both`, and the rest need copy
+      written from the other side ([1.9 in flight](#19-in-flight-ships-from-dev-and-main)).
+- [x] Some legs disagreed with their own geometry (billboard audit,
+      2026-09-30, and the 2026-10-01 billboard passes, REVIEW-east-south and
+      REVIEW-midwest). Fixed 2026-10-01: the Buffalo and Rochester to New
+      York City Thruway legs, Dallas to St. Louis (I-44 via Tulsa and
+      Joplin), Washington to Charlottesville, Harrisburg to Wilmington,
+      Norfolk to Petersburg, Green Bay to Grand Rapids and Binghamton to Utica
+      were rerouted onto their roads and rebuilt; the Florida Keys markers
+      were placed from their coordinates; Indianapolis to Nashville's
+      Kentucky exits were rebuilt; every river callout was placed on its
+      crossing of the leg's geometry; and state lines across the world were
+      re-derived from OpenStreetMap state boundaries.
+- [x] Legs off their own geometry: Sacramento and San Francisco to Portland,
+      Duluth to Fargo, Hibbing to Minneapolis, Norfolk and Virginia Beach to
+      Raleigh, Burlington to Albany, Clarksville to Huntsville, Washington to
+      Philadelphia and Charlotte to Lumberton were rerouted onto their
+      labelled roads; the other eight kept their road and had route points
+      and checkpoints rebuilt on it. Durango to Moab now runs US 160, US 491
+      and US 191 through Cortez and Monticello. Every leg's route points now
+      lie within 10 miles of its geometry and its checkpoints within 3.
+- [x] Checkpoints announced in the wrong state: Tallapoosa (Georgia),
+      Oldtown (Maryland), Dakota (Minnesota), South Point (Ohio) and Hope
+      Valley (Rhode Island) replace the misplaced towns, and the rerouted
+      legs' checkpoints follow their new roads. State lines come from
+      OpenStreetMap state boundaries.
+- [x] River callouts: 2,880 callouts across 1,070 legs now sit on the road's
+      crossing of the named water, and 240 that named water the road never
+      crosses were removed.
+- [x] Dallas to St. Louis sleep stops were never missing: the planner read
+      each leg's stop miles as route miles and did not turn them around on
+      reversed legs. The chain's largest gap between curated sleep stops is
+      now 178.8 miles.
+- [x] The USS Alabama now has signs on I-10 in both directions and Madison,
+      Georgia on I-20 in both directions; the US 45 and US 129 signs stay.
+- [x] Billboards stay silent on Washington's scenic system (I-90 Issaquah
+      to Thorp, US 195, US 101 around the Olympic Peninsula) and Colorado's
+      scenic and historic byways, in both directions.
+- [ ] Big Buck's never plays: its twenty-four approach billboards, the
+      brisket plate, the gate turn-away lines and the landmark loyalty rate
+      are all written, and the world has no Big Buck's stop. Needs a stop,
+      the bobtail-only gate, and the owner's call on the parody (2026-09-30).
+- [ ] Interchange connector arcs have no curvature in the lane model; with
+      lane keeping and curve assistance both off their lean asks for
+      steering the lane cannot answer ([1.9 in flight](#19-in-flight-ships-from-dev-and-main)).
 - [x] Player builds carried the agent server: `freightfate --agent-server
       --online` copied the driver's identity into a session with cloud
       backups on, where `scenario` sets any level, money or credentials. It
@@ -232,7 +534,8 @@ Everything found before 2026-09-25 moved to
       builds without it (2026-09-25).
 - [x] A source build still has the agent server, so `--online` is gone: no
       agent session reaches production. Site checks use `--staging`, its
-      own driver on dev.orinks.net, connected once by the owner, with no
+      own driver on the staging backend (dev.orinks.net until 2026-10-02, the
+      orinks-net `dev` preview since), connected once by the owner, with no
       identity copied from the real saves (2026-09-25).
 - [ ] The site cannot tell an invented career from an earned one. Anyone
       who builds from source can set their own money or level before a
@@ -242,6 +545,107 @@ Everything found before 2026-09-25 moved to
       against deliveries; credentials against their level gates and the
       clock. Calibrate against real backups, then mark rather than refuse
       (owner, 2026-09-25).
+- [x] Trucks stop for customs at the Alcan / Beaver Creek ports of entry and
+      southbound at Blaine; driving past the booth brings a penalty.
+- [ ] Posted speed profiles on the BC Alaska Highway south of Fort Nelson
+      still use placeholders.
+- [ ] CBSA commercial hours at Beaver Creek remain unverified and are not
+      modeled.
+- [x] Adaptive cruise lost its set speed at every pickup since the stopping
+      assist started holding at pickup gates (2026-09-20): the hold, and the
+      parking brake the gate asks for, ended the session instead of pausing
+      it for the departure (tester report, fixed 2026-09-28).
+- [x] What a driver did at a stop lived on the stop's menu, so leaving it and
+      pressing T again forgot the fuel that made the shower free, the weigh
+      station check-in, and the CAT Scale reweigh price. It lives on the
+      drive now (tester report, fixed 2026-09-28).
+- [x] The load report named fuel idled during check-in as if the engine ran
+      through the load; it says the idling came before the shutdown now
+      (tester report, fixed 2026-09-28).
+- [x] A shipper or receiver screen replaces the drive, which silenced the
+      engine loop: a running engine idled in silence and "Shut down the
+      engine" made no sound. Both screens bring the idle back (2026-09-28).
+- [x] Loyalty shower credits and points were spent and bought nothing; they
+      make the shower free at a stop that sells one now. Stop-visit memory
+      is saved with the drive (2026-09-28).
+- [x] Manual downshifts with the clutch held match revs like the automatic
+      (tester request, 2026-09-28).
+- [x] Company drivers no longer see the truck dealer, upgrades, trucks,
+      trailer programs or tire choice (owner, 2026-09-28).
+- [ ] The loyalty parking, food and laundry rewards were hidden because
+      nothing in the game charges for what they discount. Wire each to a
+      real price, or drop them from the loyalty model (2026-09-28).
+- [x] Rest-stop waits (break, food, walk-around, shop work) burn no idle
+      fuel with the engine running, while the pickup and the dock do. Burned
+      in `advance_rest_clock` now, and the dock's own charge is gone
+      (2026-09-28).
+- [x] The manual-transmission pay bonus reads the mode only at the gate, so
+      a run driven on automatic is paid it after one switch. A per-run
+      `drove_automatic` flag, kept in the save, withholds it now (2026-09-28).
+- [x] Sweep of shipped 1.9 features (2026-09-28): ticket reputation written
+      from the shown standing, record-hold dates naming the oldest entry
+      instead of the day the hold lifts, relayed deadlines padded with the
+      deadhead, failed log checks counted as passed inspections, courses
+      off the hours clock, the paused-cruise dial pointing at the off key,
+      Synthesized fades unannounced, a Roadhouse piece lost to its stand-in,
+      pause sub-screens signing the driver off the board, ramp-end controls
+      seeded from a leg-local mile, work zones raising low limits, descent
+      control lost after an off-and-on, straighten inert on partial. Manual
+      stalls under braking and leaving an open scale settled by owner ruling.
+- [x] Release-candidate sweep of the 190 commits since main (2026-09-28),
+      each finding checked by two reviewers: a scale checked in at the taper
+      charged later as bypassed, a yard spare wiping a wrecked load, the
+      manual stall line shifting up into a second stall, cruise's snub held
+      under a manual's clutch,
+      the exit hold passing a lower limit, a cancelled destination exit never
+      retaken, the sleep preview promising a full reset, Back at a closed
+      scale running an inspection, the lane guide tone lost after pause,
+      route calls dropped behind a hand-back, live closures matched 25 miles
+      apart, read under the start state and applied to both carriageways,
+      Virginia and Montana rural rows baked with the car limit, and a dozen
+      spoken lines naming the wrong key or saying something untrue.
+- [ ] Predictive cruise's build-up for a climb is clamped only to the
+      posted cap, so it can bank a few miles an hour past a bend's number or
+      a hill's safe descent speed. Clamping it to those too (2026-09-28)
+      made the bend sweep hear "too fast" on I-80 Donner with a half-full
+      tank under cruise, so it was backed out; find why a lower build-up
+      lands the tank's surge on that bend before clamping again.
+- [x] Dispatch trust's spoken band and its effects read different inputs:
+      the line used the worst of service, licence, record and debt, while
+      the board, refusals and load choice read reputation alone. All three
+      follow the spoken band now (owner ruling, 2026-09-28).
+- [x] Three prompts still name default keys a player can move: "Hold Right"
+      and "Tap Right" on the exit approach, and the one-time "Hours of
+      service moved to Alt A, Alt S, and Alt D" notice. All three read the
+      bindings now (2026-09-28).
+- [x] The blinker recording was 1.6 s of clicks that the game could only
+      restart on its next 0.9 s beat, so every fourth click landed about
+      0.1 s late. `vehicle/turn_signal` is now one flasher cycle (tick, then
+      tock 0.45 s later, 0.7 s long) rendered with genny from
+      `sound-test/turn_signal.json`, and the steering cue and a canceled
+      exit blinker end on a new stalk click, `vehicle/turn_signal_off`,
+      where the steering cue used to borrow the signal tone (owner's pick by
+      ear, 2026-09-29).
+- [x] Freight Fate builds for iPhone and iPad: the same Rust game, speech
+      through Prism's VoiceOver backend, controllers through SDL, touch and
+      VoiceOver gestures as key presses, and F2 or a three-finger tap for a
+      spoken list of driving commands. `tools/build_ios.py` packages it;
+      `docs/ios.md` has the gestures (2026-09-29).
+- [x] iOS driving gestures run commands directly and can be rebound in
+      Settings, Gameplay, Controls, Touch gestures: a second finger while holding a
+      pedal (cruise, shifts, parking brake, engine), plus tap for speed,
+      swipes for the cruise target, magic tap to pause (2026-09-29).
+- [ ] (Found along the way) The iOS second-finger gestures (hold a pedal,
+      then tap, double tap or swipe with another finger) need a pass on real
+      hardware: the Simulator's touch replay lifts both fingers together, so
+      cruise, engine and parking brake from a held pedal are covered only by
+      the headless tests.
+- [ ] iOS runs from TestFlight on a real iPhone (2026-10-03) but still
+      needs a real controller, BASS sound on hardware (the Simulator has no
+      audio device), and VoiceOver's scrub and on-screen-keyboard typing on
+      hardware. For the App Store: a real app icon (TestFlight has a
+      placeholder), a privacy manifest, BASS licensing for iOS, and a title
+      screen or review note for the blank game screen.
 
 ### Release gate record
 
@@ -310,6 +714,17 @@ are in the [release gate](#release-gate-190).
         `tools/build_appimage.py`'s Python path and their tests are
         deleted. The Rust build is the only one; `--rust` is still
         accepted and does nothing.
+- [x] The release candidate reaches 1.8 developer-snapshot players
+      (2026-09-28). Their updater reads only `nightly-YYYYMMDD` prereleases
+      among the 20 newest releases, and a `-macos.zip` asset, so it had
+      offered them nothing since 2026-08-29. Dispatching the snapshot
+      workflow with `release_candidate` also publishes the build as
+      `nightly-YYYYMMDD` with a `-macos.zip` copy of the Apple Silicon app.
+      Rehearsed on Windows: the 1.8 apply script's copy over a 1.8 nightly
+      install leaves 1.8's Python files beside the new ones, and 1.9 boots
+      from that folder with the 1.8 settings. Stable notes are bounded now:
+      the Unreleased block alone was 153,255 characters, past the tag
+      build's 120,000 check, so `v1.9.0` would have failed after building.
 - [x] The owner voice pass over seven achievement titles (2026-09-22).
       The category-description cut landed and the owner accepted all
       seven titles as-is. The physical-Mac VoiceOver listening pass was
@@ -344,6 +759,29 @@ are in the [release gate](#release-gate-190).
         day: four entries named terse, and the rung table says a
         confirmation and a bend advisory only become a sound at Urgent
         only, so all four say Urgent only now.
+
+- [x] Mac installs are offered the stable release (2026-10-03). Every
+      stable updater on a Mac, 1.8.8.1's and 1.9's, picks the archive ending
+      `-macos.zip`, and the stable step published only `-macos-arm64.zip`;
+      it now publishes both, as the release-candidate bridge does. Stable
+      notes open with Compatibility, which says 1.8 careers do not carry
+      over.
+
+- [x] The stable 1.9.0 notes are a curated summary (2026-10-04). The
+      `## 1.9.0` block holds Compatibility, Highlights, New features, Fixes
+      and Changes; the tag build publishes it whole to the GitHub release,
+      which the downloads page on orinks.net and every updater read, and
+      ends it with a link to the full changelog at the tag. The ~1,100
+      snapshot bullets moved under `## 1.9.0 complete change list`, which
+      nightlies stop reading once the `v1.9.0` tag exists.
+
+- [x] The Mac app is Developer ID signed and notarized (2026-10-03). The
+      macOS job imports Joshua Tubbs's Developer ID Application certificate
+      into a throwaway keychain, signs each bundled library and then the app
+      under the hardened runtime, and notarizes and staples it with the App
+      Store Connect key before archiving; a stable build without the signing
+      secrets fails. Players no longer need Open Anyway. TestFlight for the
+      iOS port can reuse the same App Store Connect key.
 
 #### Player-impacting release blockers
 
@@ -601,12 +1039,16 @@ its status or release decision.
       links the archive whole on Linux and macOS, and the nightly now fails
       when a platform's own backend (SAPI, AVSpeech, Speech Dispatcher) is
       missing from `--list-speech-backends`.
-- (Release gate) Prism's backend anchors cover MSVC only; a GCC static link drops
+- [x] (Release gate) Prism's backend anchors cover MSVC only; a GCC static link drops
       every backend unless linked whole. Reported with a standalone
       reproduction as ethindp/prism#130, fixed upstream 2026-09-22 by
-      ethindp/prism#135 (anchors for GCC and Clang). Waiting on a `prismer`
-      release that vendors it (0.1.3 does not); then drop the whole-archive
-      link in `crates/freight-fate/build.rs` and dry-run the nightly.
+      ethindp/prism#135 (anchors for GCC and Clang). `prismer` 0.1.4
+      (Prism 0.18.3, 2026-10-02) vendors it, so `build.rs` dropped the
+      whole-archive link. The same release opens the Windows screen-reader
+      DLLs and Linux's Speech Dispatcher at run time, so the `/DELAYLOAD`
+      and failure-hook flags went too, and a Linux install no longer needs
+      Speech Dispatcher to start (the nightly's Debian, Ubuntu and openSUSE
+      boots now run without its client library).
 
 ### September 21 the Python sunset
 
@@ -684,6 +1126,37 @@ its status or release decision.
       the desktop app launches the server hidden (STARTUPINFO `SW_HIDE`
       turned SDL's first show into a hide); the startup log records
       whether a show had to be forced.
+- [x] `freightfate --key-probe` and the agent server's `key_probe` tool
+      (2026-09-29) replace Noel's deleted `tools/key_probe.py`: they record
+      every key event with its frame, what the keyboard and the held-key
+      tracker each said, and how many JAWS-style press-and-release pairs the
+      tracker missed (a frame over 40 ms, or a pair split across two frames).
+- [x] JAWS held keys (2026-09-29): probed on the owner's JAWS machine. The
+      game is not at fault (frames under 20 ms, every pair read as a hold).
+      JAWS runs its own arrow script per key, one pair every ~255 ms, so
+      speech lags the longer an arrow is held and menus react slowly; JAWS
+      Key+3 (pass-through) restores native 34 ms repeats and normal speed.
+- [x] JAWS held arrows survive another key's tap (2026-09-29). The keyboard
+      repeats only the last key pressed, and JAWS never sends the release,
+      so tapping Space while holding Up looked like a lifted finger.
+      `HeldKeys::set_bridge` (on when Prism's voice is JAWS) carries an
+      established arrow hold 1.5 s past such a tap, 4 s at most, and never
+      for the opposite pedal. Still true: JAWS hides the real key state
+      (Windows reported a 17 ms hold), so a finger lifted mid-tap keeps the
+      pedal for that bridge.
+- [x] The JAWS arrow script ships as an opt-in Settings, Speech row (2026-09-29,
+      owner-approved shape): `jaws_script` copies `tools/jaws/freightfate.jss`
+      into the player's own `%APPDATA%\Freedom Scientific\JAWS\<version>\
+      Settings\<language>` and compiles it with that version's `scompile.exe`,
+      on a worker thread, touching only its own two files. It sends each
+      arrow on at once instead of JAWS's ~255 ms script, which fixed slow
+      menus and held-arrow speech lag on the owner's machine. Tested on
+      JAWS 2026 only; other versions and languages await a JAWS tester.
+      Tried and dropped: passing arrows through natively
+      from a script (no effect) and holding the key for the game with
+      `PressKey` (arrows stopped working); resending while `GetKeyState`
+      says down ran the truck away, because JAWS reports the key down after
+      it lifts. Key+3 still passes one key through without the script.
 - [x] `weather_collector`'s copy names all nine skies the award needs
       (2026-09-24). It listed eight and left out ice, which it now calls
       freezing rain, the word the weather readout speaks. The award is
@@ -715,9 +1188,9 @@ its status or release decision.
       announcing the defect before the walk-around its copy names, and
       "dropped_the_bad_one" read the origin yard's trailer, so a driver who
       refused it at pickup still earned it at the receiver.
-- (Release gate) Complete the owner's listening pass and longer gameplay verification
-      of wear thresholds and interrupted warnings. Captured live readouts and
-      successful native calls do not establish what the owner heard.
+- (Release gate) Verify wear thresholds and interrupted warnings over a
+      longer drive. The owner's listening pass was replaced 2026-10-03 by an
+      agent-server drive, which passed the same day (see the release gate).
 
 - [x] `--list-speech-backends` names every screen reader and voice Prism finds
       on the machine it runs on, says which can speak right now, and which one
@@ -848,6 +1321,15 @@ its status or release decision.
       settled on October 4, which reads as ten-four. Both carry the invariants
       export, so the cloud validator's copy needs regenerating on staging
       before a build ships with them.
+- [x] Real-date badges read the server's clock (2026-09-28). Ten-four day
+      and Friday the thirteenth moved off the career calendar to the real
+      date, taken from the last orinks.net reply's Date header carried on
+      the monotonic clock, so setting the computer's date earns nothing and
+      an offline session earns none. Christmas and New Year's stay on the
+      career calendar: their copy is the game world, and New Year's reads
+      the career hour. New hidden badge for National Truck Driver
+      Appreciation Week (ATA: second Sunday of September through Saturday),
+      182 in the catalog.
 - [x] Losing the exit lane is spoken (2026-09-19). "Exit lane set." was a
       promise the drive could break in silence -- a lane change away or a
       quarter-lane wander left decays the alignment -- and the next word on
@@ -2034,6 +2516,101 @@ rev ceiling.
       alone hold 50 mph at 76,000 lb and pass 200 C in a mile. Pick one
       line, or show why two are right.
 
+### September 30 carrier pages
+
+- [x] **A page per carrier on orinks.net** (`/freight-fate/carriers`): each
+      company carrier's wage plan, dispatch leanings and favored freight, a
+      side-by-side comparison, and what every carrier gives its drivers
+      (fleet tiers, sponsored training, reputation and reposition pay, the
+      owner-operator buy-in). The profile's Carrier line links to its page.
+      Every figure rides the invariants export (`carriers`, `companyPay`),
+      so a wage-plan rebalance needs an invariants regen to reach the site.
+
+### October 1 lane keeping moves right for its exit
+
+- [x] (Release gate) **Lane keeping on full moves to the right lane for an
+      exit it is taking** (owner's drive, Kenosha to Chicago on I-94, All
+      assists, urgent-only speech). He pulled out to the middle lane around
+      truck traffic three miles from exit 50B; lane keeping held the middle
+      lane through the gore and the exit was missed, then missed again on
+      the loop-back, whose line had promised "lane keeping will take it".
+      Full lane keeping only ever took the exit lane from the right lane and
+      never moved there, and the one line that asked the driver to (the
+      countdown's request to tap into the right lane) is cut by quiet and
+      urgent-only speech. Now `keep_right_for_exit` moves one lane right at
+      a time from `EXIT_KEEP_RIGHT_MI` (the 2-mile anchor) into a lane the
+      lane-gap clearance calls open, says "Changing to the right lane for
+      the exit.", and waits out a dodge in progress. The tap requests on the
+      full-mode approach lines are gone.
+- [x] **Lane keeping on full passes a slow vehicle** (owner ruling, same
+      drive: braking to the speed of a slow car with a lane open beside it
+      is not what a driver does). On a vehicle-ahead hazard call with a side
+      open, `pass_for_hazard` starts the change at the call, which now says
+      "Slow car right ahead. Passing on the left." (`passing_hazard_call`,
+      carried on the event as `pass_message` with `open_side`). Left wherever
+      left is open; right only where it is the one side. The lane-tap
+      allowance already in the hazard window means emergency braking holds
+      off while the pass lands, and the arrival is "In the left lane, passing
+      the slow car." `update_pass_return` moves back once the lane-gap
+      clearance calls the home lane open, which it cannot while the passed
+      vehicle is still ahead or alongside. Not inside `EXIT_KEEP_RIGHT_MI` of
+      an armed exit, and not for objects in the lane; partial and off are
+      unchanged.
+
+### October 1 seasons
+
+Owner, October on I-94: a chain-control CB call and "Install snow chains" in
+the pause menu, with no snow and no chain law. An audit of everything keyed
+on the season or the date found more.
+
+- [x] (Release gate) Chain law keyed on grade alone: 218 legs in 35 states
+      and DC carried chain-law areas, Texas, Alabama and Wisconsin among
+      them. Areas now need a state in `CHAIN_CONTROL_STATES` (CA, CO, ID,
+      MT, NV, OR, UT, WA, WY; read from each state's chain-control program).
+- [x] (Release gate) The chain-control post stood all year, staffed half
+      the time, so the CB called it on dry pavement and its trooper watched
+      for anything else. `sync_chain_posts` keeps it on the route only while
+      `chain_law_level` is above zero.
+- [x] (Release gate) Any visual or scale post could cite "running the chain
+      control without chains" wherever it snowed. The road sample now needs
+      a chain-law area at the truck, the same test as the entry citation.
+- [x] "Install snow chains" in every pause menu; now only with snow or ice
+      under the truck or a chain law posted.
+- [x] With the live calendar, real snow was turned into rain outside
+      Dec-Feb; the season guard now applies only to the independent career
+      calendar.
+- [x] Out of season, snow turned into rain, so the colder a March night the
+      surer it rained ("rain, 14 degrees"); now overcast. Freezing rain stays
+      unguarded: a March glaze on the Great Lakes is real, and the hard gate
+      itself is the open item below.
+- [x] A real winter warning reached a career in July on its own calendar,
+      spoken and posting a chain law; winter alerts now need
+      `winter_fits_calendar`.
+- [x] Live-calendar weekdays were counted on 2001's calendar, three days off
+      2026's (`real_weekday_name`), and a leap year shifted every date from
+      March 1 a day late (`real_clock_game_hours` now maps month and day).
+- [ ] (Found along the way) Simulated snow is allowed only Dec-Feb
+      everywhere, so a simulated Colorado chain law can only happen then,
+      though March is Denver's snowiest month (NWS Boulder) and CDOT has
+      trucks carry chains on I-70 Sept 1 - May 31. Replace the hard gate
+      with per-region windows.
+- [ ] (Found along the way) The chain-law sign and the 580-dollar fine are
+      Colorado's (Level 1 / Level 2) in every chain-control state; WYDOT,
+      Caltrans R-1 to R-3, WSDOT and ODOT each word theirs differently.
+- [ ] (Found along the way) Roadcheck is fixed to May 13-15; CVSA sets it
+      each year (2026: May 12-14). A table of announced dates for the live
+      calendar, and the blitz flag re-read when the date changes mid-drive.
+- [ ] (Found along the way) Dawn, day, dusk and night are fixed hours all
+      year, so a December 6 PM in Chicago is "day". Derive them from
+      latitude and date (NOAA solar calculator).
+- [ ] (Found along the way) `Trip.career_hours` is the raw career clock, so
+      weekend traffic and weekend scale closures follow a weekday that
+      matches neither calendar. Not spoken.
+- [ ] (Found along the way) Simulated work zones run the same in January as
+      July (northern DOTs build April to November); deer strikes have no
+      November peak (IIHS: twice the yearly average); holiday billboards use
+      loose windows ("Happy Thanksgiving" any day Nov 22-28).
+
 <a id="20-planned-featcareer-20----the-working-week-and-home"></a>
 
 ## 2.0 in progress (`feat/career-2.0`) -- the working week and home
@@ -2130,6 +2707,25 @@ remain planned or explicitly deferred.
       labels; deployment and acceptance by the site have not been verified
       by this repository audit. Keep this gate open until that check passes.
 
+- [ ] **A felony in a commercial vehicle carries its full 49 CFR 383.51
+      weight.** Modelled today: running from a stop is a major offense
+      (383.51 Table 1), a one-year CDL disqualification, and a second
+      major offense is lifetime. Not modelled: the lifetime
+      disqualification for a felony involving a controlled substance (the
+      game has no such offense yet), and termination -- a company driver
+      keeps the job after a felony stop, where a carrier would let the
+      driver go. It should land as a carrier termination notice at the
+      terminal, like the record-review termination.
+
+- [ ] **Pin real tow and impound yards per city.** A police tow after a
+      felony stop goes to a generic impound lot in the stop city, because
+      the map has no tow or storage yards. Real rotation-wrecker impound
+      yards, sourced per city, would let the tow name the actual yard.
+- [ ] **Tow and storage fees after a police tow.** Nothing charges for the
+      tow or the impound storage today. Model both: the carrier pays for
+      company drivers and leased owner-operators, and the driver pays under
+      own authority.
+
 <a id="career-carriers-slices-24"></a>
 
 ### Career carriers (slices 1–3 built; slice 4 planned)
@@ -2185,7 +2781,9 @@ in the audited Windows run.
       or is home with no carrier and applies from the terminal.
 - [x] **Home-base coverage test.** `tests/it/carrier_slice3.rs` pins all
       625 lower-48 map cities as hired into by a regional, every Alaska city
-      as served by Alaska carriers only, and BC and YT as closed.
+      except Deadhorse as offerable only to Alaska carriers, and BC and YT as
+      closed. Deadhorse remains a Chatanika freight destination but lies
+      outside the Alaska carriers' hiring radii.
 - [x] **Firing, reapplication, and reset respect home and hiring area.**
       Fallback never picks the firing carrier or sends an Alaska driver to
       a lower-48 carrier. If no carrier can take the driver, the profile
@@ -2226,7 +2824,7 @@ in the audited Windows run.
       named as a truck repair shop in that city instead.
 
 
-### ALCAN and Alaska (road graph built; international systems partial)
+### ALCAN and Alaska (B3 road graph; international systems partial)
 
 The main roadmap now records the data slices already present on this
 branch. The older Phase A/B plan checklists are not a live completion list.
@@ -2234,9 +2832,19 @@ branch. The older Phase A/B plan checklists are not a live completion list.
 - [x] **Phase A: bidirectional ALCAN corridor to Fairbanks.** Bellingham
       through Blaine/Pacific Highway, Surrey, Prince George, Dawson Creek,
       Fort St. John, Fort Nelson, Watson Lake, Whitehorse, and Tok to
-      Fairbanks. Both border crossings carry metadata in both directions.
+      Fairbanks. Both crossings carry through-freight metadata in both
+      directions. The Alaska Highway line is identified as Alcan, with the
+      Beaver Creek post represented on the Tok-to-Whitehorse approach.
       Canadian towns are pass-through fuel/rest stops; US dispatch still
       offers US destinations, allowing US-to-US routes through Canada.
+- [x] **Posted speed profiles on the Yukon and northern BC legs.** Canadian
+      bare OSM speed values are interpreted as km/h; Alaska's 55 mph fallback
+      applies only to the Alaska stretch of a cross-border leg.
+- [x] **British Columbia's heavy-truck speed limiter.** Covered trucks are
+      capped at 105 km/h independently of posted road limits. No Yukon
+      limiter requirement was found, so Yukon has none.
+- [x] **Canadian diesel prices for BC and Yukon.** Prices use Statistics
+      Canada's 2025 annual averages for Vancouver and Whitehorse.
 - [x] **Phase B1: Tok Cutoff and Glenn Highway to Anchorage.** Tok to
       Glennallen, Palmer, and Anchorage is connected in both directions,
       without a ferry or a detour through Fairbanks.
@@ -2244,31 +2852,199 @@ branch. The older Phase A/B plan checklists are not a live completion list.
       Healy, Wasilla, and Anchorage, plus the Palmer–Wasilla connector,
       is connected in both directions. This is the defined B1/B2 road
       scope, not complete Alaska map enrichment.
+- [x] **Phase B3: Alaska roads reach the peninsula, Valdez, and Deadhorse.**
+      Tok–Fairbanks now passes through Delta Junction; Valdez connects via
+      Glennallen; Anchorage reaches Seward and Soldotna, with Kenai and Homer
+      beyond Soldotna; and the Dalton Highway runs from Fairbanks through
+      Coldfoot to Deadhorse. Paid miles remain separate from loaded-semi
+      router distances. Verified freight endpoints serve Valdez, Kenai,
+      Seward, and Homer.
+- [x] **Alaska's 2026 spring-breakup weight limits.** DOT&PF notices apply
+      85% limits to listed corridors by leg; dispatch derives each truck's
+      axle cap, filters overweight restricted routes from the route menu, and
+      does not retrofit jobs dispatched before a window.
+- [x] **Jurisdiction-aware Alaska and Canadian driver HOS.** The clock follows
+      the current jurisdiction: Alaska limits, Canadian south-of-60 and
+      north-of-60 limits, their cycle rules, and one spoken notice at each
+      rule change; lower-48 behavior remains unchanged.
 - [x] **Public lots are fuel/rest stops, not freight yards.** Curated
       `travel_center` and `truck_parking` pins have no freight cargo roles;
-      a town with only these lots can have an empty dispatch board.
+      Delta Junction, Coldfoot, and Soldotna are pass-through markets with no
+      freight offers until a freight endpoint is verified.
       Anchorage has a separate Port/Ship Creek freight terminal; Fairbanks
       has curated grocery/retail, building-material, and cross-dock pins.
-- [ ] **Partial: cross-border rules and clearance.** Border metadata is
-      not a playable clearance/inspection flow. Canadian HOS, statutory
-      truck-speed caps, CAD/foreign exchange, and spring-breakup axle
-      restrictions remain open; the corridor does not establish Canadian
-      regulatory compliance. Full Canada and Europe remain planned.
+- [ ] **Partial: cross-border rules and clearance.** A playable customs
+      clearance/inspection flow now covers the Alaska Highway and southbound
+      Blaine ports, and BC's 105 km/h heavy-truck limiter and 2025 BC/Yukon
+      diesel prices are modeled. The Alaska and Canadian driver HOS clock is
+      jurisdiction-aware; remaining Canadian HOS provisions, other Canadian
+      statutory truck-speed caps, and broader CAD/foreign exchange remain
+      open. Listed Alaska spring-breakup limits are modeled, but the corridor
+      does not establish full Canadian regulatory compliance. Full Canada and
+      Europe remain planned.
+- [ ] **Canadian daily and cycle-2 rules.** Daily limits and daily off-duty
+      requirements, cycle 2, Canadian split sleeper, adverse-driving
+      extensions, and deferral are not modeled.
+- [ ] **Route-wide HOS planning.** The job planner and planning hints use one
+      rule set for the entire route rather than switching at jurisdiction
+      boundaries.
+- [ ] **Canadian rest menus.** Rest menus still offer 10 hours in Canada
+      rather than the modeled 8-hour reset.
+- [ ] **Alaska cycle restart.** The 34-hour restart is an assumption; verify
+      its applicability under Alaska's rules.
+- [x] **Whittier tunnel.** Whittier is connected through the Anton Anderson
+      Memorial Tunnel, including its published alternating vehicle gates and
+      Bear Valley round-trip toll.
+- [ ] **Ferries of any kind.** A verified freight need is required before a
+      ferry becomes a driveable route.
+- [ ] **Whittier–Valdez ferry.** No service or verified freight slice is modeled.
+- [ ] **Whittier tunnel special movements.** Permits for 10–11 foot loads and
+      special Class E openings remain open.
+- [ ] **Whittier overnight parking.** Needs a real, verified facility. Until
+      then a truck that arrives after the tunnel closes is logged as
+      sleeper-berth time (a wait of ten hours or more as a full reset), even
+      though overnight staging parking is unverified.
+- [ ] **Tunnel gate cues.** No cue is
+      spoken when the gate opens after a wait. The HOS logging for waits has
+      unit tests in the tunnel module but no driving-state test yet.
+- [ ] **Event-voice reissues read as repeats.** (Found along the way,
+      2026-10-11.) When a route line flushes the event voice while an
+      earlier route line is still waiting unheard, the pacer reissues that
+      line, interrupting; the voice hears it once, but the event log shows
+      it twice (the Whittier gate line before "Speed limit reduced to 25").
+      Hampton's merge cue replaying after a Clock readout is the sibling
+      rescue: an info key cut the cue mid-sentence on a shared voice, so it
+      is handed back by design. Both are pacer policy, not tunnel code.
+- [ ] **Tunnel combination length.** The 73.5 ft combination convention should
+      be revisited if tractor lengths vary: a long-sleeper tractor with a
+      53 ft trailer can exceed the 75 ft tunnel limit.
+- [ ] **Alaska Railroad alternative for placarded hazardous materials.**
+      Placarded loads are refused at the tunnel; train carriage is not modeled.
+- [ ] **Whittier freight facilities.** Await a verified freight address and coordinates.
+- [ ] **Whittier is not yet reachable in a career.** With no freight it gets
+      no jobs, and Bear Valley and Whittier are not offered as home cities,
+      so only tests drive the tunnel until a verified facility lands.
+- [x] **Tunnel refusal hold.** Fixed: dispatch plans regulated loads
+      around tunnels that refuse them, departure offers only legal roads, and
+      a truck that still reaches one is re-planned from that city.
+- [x] **Tunnels with truck rules across the map.** Eisenhower-Johnson, Fort
+      McHenry, the Boston tunnels, Hampton Roads and Chesapeake Bay
+      bridge-tunnels and the Pennsylvania Turnpike tunnels carry their
+      published cargo rules, and refused loads take real legal detour legs
+      into Boston, around Baltimore on I-695 and over Loveland Pass (see
+      docs/road-crossings.md).
+- [x] **Bridges with truck rules.** The San Francisco-Oakland Bay Bridge
+      hazmat rule, the Mackinac Bridge toll and the published Chesapeake Bay
+      Bridge-Tunnel toll are modelled (see docs/road-crossings.md).
+- [ ] **Bridge wind closures.** The Chesapeake Bay Bridge-Tunnel and
+      Mackinac Bridge wind restrictions need a wind speed in the weather.
+- [ ] **Bridge escorts.** Mackinac placarded, heavy and oversize escorts and
+      Golden Gate explosive-load hours are not modelled.
+- [ ] **Chesapeake Bay Bridge (US 50) toll.** Eastbound toll needs the
+      official truck rate.
+- [ ] **Hazard classes on freight.** The catalog does not name hazard
+      classes, so a placarded packaged load is refused wherever any class is
+      banned. Naming classes would let some loads through.
+- [x] **Loveland Pass for placarded loads.** A Silverthorne to Denver leg
+      over US 6 carries the Eisenhower tunnel's required detour.
+- [ ] **Loveland Pass closures.** The pass is treated as always open to
+      placarded loads; CDOT closes it in storms.
+- [ ] **I-90 Lake Washington flammable-cargo rule.** Left out: the only
+      source is a WSDOT closure notice. Model it if WSDOT publishes a
+      standing rule.
+- [ ] **Curve classes on the detour legs.** Their curves mark interchange
+      ramps only near each end, by position. The OSM curve-class reading the
+      rest of the map has needs `curve_osm.jsonl`, whose builder is not in
+      the repo.
+- [ ] **Board estimates on detoured loads.** The board's hours and route
+      readouts still use the open road; departure uses the legal one.
+- [ ] **Whittier tunnel cold-weather and train disruption rules.** The
+      sub-freezing five-minute opening rule and unscheduled-train delays are
+      not modeled.
 - [ ] **Remaining corridor data work.** Refine the auto-profile
-      Blaine–Surrey geometry for trucks, verify/enrich remaining Parks and
-      Mat-Su lots and Anchorage parking capacity, and reconcile the paid
-      distances noted in the Phase B plan. Further peninsula, Dalton,
-      ferry, and freight-market expansion is outside the completed slices.
+      Blaine–Surrey geometry for trucks; verify remaining Parks and Mat-Su
+      fuel lots and any truck-parking capacity. Exact Deadhorse
+      Carlile, Valdez/Deadhorse diesel, and Soldotna receive-only retail pins
+      remain unsupported; Fort St. John–Fort Nelson still has placeholder
+      speed profiles; Yukon River Camp truck-parking capacity is unverified,
+      and the Dalton gravel surface is not modeled.
+- [ ] (Found along the way) Older maxspeed bakes predate 0.25-mi way
+      densification and can carry a neighboring limit across long,
+      sparsely-noded ways; a re-sweep is needed. Legs without a geometry
+      archive currently bake speeds against straight chords between stored
+      route points; the Alcan legs now use bake-time Valhalla truck geometry
+      through those points, and other archive-less legs need the same re-sweep.
+- [ ] (Found along the way) Blaine northbound CBSA Pacific Highway booth data
+      is missing.
+- [ ] (Found along the way) The 33 Phase B3 freight and fuel endpoints
+      (Valdez, Kenai, Seward, Homer, Soldotna, Delta Junction, Coldfoot,
+      Deadhorse) have no `facility_approaches.json` chains yet; the last
+      approach bake predates them. Re-route them from the Alaska extract.
+- [ ] (Found along the way) Border processing times and the secondary-referral
+      chance are gameplay assumptions.
+- [ ] (Found along the way) Passport and FAST documents are not modeled.
+- [ ] (Found along the way) Border-penalty escalation uses lifetime counts,
+      not AMPS's 12-month retention period.
+- [ ] (Found along the way) Alaska on-road diesel has no official source:
+      DCCED's survey covers gasoline and heating fuel only and excludes
+      Anchorage/Mat-Su, so Alaska keeps the Pacific Northwest price.
+- [ ] (Found along the way) The Vancouver diesel figure applies across BC and
+      probably includes Metro Vancouver's regional fuel taxes; northern BC
+      may therefore be priced high. This is unverified.
+- [ ] (Found along the way) Canadian diesel uses fixed 2025 Statistics Canada
+      averages. Offline prices do not follow the monthly series; live mode
+      moves them only with the US national price.
+- [ ] (Found along the way) Every career year replays the 2026 spring-breakup
+      dates rather than shifting the notices to new annual dates.
+- [ ] (Found along the way) Anchorage/Mat-Su/Kenai area-wide 75%/50% limits
+      on unlisted local roads are not modeled; there are no local streets in
+      the game.
+- [ ] (Found along the way) The LCV 90-foot drive-axle provision is not
+      modeled.
+- [ ] (Found along the way) Doubles use a conservative percentage of legal
+      gross weight because the axle model does not split their axle groups.
+- [ ] (Found along the way) Seasonal limits apply to the strictest restriction
+      on each mapped leg, not to milepost segments within a leg.
+- [ ] (Found along the way) The Kenai Spur MP 0–5 end date is ambiguous in the
+      June 8 notice; the game keeps the restriction through June 15.
+- [ ] (Found along the way) The Palmer–Wasilla route retraces the Palmer–Wasilla
+      Highway, which would put it under the unmodeled Mat-Su area-wide limit.
 
-Automated evidence: the four `test_alcan_phase_a_*` cases,
-`test_alcan_phase_b1_tok_cutoff_glenn_to_anchorage`,
-`test_alcan_phase_b2_parks_to_anchorage`, both public-lot tests, and
+Automated evidence: the four `test_alcan_phase_a_*` cases (including the
+Tok–Delta Junction–Fairbanks split), `test_alcan_phase_b1_tok_cutoff_glenn_to_anchorage`,
+`test_alcan_phase_b2_parks_to_anchorage`, the B3 tests
+`test_alcan_border_identity_and_posted_speed_profiles`,
+`test_alaska_b3_city_labels_and_metadata`,
+`test_alaska_kenai_peninsula_routes_use_paid_miles_both_ways`,
+`test_alaska_valdez_routes_use_paid_miles_both_ways`,
+`test_alaska_dalton_routes_reach_deadhorse_both_ways`,
+`test_alaska_freight_endpoints_have_source_backed_roles`,
+`test_alaska_carrier_lanes_reach_new_freight_markets`,
+`test_alaska_pass_through_fuel_towns_have_no_board_offers`,
+`test_alaska_stand_in_markets_preserve_authored_facilities`,
+`test_alcan_public_lots_use_travel_center_or_truck_parking`, and
 `test_fairbanks_has_curated_freight_job_endpoints` in
 [`data_world.rs`](crates/ff-core/tests/it/data_world.rs), plus the generated-job
 endpoint test in [`models/jobs/tests.rs`](crates/ff-core/src/models/jobs/tests.rs).
-These pass in the audited Windows run. Remaining data limitations are
-recorded in the [Phase A plan](docs/alcan-corridor-scaffold-plan.md) and
-[Phase B plan](docs/alcan-phase-b-anchorage-plan.md).
+HOS evidence: `jurisdiction_rules_map_and_round_trip_keys`,
+`alaska_has_fifteen_driving_hours_and_no_break_limit`,
+`canada_south_limits_and_eight_hour_rest_reset`,
+`canada_shift_limit_warns_with_jurisdiction_wording`,
+`canada_north_driving_duty_and_elapsed_limits`,
+`jurisdiction_summaries_name_the_active_rules_and_limits`,
+`cycle_window_varies_without_changing_the_eight_day_ledger`,
+`canadian_cycle_requires_thirty_six_hours_while_us_uses_thirty_four`,
+`set_rules_rearms_all_jurisdiction_warnings`,
+`alaska_split_credit_recalculates_on_duty_since_first_rest`, and
+`hos_save_keeps_the_us_key_set_and_round_trips_canadian_fields` in
+[`sim/hos/tests.rs`](crates/ff-core/src/sim/hos/tests.rs), plus
+`hos_jurisdiction_switches_at_alcan_checkpoint_and_announces_once` and
+`hos_jurisdiction_switches_silently_when_not_enforced` in
+[`states_driving_hos.rs`](crates/freight-fate/tests/it/states_driving_hos.rs).
+The corridor data cases pass in the audited Windows run. HOS coverage records
+the rule boundaries, persistence, split credit and in-drive transitions.
+Remaining data limitations are recorded in the [Phase A plan](docs/alcan-corridor-scaffold-plan.md)
+and the [Phase B plan](docs/alcan-phase-b-anchorage-plan.md).
 
 ### Twin parcel / STAA doubles (Track A)
 
@@ -2421,6 +3197,53 @@ turnpike gross caps are only recorded is superseded by this implementation.
       steering key is a switch that steps the tractor to its lateral cap in
       one frame; the slew is not calibrated either.
 
+### Mexico freight v1: Laredo border transfer yards
+
+A US long-haul driver does not drive into Mexico; Mexico freight is a
+border-yard business. v1 models that in Laredo only, and nothing south of
+the bridge. The yards and every spoken line live in `data/border_yards.json`
+(baked as a text section), so the slice is easy to cut.
+
+- [x] **Two real US-side transfer yards join Laredo's freight**: On Time
+      International (14602 Atlanta Dr) and SCI Cross Dock (11903 Auburn Rd),
+      each with its published source and an OpenStreetMap house-level
+      geocode. They add to Laredo's market facilities; nothing is replaced.
+- [x] **Southbound loads to a yard name their Mexican consignee** on the
+      load card ("for consignee Saltillo, Coahuila, delivered to SCI Cross
+      Dock in Laredo ...") and say at delivery that a transfer carrier takes
+      the trailer across. Monterrey and Saltillo are text only; no Mexican
+      city is a map city, route or destination. The consignee is keyed on
+      the load, so no save field was added.
+- [x] **Northbound pickups at a yard wait 30 to 90 minutes on paperwork**,
+      logged on duty, not driving, at check-in, and counted toward
+      detention like any other facility hold. The range is an assumed
+      gameplay value, not border data. When the World Trade Bridge is
+      closed to trucks (CBP hours: weekdays 7 AM to midnight, Saturday and
+      Sunday 8 AM to 4 PM), the line says so as story.
+- [x] **No border toll is charged**; the transfer carrier crosses.
+- [ ] *(Found along the way)* Wire the "no northbound trailer ready" line
+      in the data to a real no-load-ready board state; the game has no
+      load-not-ready mechanism yet, so the line is unused.
+- [ ] *(Found along the way)* Facility endpoint and approach records for
+      the two yard ids, so the final approach uses the yards' own pins
+      instead of the synthetic fallback approach.
+- [ ] *(Deferred)* El Paso, Pharr and Otay Mesa transfer yards, after real
+      yards with published addresses are sourced.
+- [ ] *(Deferred)* Speak the accented consignee names ("Nuevo Leon" with
+      its accent) once a live screen-reader test passes; the accented form
+      is already kept in the data.
+- [ ] *(Deferred)* Averitt Laredo Service Center (11921 Conly Rd), pending
+      a verified coordinate; the address did not geocode in OpenStreetMap.
+- [ ] *(Deferred)* Texas DPS inspection stations near the Laredo bridges
+      for northbound flavor; exact sites unverified.
+- [ ] *(Deferred)* Colombia Solidarity Bridge commercial hours; unverified.
+- [ ] *(Deferred)* FAST lanes and C-TPAT eligibility; rules unverified.
+- [ ] *(Deferred)* In-bond northbound loads to an inland port.
+- [ ] *(Deferred)* Bridge toll display, only from a re-verified City of
+      Laredo rate; the player is never charged it.
+- [ ] *(Deferred)* World Trade Bridge Saturday pilot hours (to 7 PM from
+      September 5, 2026); left out of the story text on purpose.
+
 ### Travel-center bulk fuel (non-blocking)
 
 - [ ] **Restore `fuel_bulk` deliveries to `travel_center` as receive-only,**
@@ -2513,6 +3336,19 @@ and [FMCSA ELD recording guidance](https://www.fmcsa.dot.gov/hours-service/elds/
 - [ ] **Other ELD character events.** Daily log certification, carrier
       edit approve/reject prompts, a rare ELD-malfunction paper-log day,
       and the adverse-conditions +2-hour exception wired to live weather.
+- [ ] **Training a carrier requires is work time.** Under 49 CFR 395.2,
+      training the carrier requires is on duty, not driving: it runs the
+      14-hour window and does not count toward a 10-hour reset. A course
+      the driver books and pays for on their own time can stay off duty.
+      Today every credential course logs off duty, so a long course, or two
+      short ones back to back, counts as a 10-hour reset. Course fatigue
+      was corrected separately (GitHub #314); this item is only the duty
+      status, and the owner decides how sponsored courses are logged.
+- [ ] **A multi-day course ends at 4 PM on its last class day.** Course
+      fatigue scores the last class day as 8 AM to 4 PM local, but the
+      clock still moves ahead a flat course length: the 24-hour course
+      started at 9 PM ends at 9 PM the next day, not at 4 PM. End the clock
+      at 4 PM local on the last class day, and log the duty time to match.
 
 ### Signalling a street turn
 
@@ -2520,8 +3356,8 @@ Deferred out of 1.9 (owner call 2026-08-10) rather than bolting a blinker
 onto exit signalling.
 
 - [ ] **A blinker for surface-street maneuvers.** X signals an announced
-      highway exit and plays one panned `vehicle/signal_tone`; nothing
-      signals a street corner. The map is not the blocker -- baked tier-1
+      highway exit and starts the blinker; nothing signals a street
+      corner. The map is not the blocker -- baked tier-1
       maneuvers already carry direction and distance, which is what feeds
       the `events/turn_left` and `turn_right` earcons. What is missing is
       the turn as a continuous act. `LaneKeeping` has carried a heading
@@ -2531,13 +3367,12 @@ onto exit signalling.
       the surface-intersection work (1.9, `docs/surface-roads-plan.md`
       phase 4) leaves behind. The self-cancel half of that now exists:
       `_update_steering_lane_cue` holds a cue on the audio clock's dead
-      man's switch and ends it with a centred, quieter `vehicle/signal_tone`.
+      man's switch and ends it with a centred, quieter
+      `vehicle/turn_signal_off`, the stalk clicking back (2026-09-29).
       Borrow it rather than building a second one.
-- [ ] **Decide the two orphan sound assets in the same change.**
-      `vehicle/turn_signal` is the repeating tick this feature wants and
-      has never been wired to anything. `vehicle/lane_drift` is dead for a
-      different reason -- the edge ladder took its job -- so it is a
-      deletion, not a wiring job.
+- [ ] **Delete the orphan `vehicle/lane_drift` in the same change.** It is
+      dead because the edge ladder took its job. (`vehicle/turn_signal`, the
+      other asset this bullet once named, has been wired since 2026-09-10.)
 
 ### Street traffic controls
 
@@ -2687,6 +3522,18 @@ here 2026-09-25. Details stay in the linked dated sections.
 
 [Read this section in the detailed roadmap](docs/roadmap-details.md#career-dispatch-and-business).
 
+- [x] **Offline call dispatch groundwork.** A stopped driver can send a
+      structured delay, hours, road, truck or load request and receive an
+      immediate trip-specific local answer.
+- [ ] (Found along the way) **Call Dispatch timing is lower-48 timing
+      everywhere.** The delay answer assumes 50 mph to the destination, and
+      an authorized roadside repair always takes the 1.5-hour mobile-mechanic
+      wait. Neither holds on the Dalton Highway or other remote Alaska and
+      Canadian roads, where a callout takes far longer; scale both by road
+      and remoteness.
+- [ ] **Route calls to a remote dispatcher when one is available.** Deliver
+      the same structured request asynchronously, with a short wait and the
+      local dispatcher as the automatic fallback.
 - [ ] **Partial: reopen and finish driving school.** The sandboxed
       practice-road foundation and one Rolling Basics lesson exist, with
       profile restoration, stage progression, and manual-start tests in

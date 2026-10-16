@@ -44,6 +44,7 @@ mod settings;
 mod settings_actions;
 mod settings_items;
 mod shortcuts;
+mod touch_gestures;
 
 pub use achievements::{AchievementCareerState, AchievementCategoryState, AchievementsState};
 pub use careers::{
@@ -53,6 +54,7 @@ pub use settings::{
     GameplaySettingsState, SettingsCategoryState, SettingsState, SETTINGS_LAYOUT_NOTICES,
 };
 pub use shortcuts::{ShortcutDevice, ShortcutsState};
+pub use touch_gestures::{TouchCommandPickerState, TouchGesturesState};
 
 pub use crate::states::main_menu_career::{
     region_menu_name, CareerStartState, HomeCityState, HomeTerminalState,
@@ -267,6 +269,14 @@ pub fn world_entry_state(ctx: &mut GameContext, queue_entry_announcement: bool) 
             );
             return share(CityMenuState::new(ctx, true));
         }
+        // A trip saved on a CDL that has since been pulled -- a save from
+        // before a mid-drive suspension ended the run -- does not resume:
+        // it closes out the way the roadside does, in the city the run left
+        // from.
+        if let Some(line) = closed_out_pulled_licence_trip(ctx) {
+            ctx.say(&line);
+            return share(CityMenuState::new(ctx, true));
+        }
         let snapshot = ctx
             .profile
             .as_ref()
@@ -323,6 +333,24 @@ pub fn world_entry_state(ctx: &mut GameContext, queue_entry_announcement: bool) 
     // spoken just before this state is chosen, so its entry announcement
     // queues behind that line instead of cutting it off.
     share(CityMenuState::new(ctx, queue_entry_announcement))
+}
+
+/// Close out a saved trip the CDL no longer allows, and say so. `None`
+/// (nothing touched) while the CDL is clear.
+fn closed_out_pulled_licence_trip(ctx: &mut GameContext) -> Option<String> {
+    let refusal = crate::states::city::cdl_drive_refusal(ctx)?;
+    let city = {
+        let p = ctx.profile.as_mut()?;
+        p.active_trip = None;
+        p.pay_advance_used_for_load = false;
+        p.current_city.clone()
+    };
+    ctx.save_profile();
+    let city = ctx.world.spoken_city(&city, None);
+    Some(format!(
+        "Your saved run cannot go on: dispatch takes the load back, and a relief driver \
+         takes the truck back to {city}. {refusal}"
+    ))
 }
 
 /// Write a one-time fair-deadline repair back into the saved active trip.
@@ -532,7 +560,7 @@ impl MainMenuState {
 
     /// Start a fresh silent check for the next main-menu update cycle.
     pub fn arm_update_check(settings: &ff_core::settings::Settings) {
-        if !updater::is_frozen() {
+        if !updater::is_frozen() || !updater::SELF_UPDATES {
             return;
         }
         let mut guard = UPDATE_CHECK.lock().unwrap_or_else(|e| e.into_inner());
@@ -599,12 +627,12 @@ impl MainMenuState {
             ));
             return;
         }
-        ctx.say(
+        ctx.say(&format!(
             "Opening the bug report page in your web browser. Attach your game \
-             log: game.log in the logs folder next to the game. If you restarted \
-             the game after the problem, attach game.prev.log, the previous \
-             run's log.",
-        );
+             log: game.log in {}. If you restarted the game after the problem, \
+             attach game.prev.log, the previous run's log.",
+            crate::app::logging::log_folder_words()
+        ));
     }
 }
 
@@ -666,6 +694,14 @@ impl Menu for MainMenuState {
                  elsewhere, then start Freight Fate again.",
             );
         }
+        if crate::online_presence::take_secret_store_timeout_notice() {
+            ctx.say(
+                "The system password store did not answer in time, so online \
+                 features may need you to link your account again under Online. \
+                 If a permission dialog is still open, allow Freight Fate and \
+                 restart.",
+            );
+        }
         let info = {
             let mut guard = UPDATE_CHECK.lock().unwrap_or_else(|e| e.into_inner());
             let (checker, prompted) = &mut *guard;
@@ -719,6 +755,17 @@ impl Menu for MainMenuState {
                 "Game sounds could not start on this computer: the voice, but \
                  no engine, traffic, or alert sounds. Check that sound works \
                  elsewhere, then start Freight Fate again. ",
+            );
+        }
+        if crate::online_presence::take_secret_store_timeout_notice() {
+            // A Keychain ACL prompt after a new Mac signature can block the
+            // driver-token read at launch. We stop waiting after a few
+            // seconds so the menu opens; say why online may need a re-link.
+            warning.push_str(
+                "The system password store did not answer in time, so online \
+                 features may need you to link your account again under Online. \
+                 If a permission dialog is still open, allow Freight Fate and \
+                 restart. ",
             );
         }
         if loadable_saves().is_empty() && !legacy_saves().is_empty() {
@@ -812,20 +859,30 @@ impl Menu for MainMenuState {
             MenuItem::new("Settings", |_s: &mut Self, ctx| {
                 ctx.push_state(SettingsState::new())
             })
-            .help(
+            .help(if cfg!(target_os = "ios") {
+                "Units, transmission mode, volumes, weather, voices, and trip pacing."
+            } else {
                 "Units, transmission mode, volumes, weather, voices, \
-                 update channel, and trip pacing.",
-            ),
+                 update channel, and trip pacing."
+            }),
         );
         items.push(
             MenuItem::new("Report a problem", |s: &mut Self, ctx| s.report_issue(ctx))
                 .help("The bug report page on GitHub, in your web browser."),
         );
-        items.push(MenuItem::new("Quit", |_s: &mut Self, ctx| ctx.quit()).help("Exit the game."));
+        // An iPhone app is never quit from inside; the system closes it.
+        if !cfg!(target_os = "ios") {
+            items.push(
+                MenuItem::new("Quit", |_s: &mut Self, ctx| ctx.quit()).help("Exit the game."),
+            );
+        }
         items
     }
 
     fn go_back(&mut self, ctx: &mut GameContext) {
+        if cfg!(target_os = "ios") {
+            return;
+        }
         ctx.audio.play("ui/menu_back");
         ctx.push_state(ConfirmQuitState::new());
     }
@@ -962,11 +1019,12 @@ impl TextEntry for NameEntryState {
     }
 
     fn enter(&mut self, ctx: &mut GameContext) {
-        ctx.say(
+        ctx.say(&format!(
             "New career. Type your driver name, then Enter. Left and Right \
              arrows review the letters, Home and End jump to the start or \
-             end. Escape cancels.",
-        );
+             end. Escape cancels.{}",
+            crate::states::text_entry::KEYBOARD_HINT
+        ));
     }
 
     fn confirm(&mut self, ctx: &mut GameContext) {

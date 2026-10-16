@@ -38,6 +38,20 @@ fn hazard_lead_speed(event: &TripEvent) -> Option<f64> {
 impl DrivingState {
     /// `_handle_trip_event(event)`: everything the road just said, delivered.
     pub fn handle_trip_event(&mut self, ctx: &mut GameContext, event: &TripEvent) {
+        // A scheduled tunnel hold is work time, not rest.  The trip model
+        // advances the shared game clock at the physical gate; this is where
+        // the career-owned hours-of-service ledger receives the same minutes.
+        // A closure for the night is logged as sleeper time instead.
+        let tunnel_closed = event.data.context.as_deref() == Some("tunnel_closed");
+        if tunnel_closed || event.data.context.as_deref() == Some("tunnel_wait") {
+            if let Some(minutes) = event.data.amount {
+                ff_core::sim::tunnel::log_wait_to_hos(
+                    hos_mut_of(ctx),
+                    minutes.round() as i64,
+                    tunnel_closed,
+                );
+            }
+        }
         if self.should_ignore_destination_exit_gps_cue(ctx, event) {
             return;
         }
@@ -169,6 +183,11 @@ impl DrivingState {
             });
         }
         let category = Self::event_category(event);
+        // An event's tone announces its words, so a rung that drops the
+        // words drops the tone (owner, 2026-10-03). A passing vehicle's
+        // whoosh is the road itself and keeps playing.
+        let silenced = !ctx.event_speaks(category);
+        let sound = sound.filter(|key| !(silenced && key.starts_with("events/")));
         match kind {
             TripEventKind::Hazard => self.handle_hazard_event(ctx, event, sound, message),
             TripEventKind::Inspection => self.handle_inspection(ctx, event),
@@ -182,11 +201,13 @@ impl DrivingState {
                 // ROUTE's never-dropped contract instead of the one-deep ambient
                 // slot, where the next hazard or piece of chatter could silently
                 // destroy it. (The toll-ahead heads-up stays ambient.)
-                ctx.audio.play(sound.unwrap_or("ui/notify"));
+                if !silenced {
+                    ctx.audio.play(sound.unwrap_or("ui/notify"));
+                }
                 let mut opts = SayEvent::queued().priority(EventPriority::Route);
                 opts.category = category;
                 ctx.say_event_with(message, opts);
-                ctx.award_achievement("toll_paid");
+                ctx.award_driving_achievement("toll_paid");
             }
             TripEventKind::StateCrossing => {
                 self.handle_state_crossing(ctx, event, sound, message, category)
@@ -202,6 +223,8 @@ impl DrivingState {
             }
             TripEventKind::Curve => self.handle_curve_event(ctx, event, message, category),
             TripEventKind::Landmark | TripEventKind::Billboard => {
+                let sign = event.data.category.as_deref().unwrap_or_default();
+                let message = self.billboard_message(ctx, sign, message);
                 self.speak_ambient_event(ctx, message, Ambient::new().category(category));
             }
             TripEventKind::Lane => {
@@ -220,7 +243,9 @@ impl DrivingState {
             }
         }
         if kind == TripEventKind::ZoneEnter {
-            ctx.audio.play(sound.unwrap_or("ui/notify"));
+            if !silenced {
+                ctx.audio.play(sound.unwrap_or("ui/notify"));
+            }
             let reason = event
                 .data
                 .zone
@@ -229,10 +254,10 @@ impl DrivingState {
                 .unwrap_or_default();
             if reason == "construction" {
                 self.construction_seen = true;
-                ctx.award_achievement("construction_zone");
+                ctx.award_driving_achievement("construction_zone");
             } else if reason == "heavy traffic" {
                 self.traffic_seen = true;
-                ctx.award_achievement("traffic_slowing");
+                ctx.award_driving_achievement("traffic_slowing");
             }
         }
         if kind == TripEventKind::GpsCue {
@@ -243,11 +268,11 @@ impl DrivingState {
                 .is_some_and(|cue| cue.kind == "traffic");
             if traffic_cue || event.data.traffic_pressure.is_some() {
                 self.traffic_seen = true;
-                ctx.award_achievement("traffic_slowing");
+                ctx.award_driving_achievement("traffic_slowing");
             }
         }
         if self.construction_seen && self.traffic_seen {
-            ctx.award_achievement("jam_and_cones");
+            ctx.award_driving_achievement("jam_and_cones");
         }
     }
 
@@ -360,6 +385,20 @@ impl DrivingState {
         // repeats are done" -- Shane, 2026-08-21, and that is the loop.
         // The lane belongs to the hazard, not to the truck.
         self.hazard_slow_hint_said = false;
+        // Lane keeping on full answers a slow vehicle by passing it, and the
+        // call says so instead of asking the driver to change lanes.
+        let mut category = Self::event_category(event);
+        let message = match event.data.pass_message.clone() {
+            Some(pass) if self.hazard_dodgeable && self.pass_for_hazard(ctx, event) => {
+                // Lane keeping is answering it, so nothing is asked of the
+                // driver: going around a slow truck is traffic, words at
+                // standard only. Automatic braking is still SAFETY if the
+                // pass cannot be made.
+                category = Some(SpeechCategory::Traffic);
+                pass
+            }
+            _ => message,
+        };
         // A dodgeable hazard leaves the wheel alone: adaptive cruise or
         // the keeper stays armed through the lane change that answers it,
         // and only braking -- the driver's own, or the automatic brake
@@ -409,7 +448,7 @@ impl DrivingState {
         // much of its window is nominally left.
         self.refresh_live_facts();
         let mut opts = SayEvent::new().valid(live::hazard_active);
-        opts.category = Self::event_category(event);
+        opts.category = category;
         ctx.say_event_with(message, opts);
     }
 
@@ -456,8 +495,15 @@ impl DrivingState {
                 }
             }
         }
-        self.speak_ambient_event(ctx, message, Ambient::new().sound(sound).category(category));
-        ctx.award_achievement("state_crossing");
+        self.speak_ambient_event(
+            ctx,
+            message,
+            Ambient::new()
+                .sound(sound)
+                .category(category)
+                .priority(EventPriority::Route),
+        );
+        ctx.award_driving_achievement("state_crossing");
     }
 
     /// The CURVE branch of `_handle_trip_event`.
@@ -694,7 +740,7 @@ impl DrivingState {
                     let typed_name = self.trip.name_facility(&stop.name, &stop.spoken_name());
                     let exit_hint = self.trip.exit_hint.clone();
                     render = Some(std::rc::Rc::new(
-                        move |drive: &DrivingState, _ctx: &GameContext| {
+                        move |drive: &DrivingState, ctx: &GameContext| {
                             let ahead = stop.at_mi - drive.trip.position_mi;
                             if ahead <= 0.0 {
                                 return None;
@@ -709,7 +755,15 @@ impl DrivingState {
                                 parking_certainty: &stop.parking,
                                 exit_hint: &exit_hint,
                             };
-                            Some(stop_callout(&parts).normal)
+                            // The rung's rendering, as the line had when it
+                            // queued: re-rendered as the normal form, quiet
+                            // read one stop short and the next one in full
+                            // with its key hint (speech mode audit,
+                            // 2026-10-03).
+                            let text = stop_callout(&parts)
+                                .render(drive.terse_speech(ctx))
+                                .to_string();
+                            (!text.is_empty()).then_some(text)
                         },
                     ) as std::rc::Rc<_>);
                 }
@@ -982,8 +1036,52 @@ impl DrivingState {
             // carry, and no action attached at that distance (owner,
             // 2026-08-17: "sound is enough"). The act-now half of traffic is a
             // HAZARD event -- "Change lanes or brake! Merging traffic right
-            // ahead" -- which is SAFETY and speaks at every rung.
-            return Some(SpeechCategory::Status);
+            // ahead" -- which is SAFETY and speaks at every rung. TRAFFIC,
+            // not STATUS: quiet speaks status, and a player found quiet still
+            // reading out every slow box truck and its speed (2026-10-03).
+            return Some(SpeechCategory::Traffic);
+        }
+        if event.kind == TripEventKind::GpsCue {
+            if let Some(pressure) = event.data.traffic_pressure.as_ref() {
+                return Some(match pressure.kind.as_str() {
+                    // "Merge right early" at a taper is a lane the driver has
+                    // to leave, the one pressure with an action in it.
+                    "construction_merge" => SpeechCategory::Navigation,
+                    // Exit traffic and a merge ahead say which lane to hold:
+                    // a heads-up, spoken at quiet and a tone at urgent only.
+                    "exit" | "route_merge" => SpeechCategory::NavigationAdvisory,
+                    // A traffic pack is the road filling up; cruise slows for
+                    // it on its own.
+                    _ => SpeechCategory::Traffic,
+                });
+            }
+            if event.data.cb_patrol.is_some() {
+                // The CB's word on a trooper miles ahead: worth hearing at
+                // quiet, a tone at urgent only. The speed warning is what
+                // stops a ticket, and it speaks at every rung.
+                return Some(SpeechCategory::NavigationAdvisory);
+            }
+            if event
+                .data
+                .cue
+                .as_ref()
+                .is_some_and(|cue| cue.kind == "toll")
+            {
+                // The toll is charged whatever the driver does; the heads-up
+                // asks nothing of them.
+                return Some(SpeechCategory::NavigationAdvisory);
+            }
+            if let Some(zone) = event.data.zone.as_ref() {
+                // A zone a few miles ahead. Only a construction lane closure
+                // asks the driver to move; the rest is a lower number coming,
+                // which the assists ease for and the speed warning enforces.
+                let closure = zone.reason == "construction" && zone.closed_side.is_some();
+                return Some(if closure {
+                    SpeechCategory::Navigation
+                } else {
+                    SpeechCategory::NavigationAdvisory
+                });
+            }
         }
         event_category_for_kind(event.kind)
     }
@@ -1009,6 +1107,13 @@ impl DrivingState {
         }
         if event.kind == TripEventKind::GpsCue {
             if event.data.zone.is_some() {
+                return EventPriority::Route;
+            }
+            // A tunnel gate speaks its name and then its verdict in one
+            // moment. As chatter the verdict waited behind the name past the
+            // stale budget and was dropped: the truck sat out the wait with
+            // nothing said about why or for how long.
+            if Self::is_tunnel_gate_event(event) {
                 return EventPriority::Route;
             }
             // A limit change is what enforcement reads, and each one is said
@@ -1050,6 +1155,15 @@ impl DrivingState {
             return EventPriority::Route;
         }
         EventPriority::Ambient
+    }
+
+    /// A line from a tunnel's or bridge's gate: its name, a refusal, a
+    /// reroute, or the wait.
+    pub fn is_tunnel_gate_event(event: &TripEvent) -> bool {
+        event.kind == TripEventKind::GpsCue
+            && event.data.context.as_deref().is_some_and(|context| {
+                context.starts_with("tunnel_") || context.starts_with("crossing_")
+            })
     }
 
     /// `_should_ignore_untaken_destination_facility_event(event)`.
@@ -1108,7 +1222,7 @@ impl DrivingState {
                 Some(zone.limit_mph),
                 false,
             );
-            ctx.audio.play("ui/notify");
+            ctx.play_event_cue(category, "ui/notify", 1.0, 0.0);
             let keeper = ctx.settings.speed_text(self.keeper_mph.unwrap_or(0.0));
             let message = message.plus(&format!("Speed keeper holding {keeper}."));
             let mut opts = SayEvent::queued().priority(EventPriority::Route);
@@ -1121,13 +1235,19 @@ impl DrivingState {
         // A restricted area (construction, heavy traffic) is act-soon: ROUTE
         // priority gives chatter under a second before going in front of it,
         // without an interrupt that could cut a real warning mid-word.
+        //
+        // The pedals are the driver's again, so it is SAFETY whatever the
+        // event was, the same class as "Stopped traffic ahead; adaptive
+        // cruise canceled". As a zone entry (STATUS) urgent only dropped it
+        // whole, and the cruise let go without a word; quiet now says it
+        // short.
         let message = if self.terse_speech(ctx) {
-            message
+            message.plus("Cruise off.")
         } else {
             message.plus("Adaptive cruise disabled; take manual speed control.")
         };
         let mut opts = SayEvent::queued().priority(EventPriority::Route);
-        opts.category = category;
+        opts.category = Some(SpeechCategory::Safety);
         ctx.say_event_with(message, opts);
     }
 
@@ -1235,7 +1355,8 @@ impl DrivingState {
                 return_message,
                 &lights,
             );
-            record_inspection(ctx);
+            // A failed log check is not a passed inspection: no badge, and
+            // no clean-inspection credit on the safety record (2026-09-28).
             return;
         }
         {
@@ -1254,7 +1375,6 @@ impl DrivingState {
         let mut opts = SayEvent::queued().priority(EventPriority::Route);
         opts.category = Self::event_category(event);
         ctx.say_event_with(message, opts);
-        record_inspection(ctx);
     }
 
     /// `_place_out_of_service()`. A full 10-hour reset: fatigue, drive, or

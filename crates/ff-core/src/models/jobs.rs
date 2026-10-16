@@ -8,13 +8,15 @@ use serde_json::{json, Map, Value};
 
 use crate::data::world::World;
 use crate::data::world_constants::{lookup, LOCATION_TYPE_LABELS};
+use crate::data::world_models::CrossingLoad;
+use crate::models::border_freight::load_card_line;
 use crate::models::career::JobView;
 use crate::models::market::market_condition;
 use crate::models::save_migration::json_f64;
 use crate::models::start_options::pay_plan_for_key;
 use crate::models::trailers::{required_program_text, trailer_keys_for_cargo};
 use crate::pyfmt::{fmt_f, fmt_grouped, py_str_float, round_py_n};
-use crate::speech_text::typed_name;
+use crate::speech_text::{the_city, typed_name};
 
 mod board;
 mod deadline;
@@ -23,7 +25,7 @@ pub mod relay;
 #[cfg(test)]
 mod tests;
 
-pub use board::{JobBoard, OfferOptions};
+pub use board::{reachable_cities, JobBoard, OfferOptions};
 pub use deadline::{
     curve_ceilings, dispatch_deadline_hours, fair_active_deadline, minimum_pay_for_level, plan_hos,
     remaining_route_hos_plan, required_hours, route_drive_hours, route_drive_hours_over,
@@ -55,7 +57,7 @@ pub fn facility_text(
     locality: &str,
 ) -> String {
     if location_type == "metro_market" || is_legacy_facility_name(city, location_name) {
-        return format!("the {city} metro freight market");
+        return format!("{} metro freight market", the_city(city));
     }
     let place = if !locality.is_empty() && !location_name.contains(locality) {
         format!(" near {locality}")
@@ -78,7 +80,7 @@ pub fn facility_offer_text(
     locality: &str,
 ) -> String {
     if location_type == "metro_market" || is_legacy_facility_name(city, location_name) {
-        return format!("the {city} metro freight market");
+        return format!("{} metro freight market", the_city(city));
     }
     let place = if !locality.is_empty() && !location_name.contains(locality) {
         format!(" near {locality}")
@@ -151,6 +153,14 @@ pub struct Job {
     // have needed one). Spoken so the long number reads as the law, not
     // dispatcher generosity.
     pub deadline_covers_rest: bool,
+    pub seasonal_weight_limit: Option<SeasonalWeightLimit>,
+}
+
+/// Seasonal weight restriction recorded when a job is dispatched.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeasonalWeightLimit {
+    pub highway: String,
+    pub percent: u8,
 }
 
 /// The keyword arguments of `Job.describe`, each with its Python default.
@@ -167,6 +177,15 @@ pub struct DescribeOptions<'a> {
 }
 
 impl Job {
+    /// The load as a tunnel or bridge judges it, on a stock rig.
+    pub fn crossing_load(&self) -> CrossingLoad {
+        if self.bobtail {
+            return CrossingLoad::standard_rig(false);
+        }
+        let cargo_lb = (self.weight_tons * 2000.0).round().max(0.0) as u32;
+        CrossingLoad::standard_rig(true).with_cargo(self.cargo.key, self.cargo.tank, cargo_lb)
+    }
+
     /// `Job(cargo, weight_tons, origin, origin_location, destination,
     /// distance_mi, pay, deadline_game_h)` with every other field at its
     /// default.
@@ -203,6 +222,7 @@ impl Job {
             origin_spoken: String::new(),
             destination_spoken: String::new(),
             deadline_covers_rest: false,
+            seasonal_weight_limit: None,
         }
     }
 
@@ -263,11 +283,21 @@ impl Job {
             format!(" Requires {}.", credentials_clause(self.cargo.credentials))
         };
         let origin = format!("from {}", self.origin_offer_text());
-        let dest = format!("to {}", self.destination_offer_text());
+        // A load for a border transfer yard names its Mexican consignee;
+        // the yard in the US city is still where the trailer is delivered.
+        let dest = load_card_line(self, self.spoken_destination())
+            .unwrap_or_else(|| format!("to {}", self.destination_offer_text()));
         let trailer = if opts.trailer_note.is_empty() {
             String::new()
         } else {
             format!(" {}", opts.trailer_note)
+        };
+        let seasonal_weight = match self.seasonal_weight_limit.as_ref() {
+            Some(limit) => format!(
+                " Spring weight limits on the {}: axle loads held to {} percent of the legal limit.",
+                limit.highway, limit.percent
+            ),
+            None => String::new(),
         };
         let pay = opts.display_pay.unwrap_or(self.pay);
         let pay_label = if opts.pay_label.is_empty() {
@@ -286,7 +316,7 @@ impl Job {
             ". "
         };
         format!(
-            "{prefix}{} tons of {} {origin} {dest}. {distance}. {pay_label} {} dollars. Deadline {} hours{rest}Equipment: {}.{trailer}{preview}{market}{endorsement}",
+            "{prefix}{} tons of {} {origin} {dest}. {distance}. {pay_label} {} dollars. Deadline {} hours{rest}Equipment: {}.{trailer}{seasonal_weight}{preview}{market}{endorsement}",
             fmt_f(self.weight_tons, 0),
             self.spoken_cargo_label(),
             fmt_grouped(pay, 0),
@@ -494,6 +524,12 @@ pub fn job_payload(job: &Job) -> Map<String, Value> {
         "bobtail": job.bobtail,
         "assigned": job.assigned,
         "deadline_covers_rest": job.deadline_covers_rest,
+        "seasonal_weight_limit": job.seasonal_weight_limit.as_ref().map(|limit| {
+            json!({
+                "highway": limit.highway.as_str(),
+                "percent": limit.percent,
+            })
+        }),
     });
     match value {
         Value::Object(map) => map,
@@ -567,6 +603,17 @@ pub fn job_from_payload(data: &Map<String, Value>) -> Option<Job> {
     job.origin_spoken = str_or(data, "origin_spoken", "");
     job.destination_spoken = str_or(data, "destination_spoken", "");
     job.deadline_covers_rest = data.get("deadline_covers_rest").is_some_and(py_truthy);
+    job.seasonal_weight_limit = data
+        .get("seasonal_weight_limit")
+        .and_then(Value::as_object)
+        .and_then(|limit| {
+            let highway = limit.get("highway")?.as_str()?;
+            let percent = u8::try_from(limit.get("percent")?.as_u64()?).ok()?;
+            (1..=100).contains(&percent).then(|| SeasonalWeightLimit {
+                highway: highway.to_string(),
+                percent,
+            })
+        });
     Some(job)
 }
 

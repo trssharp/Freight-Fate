@@ -10,11 +10,11 @@
 //! through `states::city::launch_driving`.
 
 use crate::states_city_support::*;
-use ff_core::models::business::{INDEPENDENT_AUTHORITY, LEASED_OWNER_OPERATOR};
+use ff_core::models::business::{COMPANY_DRIVER, INDEPENDENT_AUTHORITY, LEASED_OWNER_OPERATOR};
 use ff_core::models::career::LEVEL_XP;
 use ff_core::models::carriers::fallback_carrier_for;
 use ff_core::models::dispatch_policy::{NEW_HIRE_DECLINE_BUDGET, SENIOR_LOAD_CHOICE_LEVEL};
-use ff_core::models::economy::{PAY_ADVANCE_ELIGIBLE_BELOW, PAY_ADVANCE_LIMIT};
+use ff_core::models::economy::{cad_per_litre, PAY_ADVANCE_ELIGIBLE_BELOW, PAY_ADVANCE_LIMIT};
 use ff_core::models::enforcement;
 use ff_core::models::jobs::{
     board_offer_count, cargo_type, job_payload, make_reposition_job, Job, JobBoard, OfferOptions,
@@ -23,6 +23,7 @@ use ff_core::models::jobs::{
 use ff_core::models::profile::Profile;
 use ff_core::models::solvency;
 use ff_core::models::start_options::pay_plan_for_key;
+use ff_core::pyfmt::fmt_f;
 use freight_fate::app::testing::TestApp;
 use freight_fate::states::base::{Key, Menu, SimpleMenuState};
 use freight_fate::states::career_setback::CareerSetbackNoticeState;
@@ -73,6 +74,46 @@ fn entry_announcement(app: &TestApp) -> String {
     let lines = app.main_lines();
     let tail = lines.len().saturating_sub(2);
     lines[tail..].join(" ")
+}
+
+fn terminal_garage_label(app: &mut TestApp, city: &str) -> String {
+    career(app, "Fuel Price Terminal", city);
+    {
+        let p = profile_mut(app);
+        p.business_status = COMPANY_DRIVER.to_string();
+        p.carrier_key = "chatanika_freight".to_string();
+        p.carrier_name = "Chatanika Freight Lines".to_string();
+    }
+    let menu = CityMenuState::new(&app.ctx, false);
+    app.push_state(menu);
+    labels::<CityMenuState>(app)
+        .into_iter()
+        .find(|label| label.starts_with("Garage: fuel "))
+        .expect("the terminal garage row")
+}
+
+#[test]
+fn test_terminal_garage_price_names_canadian_dollars_only_in_canada() {
+    let mut canada = TestApp::new();
+    let whitehorse = terminal_garage_label(&mut canada, "Whitehorse");
+    let price = canada.ctx.economy.fuel_price_at("pacific_northwest", "YT");
+    assert_eq!(
+        whitehorse,
+        format!(
+            "Garage: fuel {} per gallon, {} Canadian dollars a litre",
+            fmt_f(price, 2),
+            fmt_f(cad_per_litre(price), 2)
+        )
+    );
+
+    drop(canada);
+    let mut us = TestApp::new();
+    let seattle = terminal_garage_label(&mut us, "Seattle");
+    let price = us.ctx.economy.fuel_price_at("pacific_northwest", "WA");
+    assert_eq!(
+        seattle,
+        format!("Garage: fuel {} per gallon", fmt_f(price, 2))
+    );
 }
 
 // -- tests/test_dispatch_autonomy.py -------------------------------------------------
@@ -188,6 +229,27 @@ fn test_senior_company_driver_gets_browsable_board() {
     assert!(labels::<JobBoardState>(&app)
         .iter()
         .any(|l| l.contains("Job 1 of 2")));
+}
+
+/// A senior driver dispatch has stopped trusting is on assigned loads because
+/// of standing, so the board must not promise "until level 8" at level 9.
+#[test]
+fn test_senior_driver_on_assigned_loads_hears_standing_not_a_level() {
+    let mut app = TestApp::new();
+    new_hire(&mut app, "Slipped Senior");
+    {
+        let p = profile_mut(&mut app);
+        p.career.xp = LEVEL_XP[SENIOR_LOAD_CHOICE_LEVEL as usize]; // level 9
+        p.career.deliveries = 20;
+        p.career.reputation = 5.0;
+    }
+
+    push_board(&mut app, vec![job(180.0), job(70.0)]);
+
+    assert!(with_state::<JobBoardState, _>(&app, |b, _| b.assigned_mode()));
+    let said = app.main_lines().last().cloned().unwrap();
+    assert!(said.contains("assigns your load and route until your standing recovers"));
+    assert!(!said.contains("until level"));
 }
 
 #[test]
@@ -864,9 +926,9 @@ fn test_a_relayed_load_replaces_a_board_slot_and_leads_the_assignment() {
             .any(|j| !j.bobtail && ctx.world.resolve_city_key(&j.origin) != here)
     });
     assert!(relayed, "Tonopah's board carries a relayed load");
-    let expected = enforcement::board_offers_for_reputation(
+    let expected = enforcement::board_offers_for_band(
         board_offer_count(p.career.level()) as i64,
-        p.career.reputation,
+        enforcement::standing_band(&p),
     ) as usize;
     assert_eq!(
         with_state::<JobBoardState, _>(&app, |b, _| b.jobs.len()),
@@ -1504,6 +1566,19 @@ fn test_first_day_terminal_entry_speaks_training_arc_without_tutorial_language()
     assert!(entry.contains("First-day objective"));
     assert!(entry.contains("trainer-recommended"));
     assert!(!entry.to_lowercase().contains("probation"));
+}
+
+#[test]
+fn test_the_terminal_does_not_double_the_dalles_article() {
+    let mut app = TestApp::new();
+    career(&mut app, "Gorge", "the_dalles_or_us");
+
+    let city = CityMenuState::new(&app.ctx, false);
+    app.push_state(city);
+
+    let entry = entry_announcement(&app);
+    assert!(entry.contains(" in The Dalles service area, "), "{entry}");
+    assert!(!entry.contains("the The"), "{entry}");
 }
 
 #[test]

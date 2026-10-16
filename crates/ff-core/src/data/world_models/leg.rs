@@ -10,11 +10,19 @@ use parking_lot::Mutex;
 use super::{
     lane_word, DataError, ElevationSample, GradeSegment, HpmsTerrain, Interchange, Landmark,
     LaneSegment, RouteCheckpoint, RoutePoint, RouteRestriction, SpeedLimitSample, StateCrossing,
-    StateMileage, Stop, StreetControl, StreetLimit, TollEvent, TrafficVolumeSample,
+    StateMileage, Stop, StreetControl, StreetLimit, TollEvent, TrafficVolumeSample, TunnelData,
 };
 use crate::data::world::World;
 use crate::data::world_corridor::build_leg_corridor;
 use crate::pyfmt::fmt_f;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BillboardBan {
+    pub from_mi: f64,
+    pub to_mi: f64,
+    pub name: String,
+    pub source: String,
+}
 
 /// The heavy per-mile corridor fields a leg parses on first touch.
 /// Everything else on a `Leg` (endpoints, miles, highway, terrain, stops,
@@ -36,6 +44,8 @@ pub struct CorridorDetail {
     pub landmarks: Vec<Landmark>,
     pub restrictions: Vec<RouteRestriction>,
     pub lane_segments: Vec<LaneSegment>,
+    pub tunnel: Option<TunnelData>,
+    pub billboard_bans: Vec<BillboardBan>,
 }
 
 /// The raw corridor JSON plus its parse context, held by a lazy leg until the
@@ -146,6 +156,13 @@ pub struct Leg {
     /// oneway-pair geometry (Track D2). None where the bake was mixed or
     /// thin -- honest absence; the runtime infers from road class instead.
     pub divided: Option<bool>,
+    /// Truck rules at real tunnels and bridges on this leg. Eager, so the
+    /// route graph plans around them without parsing the corridor.
+    pub crossings: Vec<super::RoadCrossing>,
+    /// The bypassed crossing's name when this leg is the real legal road
+    /// around it: a second road between the same two cities, not the other
+    /// direction of the leg it bypasses. Empty on every ordinary leg.
+    pub detour_for: String,
     /// Dispatch-completeness precomputed at world load from raw corridor
     /// counts (see `world_corridor::raw_metadata_complete`). None means "not
     /// precomputed" -- direct-constructed legs (tests, overlays) fall back to
@@ -185,6 +202,8 @@ impl Leg {
             local_controls: Vec::new(),
             local_yard: false,
             divided: None,
+            crossings: Vec::new(),
+            detour_for: String::new(),
             meta_complete: None,
             corridor: OnceCell::new(),
             detail_source: Mutex::new(None),
@@ -380,6 +399,10 @@ impl Leg {
         &self.corridor().landmarks
     }
 
+    pub fn billboard_bans(&self) -> &[BillboardBan] {
+        &self.corridor().billboard_bans
+    }
+
     pub fn restrictions(&self) -> &[RouteRestriction] {
         &self.corridor().restrictions
     }
@@ -450,6 +473,8 @@ impl Clone for Leg {
             local_controls: self.local_controls.clone(),
             local_yard: self.local_yard,
             divided: self.divided,
+            crossings: self.crossings.clone(),
+            detour_for: self.detour_for.clone(),
             meta_complete: self.meta_complete,
             corridor,
             detail_source: Mutex::new(self.detail_source.lock().clone()),
@@ -525,15 +550,38 @@ impl Route {
             .collect()
     }
 
-    pub fn stop_details(&self) -> Vec<&Stop> {
-        self.legs
-            .iter()
-            .flat_map(|leg| leg.stops.iter().filter(|s| s.curated()))
-            .collect()
+    fn stops_with_route_miles(&self, include_uncurated: bool) -> Vec<Stop> {
+        let mut at_mi = 0.0;
+        let mut stops = Vec::new();
+        for (index, leg) in self.legs.iter().enumerate() {
+            let forward = self.cities.get(index).is_none_or(|city| city == &leg.a);
+            for stop in &leg.stops {
+                if !include_uncurated && !stop.curated() {
+                    continue;
+                }
+                let mut route_stop = stop.clone();
+                let local_mi = if forward {
+                    stop.at_mi
+                } else {
+                    leg.miles - stop.at_mi
+                };
+                route_stop.at_mi = at_mi + local_mi;
+                stops.push(route_stop);
+            }
+            at_mi += leg.miles;
+        }
+        stops.sort_by(|left, right| left.at_mi.total_cmp(&right.at_mi));
+        stops
     }
 
-    pub fn raw_stop_details(&self) -> Vec<&Stop> {
-        self.legs.iter().flat_map(|leg| leg.stops.iter()).collect()
+    /// Curated stops with mileposts measured from the route's start.
+    pub fn stop_details(&self) -> Vec<Stop> {
+        self.stops_with_route_miles(false)
+    }
+
+    /// All stop records with mileposts measured from the route's start.
+    pub fn raw_stop_details(&self) -> Vec<Stop> {
+        self.stops_with_route_miles(true)
     }
 
     /// Curated stops the rig can physically use, for pre-trip planning.
@@ -542,7 +590,7 @@ impl Route {
     /// decides whether a run is survivable, so a stop that would turn a rig
     /// away must not pad them. Pass `false` for the trailer case, the cautious
     /// read and the one nearly every job is.
-    pub fn accessible_stop_details(&self, bobtail: bool) -> Vec<&Stop> {
+    pub fn accessible_stop_details(&self, bobtail: bool) -> Vec<Stop> {
         self.stop_details()
             .into_iter()
             .filter(|s| s.accessible_to(bobtail))

@@ -1,8 +1,10 @@
 //! Terminal garage fuel and repair menu (port of
 //! `freight_fate/states/city_garage.py`).
 
-use ff_core::models::business::player_pays_operating_costs;
-use ff_core::models::economy::{damage_severity_mult, Economy, REPAIR_COST_PER_PCT};
+use ff_core::models::business::{is_owner_operator, player_pays_operating_costs};
+use ff_core::models::economy::{
+    cad_per_litre, canada_diesel_usd_per_gal, damage_severity_mult, Economy, REPAIR_COST_PER_PCT,
+};
 use ff_core::models::profile::Profile;
 use ff_core::pyfmt::{fmt_f, fmt_grouped, round_py_n};
 use ff_core::sim::vehicle::COMPONENT_SERVICE_LIMIT_PCT;
@@ -118,6 +120,13 @@ impl GarageState {
             .unwrap_or_default()
     }
 
+    fn state_code(ctx: &GameContext) -> String {
+        ctx.world
+            .city(&profile(ctx).current_city)
+            .map(|c| c.state_code.clone())
+            .unwrap_or_default()
+    }
+
     fn tank_gal(ctx: &GameContext) -> f64 {
         profile(ctx).truck_specs().fuel_tank_gal
     }
@@ -134,7 +143,18 @@ impl GarageState {
                 fmt_f(need, 0)
             );
         }
-        let cost = ctx.economy.fuel_cost(&Self::region(ctx), need);
+        let region = Self::region(ctx);
+        let state_code = Self::state_code(ctx);
+        let price = ctx.economy.fuel_price_at(&region, &state_code);
+        let cost = ctx.economy.fuel_cost_at(&region, &state_code, need);
+        if canada_diesel_usd_per_gal(&state_code).is_some() {
+            return format!(
+                "Refuel {} gallons for {} dollars. Diesel here is {} Canadian dollars a litre.",
+                fmt_f(need, 0),
+                fmt_grouped(cost, 0),
+                fmt_f(cad_per_litre(price), 2)
+            );
+        }
         format!(
             "Refuel {} gallons for {} dollars",
             fmt_f(need, 0),
@@ -208,7 +228,9 @@ impl GarageState {
             self.refresh(ctx, true);
             return;
         }
-        let cost = ctx.economy.fuel_cost(&Self::region(ctx), need);
+        let region = Self::region(ctx);
+        let state_code = Self::state_code(ctx);
+        let cost = ctx.economy.fuel_cost_at(&region, &state_code, need);
         if profile(ctx).money() < cost {
             self.partial_refuel(ctx, tank);
             return;
@@ -236,7 +258,8 @@ impl GarageState {
 
     fn partial_refuel(&mut self, ctx: &mut GameContext, tank: f64) {
         let region = Self::region(ctx);
-        let price = ctx.economy.fuel_price(&region);
+        let state_code = Self::state_code(ctx);
+        let price = ctx.economy.fuel_price_at(&region, &state_code);
         let gallons = if price > 0.0 {
             profile(ctx).money() / price
         } else {
@@ -247,7 +270,7 @@ impl GarageState {
             ctx.say("Not enough money for one gallon of fuel.");
             return;
         }
-        let cost = ctx.economy.fuel_cost(&region, gallons);
+        let cost = ctx.economy.fuel_cost_at(&region, &state_code, gallons);
         let (start, end, money) = {
             let p = profile_mut(ctx);
             p.spend(cost);
@@ -928,14 +951,24 @@ impl Menu for GarageState {
                 "Worn tires grip less. Company drivers bill the carrier, owner-operators \
                  pay the shop.",
             ),
-            MenuItem::new(
-                Label::dynamic(|_s: &Self, ctx| Self::tire_swap_label(ctx)),
-                |s: &mut Self, ctx| s.swap_tire_compound(ctx),
-            )
-            .help(
-                "Winter tires bite harder on snow and ice, wear faster, and grip a little \
-                 less on warm dry pavement. Company tractors run what the carrier specs.",
-            ),
+        ]);
+        // Tires, upgrades, trucks and trailers are the owner's to choose; a
+        // company driver's are the carrier's, so those rows stay off the menu
+        // until the buy-in (owner, 2026-09-28).
+        let owner = is_owner_operator(&profile(ctx).business_status);
+        if owner {
+            items.push(
+                MenuItem::new(
+                    Label::dynamic(|_s: &Self, ctx| Self::tire_swap_label(ctx)),
+                    |s: &mut Self, ctx| s.swap_tire_compound(ctx),
+                )
+                .help(
+                    "Winter tires bite harder on snow and ice, wear faster, and grip a little \
+                     less on warm dry pavement.",
+                ),
+            );
+        }
+        items.extend([
             MenuItem::new(
                 Label::dynamic(|_s: &Self, ctx| Self::chains_label(ctx)),
                 |s: &mut Self, ctx| s.buy_chains(ctx),
@@ -957,27 +990,31 @@ impl Menu for GarageState {
                 |s: &mut Self, ctx| s.service_engine(ctx),
             )
             .help(
-                "A worn engine is down on power and burns more fuel. Over-revving and \
-                 lugging wear it fast. Company drivers bill the carrier, owner-operators \
-                 pay the shop.",
+                "A worn engine is down on power and burns more fuel. Over-revving and lugging \
+                 wear it fast. Company drivers bill the carrier, owner-operators pay the shop.",
             ),
             MenuItem::new(
                 Label::dynamic(|_s: &Self, ctx| Self::wash_label(ctx)),
                 |s: &mut Self, ctx| s.wash_truck(ctx),
             )
             .help("Company drivers bill the carrier, owner-operators pay."),
-            MenuItem::new("Upgrades", |s: &mut Self, ctx| s.upgrades(ctx)).help(
-                "Performance upgrades for owned tractors: more torque, less drag, a \
-                 bigger tank, stronger brakes.",
-            ),
-            MenuItem::new("Trucks", |s: &mut Self, ctx| s.trucks(ctx))
-                .help("Owner-operators can buy a new truck, or switch between trucks they own."),
-            MenuItem::new("Trailer programs", |s: &mut Self, ctx| s.trailers(ctx)).help(
-                "Owner-operators add specialty trailer programs. Own authority buys trailers.",
-            ),
+        ]);
+        if owner {
+            items.extend([
+                MenuItem::new("Upgrades", |s: &mut Self, ctx| s.upgrades(ctx)).help(
+                    "Performance upgrades for owned tractors: more torque, less drag, a bigger \
+                     tank, stronger brakes.",
+                ),
+                MenuItem::new("Trucks", |s: &mut Self, ctx| s.trucks(ctx))
+                    .help("Buy a new truck, or switch between trucks you own."),
+                MenuItem::new("Trailer programs", |s: &mut Self, ctx| s.trailers(ctx))
+                    .help("Add specialty trailer programs. Own authority buys trailers."),
+            ]);
+        }
+        items.push(
             MenuItem::new("Back", |s: &mut Self, ctx| s.go_back(ctx))
                 .help("Return to the terminal menu."),
-        ]);
+        );
         items
     }
 }

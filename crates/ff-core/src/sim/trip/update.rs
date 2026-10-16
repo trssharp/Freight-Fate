@@ -288,7 +288,29 @@ impl Trip {
             // ramp and pause highway events until the truck rejoins the road.
             return self.events.clone();
         }
-        self.position_mi += moved_mi;
+        // A crossing is judged where its leg starts, before any part of the
+        // truck is on it. A refused load is re-planned from that city and a
+        // scheduled wait advances game time, both in `process_tunnel_gate`.
+        let old_position = self.position_mi;
+        let proposed_position = self.position_mi + moved_mi;
+        let mut held_at_gate = false;
+        for i in 0..self.route.legs.len() {
+            let leg = &self.route.legs[i];
+            if leg.crossings.is_empty() && leg.corridor().tunnel.is_none() {
+                continue;
+            }
+            let start = self.leg_starts[i];
+            if old_position <= start && proposed_position >= start && self.process_tunnel_gate(i) {
+                self.position_mi = (start - 0.000_001).max(0.0);
+                self.last_moved_mi = (self.position_mi - old_position).max(0.0);
+                self.truck.velocity_mps = 0.0;
+                held_at_gate = true;
+                break;
+            }
+        }
+        if !held_at_gate {
+            self.position_mi = proposed_position;
+        }
         if self.position_mi < 0.0 {
             self.position_mi = 0.0;
         } else if self.position_mi > self.total_miles() {
@@ -319,6 +341,7 @@ impl Trip {
         self.traffic_manager
             .update(dt, self.position_mi, time_scale, Some(hour), Some(weekend));
         self.check_zones();
+        self.sync_chain_posts();
         self.check_chain_law();
         self.check_speed_limit();
         self.check_limit_drop_ahead();
@@ -941,8 +964,8 @@ impl Trip {
                 self.emit(
                     TripEventKind::Inspection,
                     SpokenMessage::new(
-                        "CB chatter: it is Roadcheck week. Inspectors are out in force for three \
-                         days, scales are open and troopers are checking paperwork.",
+                        "It is Roadcheck week. Inspectors are out in force for three days, \
+                         scales are open and troopers are checking paperwork.",
                     ),
                     TripEventData {
                         key: Some("roadcheck".to_string()),

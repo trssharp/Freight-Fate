@@ -412,6 +412,11 @@ pub fn hiring_carrier(
 
 /// A home base is offerable only when some carrier hires there.
 pub fn is_offerable_home_city(world: &World, city_key: &str) -> bool {
+    // A road endpoint with no freight (Whittier, Bear Valley) has no work.
+    let key = world.resolve_city_key(city_key);
+    if world.cities.get(&key).is_some_and(|city| city.no_freight) {
+        return false;
+    }
     carrier_catalog()
         .values()
         .any(|c| c.hires_in(world, city_key))

@@ -2,7 +2,7 @@
 //! `freight_fate/states/driving_pause_states.py`).
 
 use ff_core::pyfmt::{fmt_f, fmt_grouped};
-use ff_core::sim::hos::HosClock;
+use ff_core::sim::hos::{duration_text, HosClock};
 
 use crate::app::{GameContext, Say};
 use crate::controller::{ControllerAction, ControllerButton};
@@ -20,6 +20,7 @@ use crate::states::driving_core::{
     CHAIN_SAFE_MPH, DRIVE_PHASE_PICKUP, FIELD_REPAIR_DAMAGE_PCT, MECHANIC_CALLOUT_FEE,
     MECHANIC_WAIT_MIN,
 };
+use crate::states::driving_dispatch_call::DispatchCallState;
 use crate::states::driving_menu_states::{keep_rows, push_over_drive, DriveRef};
 use crate::states::driving_rest_states::ShoulderSleepConfirmationState;
 use crate::states::learn_sounds::LearnSoundsState;
@@ -85,9 +86,7 @@ impl PauseMenuState {
         driving.prepare_warning_speech_pause(ctx);
         ctx.pause_event_speech();
         driving.pending_ambient_events.clear();
-        driving.reverse_cue_active = false;
-        driving.air_cue_active = false;
-        driving.jake_cue_key = None;
+        driving.forget_stopped_loops();
         let items = self.rows(ctx, driving);
         self.menu.items = items;
         self.menu.index = self.menu.index.min(self.menu.items.len().saturating_sub(1));
@@ -133,6 +132,15 @@ impl PauseMenuState {
             })
             .help("Units, transmission, volumes, weather, voices, update channel, and pacing."),
         ];
+        if d.trip.truck.speed_mph() <= 3.0 {
+            items.insert(
+                2,
+                MenuItem::new("Call dispatch", |s: &mut Self, ctx| {
+                    ctx.push_state(DispatchCallState::new(s.driving.clone()));
+                })
+                .help("Report a delay, hours, road conditions, truck trouble, or load trouble."),
+            );
+        }
         if d.trip.truck.chains_on {
             items.push(
                 MenuItem::new(
@@ -144,7 +152,15 @@ impl PauseMenuState {
                 )
                 .help("Chains grind apart fast on bare pavement."),
             );
-        } else if profile_of(ctx).chains_owned() && profile_of(ctx).chain_wear_pct() < 100.0 {
+        } else if profile_of(ctx).chains_owned()
+            && profile_of(ctx).chain_wear_pct() < 100.0
+            // Offered only where chains would matter: snow or ice under the
+            // truck, or a chain law posted on the run. Every pause in an
+            // October in Chicago used to offer them (owner, 2026-10-01); the
+            // help already says they ride in the side box until a pass calls.
+            && (matches!(d.trip.truck.surface.as_str(), "snow" | "ice")
+                || d.trip.chain_law_level() > 0)
+        {
             items.push(
                 MenuItem::new(install_chains_label(d), |s: &mut Self, ctx| {
                     s.install_chains(ctx)
@@ -178,8 +194,12 @@ impl PauseMenuState {
             ),
         );
         if d.emergency_shoulder_sleep_reason(ctx).is_some() {
+            let settings_index = items
+                .iter()
+                .position(|item| item.text(self, ctx) == "Settings")
+                .unwrap_or(items.len());
             items.insert(
-                5,
+                settings_index,
                 MenuItem::new("Emergency shoulder sleep", |s: &mut Self, ctx| {
                     s.emergency_shoulder_sleep(ctx)
                 })
@@ -194,48 +214,10 @@ impl PauseMenuState {
     }
 
     fn mechanic(&mut self, ctx: &mut GameContext) {
-        let done = self.driving.clone().call(self, ctx, |_s, ctx, d| {
-            let damage = d.trip.truck.damage_pct;
-            if damage <= FIELD_REPAIR_DAMAGE_PCT {
-                ctx.say(&format!(
-                    "A roadside mechanic helps once damage is past {} percent.",
-                    fmt_f(FIELD_REPAIR_DAMAGE_PCT, 0)
-                ));
-                return None;
-            }
-            if d.trip.truck.speed_mph() > 3.0 {
-                ctx.say("Come to a complete stop first.");
-                return None;
-            }
-            let cost = road_repair_cost(damage, FIELD_REPAIR_DAMAGE_PCT, MECHANIC_CALLOUT_FEE);
-            let carrier_paid = !player_pays_operating_costs(&profile_of(ctx).business_status);
-            if !carrier_paid {
-                // the rescue is never refused; money can go negative
-                profile_mut_of(ctx).spend(cost);
-            }
-            let money = profile_of(ctx).money();
-            d.trip.truck.damage_pct = FIELD_REPAIR_DAMAGE_PCT;
-            advance_rest_clock(d, ctx, MECHANIC_WAIT_MIN, None, "");
-            hos_mut_of(ctx).on_duty(MECHANIC_WAIT_MIN);
-            ctx.audio.play("ui/notify");
-            let billing = if carrier_paid {
-                "on the carrier breakdown account".to_string()
-            } else {
-                format!(
-                    "for {} dollars. You have {} dollars",
-                    fmt_grouped(cost, 0),
-                    fmt_grouped(money, 0)
-                )
-            };
-            let text = format!(
-                "A mobile mechanic patched the truck up to {} percent damage {billing}. Repair \
-                 took an hour and a half. It is {}. {}",
-                fmt_f(FIELD_REPAIR_DAMAGE_PCT, 0),
-                clock_text(d.trip.local_hour()),
-                deadline_text(d, ctx)
-            );
-            Some(text)
-        });
+        let done = self
+            .driving
+            .clone()
+            .call(self, ctx, |_s, ctx, d| perform_roadside_mechanic(d, ctx));
         // `refresh()` rebuilds these rows through the same drive the closure
         // was holding, so it has to run after the borrow is back. Called from
         // inside, the rebuild found the drive busy and left the pause menu
@@ -377,6 +359,8 @@ impl PauseMenuState {
         self.driving.read(|d| {
             d.trip.reset_facility_mentions();
             d.pending_ambient_events.clear();
+            // And the open scale still ahead, once (tester log, 2026-10-07).
+            d.note_scale_reannounce(None);
         });
         ctx.pop_state();
         ctx.say_with("Resumed.", Say::queued().review(false));
@@ -517,6 +501,47 @@ impl Menu for QuitWhileMovingConfirmationState {
 
 impl_state_for_menu!(QuitWhileMovingConfirmationState);
 
+pub fn perform_roadside_mechanic(d: &mut DrivingState, ctx: &mut GameContext) -> Option<String> {
+    let damage = d.trip.truck.damage_pct;
+    if damage <= FIELD_REPAIR_DAMAGE_PCT {
+        ctx.say(&format!(
+            "A roadside mechanic helps once damage is past {} percent.",
+            fmt_f(FIELD_REPAIR_DAMAGE_PCT, 0)
+        ));
+        return None;
+    }
+    if d.trip.truck.speed_mph() > 3.0 {
+        ctx.say("Come to a complete stop first.");
+        return None;
+    }
+    let cost = road_repair_cost(damage, FIELD_REPAIR_DAMAGE_PCT, MECHANIC_CALLOUT_FEE);
+    let carrier_paid = !player_pays_operating_costs(&profile_of(ctx).business_status);
+    if !carrier_paid {
+        profile_mut_of(ctx).spend(cost);
+    }
+    let money = profile_of(ctx).money();
+    d.trip.truck.damage_pct = FIELD_REPAIR_DAMAGE_PCT;
+    advance_rest_clock(d, ctx, MECHANIC_WAIT_MIN, None, "");
+    hos_mut_of(ctx).on_duty(MECHANIC_WAIT_MIN);
+    ctx.audio.play("ui/notify");
+    let billing = if carrier_paid {
+        "on the carrier breakdown account".to_string()
+    } else {
+        format!(
+            "for {} dollars. You have {} dollars",
+            fmt_grouped(cost, 0),
+            fmt_grouped(money, 0)
+        )
+    };
+    Some(format!(
+        "A mobile mechanic patched the truck up to {} percent damage {billing}. Repair took an \
+         hour and a half. It is {}. {}",
+        fmt_f(FIELD_REPAIR_DAMAGE_PCT, 0),
+        clock_text(d.trip.local_hour()),
+        deadline_text(d, ctx)
+    ))
+}
+
 pub fn mechanic_label(d: &DrivingState) -> String {
     let damage = d.trip.truck.damage_pct;
     if damage <= FIELD_REPAIR_DAMAGE_PCT {
@@ -550,7 +575,7 @@ pub fn trip_status_lines(d: &DrivingState, ctx: &GameContext) -> Vec<String> {
                 d.job.spoken_destination()
             ),
             d.pickup_progress_summary(ctx),
-            format!("{} hours used.", fmt_f(hours_used, 1)),
+            format!("{} used.", duration_text(hours_used)),
             format!("{}.", d.air_status_text(false)),
         ];
     }
@@ -563,9 +588,9 @@ pub fn trip_status_lines(d: &DrivingState, ctx: &GameContext) -> Vec<String> {
         ),
         d.trip.progress_summary(ctx.settings.imperial_units),
         format!(
-            "{} hours used of {}.",
-            fmt_f(hours_used, 1),
-            fmt_f(d.job.deadline_game_h, 0)
+            "{} used of {}.",
+            duration_text(hours_used),
+            duration_text(d.job.deadline_game_h)
         ),
         format!("{}.", d.air_status_text(false)),
     ]
@@ -595,9 +620,7 @@ impl Menu for PauseMenuState {
         ctx.pause_event_speech();
         self.driving.read(|d| {
             d.pending_ambient_events.clear();
-            d.reverse_cue_active = false;
-            d.air_cue_active = false;
-            d.jake_cue_key = None;
+            d.forget_stopped_loops();
         });
         let items = self.build_items(ctx);
         self.menu.items = items;

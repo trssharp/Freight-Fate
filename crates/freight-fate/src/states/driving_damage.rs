@@ -163,6 +163,14 @@ pub fn cargo_status_clause(truck: &TruckState) -> String {
     )
 }
 
+fn min_cap(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(cap), None) | (None, Some(cap)) => Some(cap),
+        (None, None) => None,
+    }
+}
+
 impl DrivingState {
     // -- cargo condition -----------------------------------------------------
 
@@ -417,7 +425,7 @@ impl DrivingState {
                     format!("Damage {damage:.0} percent. Still in limp mode, capped at {cap}.")
                 };
             }
-            ctx.audio.play("ui/notify");
+            ctx.play_event_cue(Some(category), "ui/notify", 1.0, 0.0);
         }
         ctx.say_event_with(message, SayEvent::new().category(category));
     }
@@ -551,10 +559,11 @@ impl DrivingState {
     }
 
     pub fn update_damage_cap(&mut self, dt: f64) {
+        let limiter = (self.trip.state_at(None) == BC_STATE_NAME).then_some(BC_LIMITER_MPH);
         let target = self.damage_cap_target();
         let Some(target) = target.filter(|_| !self.limp_cap_suspended()) else {
             self.limp_cap_mph = None;
-            self.trip.truck.speed_cap_mph = None;
+            self.trip.truck.speed_cap_mph = limiter;
             return;
         };
         self.limp_cap_mph = Some(match self.limp_cap_mph {
@@ -564,7 +573,7 @@ impl DrivingState {
             None => target.max(self.trip.truck.speed_mph()),
             Some(cap) => target.max(cap - LIMP_CAP_RAMP_MPH_PER_S * dt),
         });
-        self.trip.truck.speed_cap_mph = self.limp_cap_mph;
+        self.trip.truck.speed_cap_mph = min_cap(self.limp_cap_mph, limiter);
     }
 
     /// Say once per engagement that limp mode, not the grade, owns the target.
@@ -573,9 +582,15 @@ impl DrivingState {
     /// set speed is unreachable for a reason the driver cannot see, so name it
     /// and name what cruise is holding instead.
     pub fn announce_limp_cruise_cap(&mut self, ctx: &mut GameContext) {
+        let Some(limp_cap) = self.limp_cap_mph else {
+            return;
+        };
         let (Some(cap), Some(target)) = (self.trip.truck.speed_cap_mph, self.cruise_mph) else {
             return;
         };
+        if cap + 1e-6 < limp_cap {
+            return;
+        }
         if self.limp_cruise_said {
             return;
         }
@@ -597,6 +612,28 @@ impl DrivingState {
         // easing line -- an assist changing what the truck does is a
         // consequence, not colour (automation-handoff sweep, 2026-08-20, the
         // deferred 2026-08-15 audit).
+        ctx.say_event_with(
+            message,
+            SayEvent::queued()
+                .priority(EventPriority::Route)
+                .category(SpeechCategory::Status),
+        );
+    }
+
+    pub fn announce_bc_limiter(&mut self, ctx: &mut GameContext) {
+        if self.bc_limiter_said
+            || self.trip.state_at(None) != BC_STATE_NAME
+            || self.limp_cap_mph.is_some()
+            || !self.trip.truck.speed_governed()
+        {
+            return;
+        }
+        self.bc_limiter_said = true;
+        let message = if self.terse_speech(ctx) {
+            "Limiter, 105 kilometres an hour."
+        } else {
+            "Speed limiter: British Columbia caps heavy trucks at 105 kilometres an hour."
+        };
         ctx.say_event_with(
             message,
             SayEvent::queued()
@@ -909,15 +946,10 @@ impl DrivingState {
             .iter()
             .min_by(|a, b| damage_of(ctx, a).total_cmp(&damage_of(ctx, b)))
             .expect("a non-empty candidate list");
-        let cargo_kg = self.trip.truck.cargo_kg;
-        let trailer_attached = self.trip.truck.trailer_attached;
-        let automatic = self.trip.truck.transmission.automatic;
-        let odometer_mi = self.trip.truck.odometer_mi;
         {
             // The grounded tractor keeps its damage.
-            let old = self.trip.truck.clone();
             let p = profile_mut_of(ctx);
-            p.store_truck_condition(&old);
+            p.store_truck_condition(&self.trip.truck);
             p.truck = pick.to_string();
             if p.truck_conditions.get(pick).is_none() {
                 p.provision_truck_condition(pick, None);
@@ -925,11 +957,19 @@ impl DrivingState {
             }
         }
         let specs = profile_of(ctx).truck_specs();
-        self.trip.truck = TruckState::new(specs);
-        self.trip.truck.cargo_kg = cargo_kg;
-        self.trip.truck.trailer_attached = trailer_attached;
-        self.trip.truck.transmission.automatic = automatic;
-        self.trip.truck.odometer_mi = odometer_mi;
+        let old = std::mem::replace(&mut self.trip.truck, TruckState::new(specs));
+        // The trailer, its load and what the run has done to it come along:
+        // a load wrecked or scrapped before the swap is still wrecked at the
+        // dock, and a tank load still surges.
+        let truck = &mut self.trip.truck;
+        truck.cargo_kg = old.cargo_kg;
+        truck.trailer_attached = old.trailer_attached;
+        truck.transmission.automatic = old.transmission.automatic;
+        truck.odometer_mi = old.odometer_mi;
+        truck.cargo_damage_pct = old.cargo_damage_pct;
+        truck.cargo_fragility = old.cargo_fragility;
+        truck.liquid = old.liquid;
+        truck.preventable_damage_pct = old.preventable_damage_pct;
         profile_of(ctx).load_truck_condition(&mut self.trip.truck);
         let damage_pct = self.trip.truck.damage_pct;
         self.trip.truck.recover_from_breakdown(damage_pct);

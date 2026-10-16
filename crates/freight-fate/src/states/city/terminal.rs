@@ -9,7 +9,9 @@ use ff_core::models::career_training::{
     is_company_training_profile, training_guidance, TrainingStage,
 };
 use ff_core::models::carrier_fleet::fleet_assignment_text;
-use ff_core::models::economy::{pay_advance_grant, pay_advance_unavailable_reason};
+use ff_core::models::economy::{
+    cad_per_litre, canada_diesel_usd_per_gal, pay_advance_grant, pay_advance_unavailable_reason,
+};
 use ff_core::models::enforcement;
 use ff_core::models::solvency;
 use ff_core::music::{select_menu_music_sequence, MenuMusicProfile};
@@ -32,9 +34,9 @@ use crate::states::city::weather::time_and_weather_lines;
 use crate::states::city::{
     base_menu_enter, board_candidates, first_day_guidance_active, first_day_orientation_lines,
     open_freight_market, parked_at, profile, profile_mut, record_city_duty,
-    terminal_objective_clause, ApplyToCarrierState, BobtailDestState, BusinessStatusState,
-    EndorsementCourseState, GarageState, PayDebtState, TruckShopState, BACKUP_RESULT_WAIT_S,
-    BOBTAIL_RANGE_MI, DRIVING_SCHOOL_ENABLED,
+    terminal_objective_clause, warm_dispatch_board, ApplyToCarrierState, BobtailDestState,
+    BusinessStatusState, EndorsementCourseState, GarageState, PayDebtState, TruckShopState,
+    BACKUP_RESULT_WAIT_S, BOBTAIL_RANGE_MI, DRIVING_SCHOOL_ENABLED,
 };
 use crate::states::driving_school::DrivingSchoolState;
 use crate::states::logbook::LogbookState;
@@ -70,7 +72,8 @@ pub fn no_truck_location_line(city_name: &str, city_state: &str) -> String {
     }
 }
 
-fn local_zone(ctx: &GameContext) -> TimeZone {
+/// The wall-clock zone of the city the driver is standing in.
+pub(crate) fn local_zone(ctx: &GameContext) -> TimeZone {
     ctx.world
         .city(&profile(ctx).current_city)
         .map(|city| city_zone(city))
@@ -170,17 +173,24 @@ impl CityMenuState {
     }
 
     fn garage_label(ctx: &GameContext) -> String {
-        let region = ctx
+        let (region, state_code) = ctx
             .world
             .city(&profile(ctx).current_city)
-            .map(|c| c.region.clone())
+            .map(|c| (c.region.clone(), c.state_code.clone()))
             .unwrap_or_default();
-        let price = ctx.economy.fuel_price(&region);
+        let price = ctx.economy.fuel_price_at(&region, &state_code);
         let live = if ctx.economy.live_national_price().is_some() {
             ", this week's price"
         } else {
             ""
         };
+        if canada_diesel_usd_per_gal(&state_code).is_some() {
+            return format!(
+                "Garage: fuel {} per gallon, {} Canadian dollars a litre{live}",
+                fmt_f(price, 2),
+                fmt_f(cad_per_litre(price), 2)
+            );
+        }
         format!("Garage: fuel {} per gallon{live}", fmt_f(price, 2))
     }
 
@@ -687,6 +697,7 @@ impl Menu for CityMenuState {
         // "loading" (the provider shares observations per station).
         let city = profile(ctx).current_city.clone();
         ctx.warm_real_weather(&city);
+        warm_dispatch_board(ctx.world, &city);
         base_menu_enter(self, ctx);
     }
 
@@ -796,7 +807,9 @@ impl Menu for CityMenuState {
                 format!(" {record}")
             };
             // With no carrier there is no truck to be parked: say where the
-            // driver is and that the seat and truck are gone.
+            // driver is and that the seat and truck are gone. That wins over
+            // an impound lot too -- a company driver fired after a felony tow
+            // has no truck in the lot to be parked with.
             let location = if p.is_unassigned_company_driver() {
                 format!(
                     "{} {} with no carrier and no truck until a carrier assigns you one.",
@@ -804,10 +817,24 @@ impl Menu for CityMenuState {
                     crate::states::city::py_capitalize(business),
                 )
             } else {
+                // An impound lot is in the city, not a "service area" (which
+                // reads as a turnpike travel plaza): "Parked at an impound lot
+                // in Buffalo, New York."
+                let where_parked = if parked.kind == ff_core::models::home_base::ParkedKind::Impound
+                {
+                    format!(
+                        " at {}",
+                        ff_core::models::home_base::impound_lot_text(world, &p.current_city)
+                    )
+                } else {
+                    format!(
+                        "{} in {}, {city_state}",
+                        parked.at_clause(),
+                        ff_core::models::home_base::city_service_area(&city_name)
+                    )
+                };
                 format!(
-                    "Parked{} in {}, {city_state}. {} with",
-                    parked.at_clause(),
-                    ff_core::models::home_base::city_service_area(&city_name),
+                    "Parked{where_parked}. {} with",
                     crate::states::city::py_capitalize(business),
                 )
             };
@@ -856,12 +883,15 @@ impl Menu for CityMenuState {
                 ),
             ]
         };
-        items.push(
-            MenuItem::new("Truck dealer", |s: &mut Self, ctx| s.truck_dealer(ctx)).help(
-                "Tractors at the local dealer. Owner-operators buy and switch here, company \
-                 drivers can look.",
-            ),
-        );
+        // Owner-operator business stays off a company driver's menus (owner,
+        // 2026-09-28): the carrier assigns the tractor, and the buy-in lives
+        // under Business status.
+        if is_owner_operator(status) {
+            items.push(
+                MenuItem::new("Truck dealer", |s: &mut Self, ctx| s.truck_dealer(ctx))
+                    .help("Tractors at the local dealer. Buy a truck or switch between yours."),
+            );
+        }
         // Owner-operators only (owner ruling, 2026-08-20): a company
         // driver's tractor goes where dispatch sends it -- repositioning
         // on a whim is the owner's privilege because it is the owner's

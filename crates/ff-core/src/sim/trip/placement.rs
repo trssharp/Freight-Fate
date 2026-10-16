@@ -5,6 +5,8 @@
 
 use crate::data::billboards::{corridor_signs, random_billboard, regional_genre_signs, SignAnchor};
 use crate::data::curves::{bend_bank, route_curves, superelevation_at, RouteCurve};
+use crate::data::national_network::city_key_state_country;
+use crate::data::world_models::{Leg, RouteCheckpoint};
 use crate::pyfmt::{fmt_f, py_str_float};
 use crate::pyrandom::PyRandom;
 use crate::sim::road_event_pacing::CHATTER_GAP_REAL_S;
@@ -153,7 +155,14 @@ impl Trip {
     }
 
     pub fn build_navigation_cues(&self) -> Vec<NavigationCue> {
+        self.build_navigation_cues_and_border_booths().0
+    }
+
+    pub(crate) fn build_navigation_cues_and_border_booths(
+        &self,
+    ) -> (Vec<NavigationCue>, Vec<BorderBooth>) {
         let mut cues: Vec<NavigationCue> = Vec::new();
+        let mut border_booths: Vec<BorderBooth> = Vec::new();
         let facility_route = self.is_facility_approach_route();
         let mainline_cities: Vec<String> = self
             .route
@@ -269,6 +278,12 @@ impl Trip {
                 ));
             }
             for checkpoint in leg.checkpoints() {
+                if let Some(booth) =
+                    self.inbound_border_booth_for_checkpoint(i, leg, start, forward, checkpoint)
+                {
+                    border_booths.push(booth);
+                    continue;
+                }
                 let offset = stop_offset_for_direction(checkpoint.at_mi, leg.miles, forward);
                 let place = &checkpoint.name;
                 let state = if checkpoint.state.is_empty() {
@@ -290,6 +305,10 @@ impl Trip {
                 ));
             }
             for toll in leg.toll_events() {
+                // A directional toll is announced only where it is charged.
+                if !toll.applies_to_direction(forward) {
+                    continue;
+                }
                 let offset = stop_offset_for_direction(toll.at_mi, leg.miles, forward);
                 // A sentence of its own after the point's name, so it starts
                 // like one: "...ticket entry. Estimated toll 18 dollars..."
@@ -371,7 +390,69 @@ impl Trip {
             }
         }
         cues.sort_by(|a, b| a.at_mi.partial_cmp(&b.at_mi).expect("finite mileposts"));
-        cues
+        (cues, border_booths)
+    }
+
+    fn inbound_border_booth_for_checkpoint(
+        &self,
+        leg_index: usize,
+        leg: &Leg,
+        start_mi: f64,
+        forward: bool,
+        checkpoint: &RouteCheckpoint,
+    ) -> Option<BorderBooth> {
+        if checkpoint.checkpoint_type != "border" {
+            return None;
+        }
+        let from_key = self.route.cities.get(leg_index)?;
+        let toward_key = self.route.cities.get(leg_index + 1)?;
+        let (_, from_country) = city_key_state_country(from_key)?;
+        let (_, entering_country) = city_key_state_country(toward_key)?;
+        if from_country.eq_ignore_ascii_case(entering_country) {
+            return None;
+        }
+        let (entering_country, agency) = match entering_country.to_ascii_uppercase().as_str() {
+            "US" => ("US", "U.S. Customs and Border Protection"),
+            "CA" => ("CA", "Canada Border Services Agency"),
+            _ => return None,
+        };
+        let has_international_crossing = leg.state_crossings().iter().any(|crossing| {
+            let (into_state, from_state) = if forward {
+                (crossing.state.as_str(), crossing.from_state.as_str())
+            } else {
+                (crossing.from_state.as_str(), crossing.state.as_str())
+            };
+            checkpoint.state.eq_ignore_ascii_case(into_state)
+                && self
+                    .country_for_state(from_state)
+                    .is_some_and(|country| country.eq_ignore_ascii_case(from_country))
+                && self
+                    .country_for_state(into_state)
+                    .is_some_and(|country| country.eq_ignore_ascii_case(entering_country))
+        });
+        if !has_international_crossing {
+            return None;
+        }
+        let offset = stop_offset_for_direction(checkpoint.at_mi, leg.miles, forward);
+        Some(BorderBooth {
+            key: format!(
+                "border:{leg_index}:{}:{}",
+                py_str_float(checkpoint.at_mi),
+                checkpoint.name
+            ),
+            name: checkpoint.name.clone(),
+            at_mi: start_mi + offset,
+            entering_country: entering_country.to_string(),
+            agency: agency.to_string(),
+        })
+    }
+
+    fn country_for_state(&self, state: &str) -> Option<&str> {
+        self.world
+            .cities
+            .values()
+            .find(|city| city.state.eq_ignore_ascii_case(state))
+            .map(|city| city.country.as_str())
     }
 
     /// Schedule the baked roadside landmarks along this route,
@@ -392,16 +473,31 @@ impl Trip {
         {
             let forward = self.route.cities[i] == leg.a;
             for landmark in leg.landmarks() {
+                if !landmark.applies_to_direction(forward) {
+                    continue;
+                }
                 let offset = stop_offset_for_direction(landmark.at_mi, leg.miles, forward);
+                let at_mi = start + offset;
+                if landmark.category == "billboard_sign"
+                    && self.commercial_billboards_banned_at(at_mi)
+                {
+                    continue;
+                }
                 let mut callout = RoadsideCallout::new(
                     &format!(
                         "landmark:{i}:{}:{}",
                         py_str_float(landmark.at_mi),
                         landmark.name
                     ),
-                    start + offset,
+                    at_mi,
                     &landmark.category,
-                    &format!("{}.", landmark.spoken),
+                    // Landmark text is a bare name ("Lake Texoma") or, for a
+                    // billboard, whole sentences already ending in one.
+                    &if landmark.spoken.ends_with(['.', '!', '?']) {
+                        landmark.spoken.clone()
+                    } else {
+                        format!("{}.", landmark.spoken)
+                    },
                 );
                 if landmark.category == "village" {
                     if landmark.off_mi > VILLAGE_PASS_OFF_MI {
@@ -420,9 +516,10 @@ impl Trip {
         let mut spaced = Self::thin_villages(villages);
         callouts.sort_by(|a, b| a.at_mi.partial_cmp(&b.at_mi).expect("finite mileposts"));
         for callout in callouts {
-            if spaced
-                .iter()
-                .any(|kept| (callout.at_mi - kept.at_mi).abs() < LANDMARK_MIN_SPACING_MI)
+            if callout.category != "billboard_sign"
+                && spaced
+                    .iter()
+                    .any(|kept| (callout.at_mi - kept.at_mi).abs() < LANDMARK_MIN_SPACING_MI)
             {
                 continue;
             }
@@ -576,17 +673,31 @@ impl Trip {
     }
 
     /// Maine, Vermont, Alaska, and Hawaii ban commercial billboards (Scenic
-    /// America / FHWA). Pool jokes and corridor ads stay silent there.
+    /// America / FHWA). Scenic-byway spans are stored in each leg's own
+    /// direction and are mirrored for reverse travel.
     fn commercial_billboards_banned_at(&self, at: f64) -> bool {
-        matches!(
+        if matches!(
             self.state_code_at(at).as_deref(),
             Some("ME") | Some("VT") | Some("AK") | Some("HI")
-        )
+        ) {
+            return true;
+        }
+        let (leg_index, leg_start) = self.leg_at_mile(at);
+        let leg = &self.route.legs[leg_index];
+        let local_mi = at - leg_start;
+        let local_mi = if self.route.cities[leg_index] == leg.a {
+            local_mi
+        } else {
+            leg.miles - local_mi
+        };
+        leg.billboard_bans()
+            .iter()
+            .any(|ban| ban.from_mi <= local_mi && local_mi < ban.to_mi)
     }
 
     /// The two-letter state code at a trip milepost, or None where the bake is
     /// silent and the route names no city we can fall back on.
-    fn state_code_at(&self, at: f64) -> Option<String> {
+    pub(crate) fn state_code_at(&self, at: f64) -> Option<String> {
         let name = self.state_at(Some(at));
         if !name.is_empty() {
             if let Some(code) = self.state_codes.get(&name) {

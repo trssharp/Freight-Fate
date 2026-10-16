@@ -8,6 +8,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use ff_core::models::border_freight::yard_drop_line;
 use ff_core::models::business::{display_rank_for, uses_company_career_ranks_for, SettlementTerms};
 use ff_core::models::career::{standing_xp_rate, xp_rate_settlement_clause};
 use ff_core::models::career_ladder::relabel_level_up_announcements;
@@ -126,6 +127,11 @@ impl ArrivalState {
     /// `enter()`, run while the drive is still in hand -- see `drive_ref`.
     /// Nothing here reads the drive; the settlement already captured it.
     pub fn enter_over_drive(&mut self, ctx: &mut GameContext) {
+        // The settlement just moved the driver to a new city: start its
+        // dispatch board's route work now, while the summary is read, so
+        // the board opens without the wait (2026-09-28).
+        let city = profile_of(ctx).current_city.clone();
+        crate::states::city::warm_dispatch_board(ctx.world, &city);
         Menu::enter(self, ctx);
     }
 
@@ -493,7 +499,8 @@ impl ArrivalState {
         // not a second settlement, so they never fold into career earnings.
         //
         // The manual-spec differential: trained out of the automatic-only
-        // restriction, and actually rowing the gears on this run. Added
+        // restriction, and actually rowing the gears on this run -- the
+        // whole run, not just the gate (`drove_automatic`). Added
         // before settled_pay is taken, so the cash and the career's booked
         // earnings agree -- unbooked cash reads as an edited save to cloud
         // upload screening.
@@ -502,6 +509,7 @@ impl ArrivalState {
             .endorsements()
             .contains("manual_transmission")
             && !d.trip.truck.transmission.automatic
+            && !d.drove_automatic
         {
             let manual_bonus = round_py_n(net_pay * MANUAL_SPEC_DIFFERENTIAL, 2).max(0.0);
             if manual_bonus >= 1.0 {
@@ -720,6 +728,11 @@ impl ArrivalState {
         } else {
             String::new()
         };
+        // A southbound load dropped at a border transfer yard says who
+        // takes it from here.
+        let yard_drop = yard_drop_line(&job)
+            .map(|line| format!(" {line}"))
+            .unwrap_or_default();
         let accessorial_clause = if is_owner_operator(&business_status) {
             "These came off this settlement."
         } else {
@@ -728,7 +741,7 @@ impl ArrivalState {
         self.summary_parts.insert(
             0,
             format!(
-                "Delivered {} tons of {} to {} in {} hours, {}.{receiver_service_clause} It is {}. {} {} dollars. \
+                "Delivered {} tons of {} to {} in {} hours, {}.{yard_drop}{receiver_service_clause} It is {}. {} {} dollars. \
                  Carrier-paid or reimbursed charges {} dollars: tolls {}, accessorials {}. \
                  {accessorial_clause} \
                  Business status: {}. Business costs {} dollars. Fines carried over {} dollars. \
@@ -962,6 +975,9 @@ impl ArrivalState {
                     fmt_f(receiver_service_hours, 1)
                 ),
             );
+        }
+        if let Some(line) = yard_drop_line(&job) {
+            lines.insert(1, line);
         }
         lines.extend(business_cost_lines);
         lines.extend(charge_lines);

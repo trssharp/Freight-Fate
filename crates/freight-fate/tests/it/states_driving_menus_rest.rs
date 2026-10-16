@@ -9,7 +9,10 @@
 //! `tests/test_trip_resume.py`.
 
 use ff_core::models::business::{COMPANY_DRIVER, LEASED_OWNER_OPERATOR};
+use ff_core::models::economy::cad_per_litre;
 use ff_core::models::economy::{PAY_ADVANCE_ELIGIBLE_BELOW, PAY_ADVANCE_LIMIT};
+use ff_core::pyfmt::{fmt_f, fmt_grouped};
+use ff_core::sim::enforcement_posts::{EnforcementPost, KIND_FIXED_SCALE};
 use ff_core::sim::hos;
 use ff_core::sim::trip_models::RoadStop;
 use freight_fate::controller::ControllerButton;
@@ -519,13 +522,8 @@ fn test_the_loyalty_row_opens_the_rewards_desk() {
     activate(&mut state, &mut app.ctx, "Loyalty program");
     assert!(top_is::<LoyaltyRewardsState>(&app));
     let desk_rows = with_top_ctx::<LoyaltyRewardsState, _>(&mut app, build_labels);
-    assert_eq!(
-        desk_rows,
-        vec![
-            "No rewards available, more points needed",
-            "Back to truck stop",
-        ]
-    );
+    // A Love's sells no shower, so there is nothing here to need points for.
+    assert_eq!(desk_rows, vec!["Back to truck stop"]);
 }
 
 // -- the pay advance ------------------------------------------------------------------------
@@ -825,9 +823,32 @@ fn test_calling_the_mechanic_leaves_the_pause_menu_with_its_rows() {
 }
 
 #[test]
+fn test_chains_are_not_offered_on_a_bare_road_with_no_chain_law() {
+    // Owner, 2026-10-01: an October run into Chicago offered "Install snow
+    // chains" at every pause. They ride in the side box until the road or the
+    // law calls for them.
+    let mut app = TestApp::new();
+    let drive = a_drive(&mut app);
+    {
+        let profile = app.ctx.profile.as_mut().expect("a career");
+        profile.set_chains_owned(true);
+    }
+    assert_eq!(with_drive(&drive, |d| d.trip.chain_law_level()), 0);
+    let mut state = PauseMenuState::with_drive(DriveRef::of(&drive));
+    Menu::enter(&mut state, &mut app.ctx);
+    let rows = labels(&state, &app.ctx);
+    assert!(
+        !rows.iter().any(|row| row.contains("snow chains")),
+        "{rows:?}"
+    );
+}
+
+#[test]
 fn test_hanging_chains_leaves_the_pause_menu_with_its_rows() {
     let mut app = TestApp::new();
     let drive = a_drive(&mut app);
+    // Snow under the truck: the only place the row is offered.
+    with_drive(&drive, |d| d.trip.truck.surface = "snow".to_string());
     {
         let profile = app.ctx.profile.as_mut().expect("a career");
         profile.set_chains_owned(true);
@@ -937,6 +958,74 @@ fn a_scale_stop(at_mi: f64) -> RoadStop {
     stop
 }
 
+/// Open today: a check-in at a closed scale only says it is closed.
+fn open_the_scale(drive: &freight_fate::app::SharedState, stop: &RoadStop) {
+    with_drive(drive, |d| {
+        let mut post = EnforcementPost::new(stop.at_mi, KIND_FIXED_SCALE);
+        post.anchor = stop.key();
+        d.trip.posts = vec![post];
+    });
+}
+
+/// Back to the road at an open scale runs the check-in first (owner ruling,
+/// 2026-09-28): leaving used to skip the inspection.
+#[test]
+fn test_leaving_an_open_scale_runs_the_check_in_first() {
+    let mut app = TestApp::new();
+    let drive = a_wear_drive(&mut app, COMPANY_DRIVER);
+    let at = with_drive(&drive, |d| d.trip.position_mi);
+    let stop = a_scale_stop(at);
+    with_drive(&drive, |d| {
+        let mut post = EnforcementPost::new(at, KIND_FIXED_SCALE);
+        post.anchor = stop.key();
+        d.trip.posts = vec![post];
+    });
+    let mut state = rest_stop_at(&mut app, &drive, stop.clone());
+    build_labels(&mut state, &mut app.ctx);
+    app.clear_speech();
+    state.go_back(&mut app.ctx);
+    let said = app.main_lines().join(" ");
+    assert!(said.contains("Inspection check-in complete"), "{said}");
+    assert!(said.contains("Back on the road"), "{said}");
+    assert!(with_drive(&drive, |d| d.stop_visit(&stop).inspected));
+}
+
+/// A closed scale has no lane to pull into: Back only leaves.
+#[test]
+fn test_leaving_a_closed_scale_only_leaves() {
+    let mut app = TestApp::new();
+    let drive = a_wear_drive(&mut app, COMPANY_DRIVER);
+    let at = with_drive(&drive, |d| d.trip.position_mi);
+    let stop = a_scale_stop(at);
+    let before = with_drive(&drive, |d| d.trip.game_minutes);
+    let mut state = rest_stop_at(&mut app, &drive, stop.clone());
+    build_labels(&mut state, &mut app.ctx);
+    app.clear_speech();
+    state.go_back(&mut app.ctx);
+    let said = app.main_lines().join(" ");
+    assert!(!said.contains("Inspection check-in complete"), "{said}");
+    assert!(said.contains("Back on the road"), "{said}");
+    assert!(!with_drive(&drive, |d| d.stop_visit(&stop).inspected));
+    assert_eq!(with_drive(&drive, |d| d.trip.game_minutes), before);
+}
+
+/// The engine is whatever it already was: a running one is not "started".
+#[test]
+fn test_leaving_a_stop_with_the_engine_running_does_not_ask_to_start_it() {
+    let mut app = TestApp::new();
+    let drive = a_wear_drive(&mut app, COMPANY_DRIVER);
+    with_drive(&drive, |d| {
+        d.trip.truck.start_engine();
+    });
+    let at = with_drive(&drive, |d| d.trip.position_mi);
+    let mut state = rest_stop_at(&mut app, &drive, travel_center("Love's Travel Stop", at));
+    app.clear_speech();
+    state.go_back(&mut app.ctx);
+    let said = app.main_lines().join(" ");
+    assert!(said.contains("Back on the road"), "{said}");
+    assert!(!said.contains("starts the engine"), "{said}");
+}
+
 #[test]
 fn test_scale_wave_through_is_two_minutes_not_fifteen() {
     assert_eq!(WAVE_THROUGH_MIN, 2.0);
@@ -945,6 +1034,7 @@ fn test_scale_wave_through_is_two_minutes_not_fifteen() {
     let drive = a_wear_drive(&mut app, COMPANY_DRIVER);
     let at = with_drive(&drive, |d| d.trip.position_mi);
     let stop = a_scale_stop(at);
+    open_the_scale(&drive, &stop);
     let selected = drive_and_ctx(&drive, &mut app, |d, ctx| {
         d.scale_selects_driver(ctx, &stop)
     });
@@ -976,6 +1066,7 @@ fn test_scale_check_in_is_removed_after_one_completed_inspection() {
     let drive = a_wear_drive(&mut app, COMPANY_DRIVER);
     let at = with_drive(&drive, |d| d.trip.position_mi);
     let stop = a_scale_stop(at);
+    open_the_scale(&drive, &stop);
     let mut state = rest_stop_at(&mut app, &drive, stop);
 
     activate(&mut state, &mut app.ctx, "Check in at inspection station");
@@ -1001,6 +1092,7 @@ fn test_a_targeted_record_takes_the_inspection_lane() {
     with_drive(&drive, |d| d.trip.truck.damage_pct = 70.0);
     let at = with_drive(&drive, |d| d.trip.position_mi);
     let stop = a_scale_stop(at);
+    open_the_scale(&drive, &stop);
     let before = with_drive(&drive, |d| d.trip.game_minutes);
     let mut state = rest_stop_at(&mut app, &drive, stop);
     app.clear_speech();
@@ -1045,6 +1137,7 @@ fn test_bald_tires_in_the_lane_are_out_of_service_until_replaced() {
     let money_before = app.ctx.profile.as_ref().unwrap().money();
     let at = with_drive(&drive, |d| d.trip.position_mi);
     let stop = a_scale_stop(at);
+    open_the_scale(&drive, &stop);
     let mut state = rest_stop_at(&mut app, &drive, stop);
     app.clear_speech();
     activate(&mut state, &mut app.ctx, "Check in at inspection station");
@@ -1094,6 +1187,7 @@ fn test_a_clean_level_one_earns_a_decal_that_waves_the_next_scale_through() {
 
     let at = with_drive(&drive, |d| d.trip.position_mi);
     let stop = a_scale_stop(at);
+    open_the_scale(&drive, &stop);
     let before = with_drive(&drive, |d| d.trip.game_minutes);
     let mut state = rest_stop_at(&mut app, &drive, stop);
     app.clear_speech();
@@ -1193,6 +1287,104 @@ fn test_refuel_is_allowed_once_the_tractor_engine_is_off() {
         "{:?}",
         app.main_lines()
     );
+}
+
+#[test]
+fn test_canadian_pump_label_and_charge_use_the_local_diesel_price() {
+    let mut app = TestApp::new();
+    let drive = a_drive_between(&mut app, "Prince George", "Dawson Creek", "BC Fuel");
+    {
+        let profile = app.ctx.profile.as_mut().expect("a career");
+        profile.business_status = LEASED_OWNER_OPERATOR.to_string();
+        profile.owned_trucks = vec!["rig".to_string()];
+        profile.set_money(50_000.0);
+    }
+    let (region, jurisdiction, need) = with_drive(&drive, |d| {
+        d.trip.truck.fuel_gal = d.trip.truck.specs.fuel_tank_gal - 10.0;
+        d.trip.truck.engine_on = false;
+        (
+            d.trip.current_region().to_string(),
+            d.trip.state_at(None),
+            d.trip.truck.specs.fuel_tank_gal - d.trip.truck.fuel_gal,
+        )
+    });
+    assert_eq!(jurisdiction, "British Columbia");
+    let cost = app.ctx.economy.fuel_cost_at(&region, &jurisdiction, need) + 35.0;
+    let price = app.ctx.economy.fuel_price_at(&region, &jurisdiction);
+    let before = app.ctx.profile.as_ref().expect("a career").money();
+    let at = with_drive(&drive, |d| d.trip.position_mi);
+    let mut state = RestStopState::with_drive(
+        DriveRef::of(&drive),
+        travel_center("BC Fuel Stop", at),
+        false,
+    );
+
+    let label = build_labels(&mut state, &mut app.ctx)
+        .into_iter()
+        .find(|line| line.starts_with("Refuel "))
+        .expect("the pump row");
+    assert!(
+        label.starts_with(&format!(
+            "Refuel 10 gallons for {} dollars. Diesel here is ",
+            fmt_grouped(cost, 0)
+        )),
+        "{label}"
+    );
+    assert!(
+        label.contains(&format!(
+            "{} Canadian dollars a litre.",
+            fmt_f(cad_per_litre(price), 2)
+        )),
+        "{label}"
+    );
+
+    activate(&mut state, &mut app.ctx, "Refuel");
+    let after = app.ctx.profile.as_ref().expect("a career").money();
+    assert!((before - after - cost).abs() < 1e-6);
+    with_drive(&drive, |d| {
+        assert_eq!(d.trip.truck.fuel_gal, d.trip.truck.specs.fuel_tank_gal);
+    });
+
+    drop(app);
+    let mut us_app = TestApp::new();
+    let us_drive = a_drive_between(&mut us_app, "Seattle", "Spokane", "WA Fuel");
+    {
+        let profile = us_app.ctx.profile.as_mut().expect("a career");
+        profile.business_status = LEASED_OWNER_OPERATOR.to_string();
+        profile.owned_trucks = vec!["rig".to_string()];
+    }
+    let (us_region, us_jurisdiction, us_at) = with_drive(&us_drive, |d| {
+        d.trip.truck.fuel_gal = d.trip.truck.specs.fuel_tank_gal - 10.0;
+        (
+            d.trip.current_region().to_string(),
+            d.trip.state_at(None),
+            d.trip.position_mi,
+        )
+    });
+    assert_eq!(us_jurisdiction, "Washington");
+    let us_cost = us_app
+        .ctx
+        .economy
+        .fuel_cost_at(&us_region, &us_jurisdiction, 10.0)
+        + 35.0;
+    let mut us_state = RestStopState::with_drive(
+        DriveRef::of(&us_drive),
+        travel_center("WA Fuel Stop", us_at),
+        false,
+    );
+    let us_label = build_labels(&mut us_state, &mut us_app.ctx)
+        .into_iter()
+        .find(|line| line.starts_with("Refuel "))
+        .expect("the Washington pump row");
+    assert!(
+        us_label.starts_with(&format!(
+            "Refuel 10 gallons for {} dollars. Full tank: ",
+            fmt_grouped(us_cost, 0)
+        )),
+        "{us_label}"
+    );
+    assert!(us_label.ends_with("pounds under the gross-weight limit"));
+    assert!(!us_label.contains("Canadian"));
 }
 
 #[test]
@@ -1305,4 +1497,26 @@ fn test_a_full_lot_refuses_fuel_while_the_engine_is_running() {
     activate(&mut state, &mut app.ctx, "Refuel");
     assert_eq!(with_drive(&drive, |d| d.trip.truck.fuel_gal), before);
     assert_eq!(last(&app), "Shut the engine off before you fuel.");
+}
+
+#[test]
+fn test_a_break_burns_idle_fuel_only_with_the_engine_running() {
+    for engine_on in [true, false] {
+        let mut app = TestApp::new();
+        let drive = a_wear_drive(&mut app, LEASED_OWNER_OPERATOR);
+        let at = with_drive(&drive, |d| {
+            d.trip.truck.engine_on = engine_on;
+            d.trip.truck.fuel_gal = 100.0;
+            d.trip.position_mi
+        });
+        let mut state = rest_stop_at(&mut app, &drive, travel_center("Love's Travel Stop", at));
+        activate(&mut state, &mut app.ctx, "Take a 30-minute break");
+        let fuel = with_drive(&drive, |d| d.trip.truck.fuel_gal);
+        if engine_on {
+            // About 0.8 gallons an hour at idle.
+            assert!(fuel < 99.8 && fuel > 99.0, "{fuel}");
+        } else {
+            assert_eq!(fuel, 100.0);
+        }
+    }
 }

@@ -1,4 +1,5 @@
 //! Career, economy and profile models (port of `freight_fate/models/`).
+pub mod border_freight;
 pub mod business;
 pub mod business_constants;
 pub mod career;
@@ -14,6 +15,7 @@ pub mod dispatch_policy;
 pub mod doubles;
 pub mod economy;
 pub mod enforcement;
+pub mod exchange;
 pub mod home_base;
 pub mod jobs;
 pub mod loyalty;

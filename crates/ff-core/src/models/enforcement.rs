@@ -49,7 +49,7 @@ pub use record::{
 use crate::models::business_constants::is_owner_operator;
 use crate::models::solvency::{debt_owed, debt_rung, money_text};
 use crate::pyfmt::{round_py_int, round_py_n};
-use crate::sim::season::{date_text, weekday_name};
+use crate::sim::season::{date_text, weekday_name, CAREER_START_DAY_OF_YEAR, DAYS_PER_YEAR};
 
 pub const HOURS_PER_DAY: f64 = 24.0;
 
@@ -192,6 +192,23 @@ pub const UNSAFE_DAMAGE_FINE: f64 = 2300.0;
 /// and California and New York both pass 1,000 on a first offense; the federal
 /// exposure standing behind them reaches 10,000.
 pub const WEIGH_STATION_BYPASS_FINE: f64 = 1800.0;
+/// First US inbound-reporting violation under 19 U.S.C. 1436(b).
+/// Source: https://www.law.cornell.edu/uscode/text/19/1436.
+pub const BORDER_US_FIRST_FINE: f64 = 5_000.0;
+/// Later US inbound-reporting violations under 19 U.S.C. 1436(b).
+/// Source: https://www.law.cornell.edu/uscode/text/19/1436.
+pub const BORDER_US_REPEAT_FINE: f64 = 10_000.0;
+/// Bank of Canada FXUSDCAD 2025 average, 249 daily Valet API observations.
+pub const CAD_PER_USD: f64 = 1.3978;
+/// First CBSA AMPS C023 penalty, CAD 2,000 converted to USD at CAD_PER_USD.
+/// Source: https://www.cbsa-asfc.gc.ca/trade-commerce/amps/contraventions-infractions/c023-eng.html.
+pub const BORDER_CA_FIRST_FINE_USD: f64 = 1_431.0;
+/// Second CBSA AMPS C023 penalty, CAD 4,000 converted to USD at CAD_PER_USD.
+/// Source: https://www.cbsa-asfc.gc.ca/trade-commerce/amps/contraventions-infractions/c023-eng.html.
+pub const BORDER_CA_SECOND_FINE_USD: f64 = 2_862.0;
+/// Third-and-later CBSA AMPS C023 penalty, CAD 8,000 converted to USD at CAD_PER_USD.
+/// Source: https://www.cbsa-asfc.gc.ca/trade-commerce/amps/contraventions-infractions/c023-eng.html.
+pub const BORDER_CA_THIRD_FINE_USD: f64 = 5_723.0;
 /// Colorado's chain-law citation: 500 dollars plus a 79-dollar surcharge.
 pub const CHAIN_LAW_FINE: f64 = 580.0;
 /// Following too closely is a serious traffic violation under 49 CFR 383.51
@@ -337,8 +354,14 @@ pub trait StandingProfile {
     fn career_total_earnings(&self) -> f64;
     /// `profile.game_hours`.
     fn game_hours(&self) -> f64;
-    /// `profile.calendar_offset_days`.
-    fn calendar_offset_days(&self) -> f64;
+    /// The hour the player's own calendar reads now
+    /// (`Profile::player_calendar_hours`): dates are spoken counted from it.
+    fn calendar_now_hours(&self) -> f64;
+    /// Whether that calendar is the real one (live weather drives it), so a
+    /// spoken weekday comes from the real date.
+    fn calendar_is_live(&self) -> bool {
+        false
+    }
     /// `getattr(profile, "driving_record", None)`.
     fn driving_record(&self) -> Option<&DrivingRecord>;
     /// `profile.business_status`.
@@ -477,7 +500,13 @@ pub fn trust_band(reputation: f64) -> &'static str {
 
 /// How many loads dispatch will still put in front of this driver.
 pub fn board_offers_for_reputation(base: i64, reputation: f64) -> i64 {
-    let band = trust_band(reputation);
+    board_offers_for_band(base, trust_band(reputation))
+}
+
+/// The board for a trust band. Callers pass [`standing_band`], the band the
+/// dispatch trust line speaks, so a record or debt that holds the line at
+/// guarded holds the board there too (owner, 2026-09-28).
+pub fn board_offers_for_band(base: i64, band: &str) -> i64 {
     if band == TRUST_FULL {
         return base;
     }
@@ -496,13 +525,21 @@ pub fn board_offers_for_reputation(base: i64, reputation: f64) -> i64 {
 /// dispatch's trust takes that privilege back -- the game's own language for
 /// "we do not let you choose any more".
 pub fn trust_revokes_load_choice(reputation: f64) -> bool {
-    let band = trust_band(reputation);
+    band_revokes_load_choice(trust_band(reputation))
+}
+
+/// [`trust_revokes_load_choice`] for a band (see [`board_offers_for_band`]).
+pub fn band_revokes_load_choice(band: &str) -> bool {
     band == TRUST_POOR || band == TRUST_LAST_CHANCE
 }
 
 /// Refusals dispatch takes off the budget as trust falls.
 pub fn trust_decline_penalty(reputation: f64) -> i64 {
-    let band = trust_band(reputation);
+    band_decline_penalty(trust_band(reputation))
+}
+
+/// [`trust_decline_penalty`] for a band (see [`board_offers_for_band`]).
+pub fn band_decline_penalty(band: &str) -> i64 {
     if band == TRUST_GUARDED {
         return 1;
     }
@@ -557,6 +594,9 @@ fn has_no_carrier<P: StandingProfile + ?Sized>(profile: &P) -> bool {
 /// `solvency::hard_capped`), so their last-chance line says that instead of
 /// "deciding whether to keep you".
 pub fn trust_band_text_for<P: StandingProfile + ?Sized>(profile: &P, band: &str) -> String {
+    if let Some(text) = licence_trust_text(profile, band) {
+        return text;
+    }
     if band == TRUST_LAST_CHANCE && kept_on_sufferance(profile) {
         let carrier = match profile.carrier_name().trim() {
             "" => "Your carrier",
@@ -570,6 +610,34 @@ pub fn trust_band_text_for<P: StandingProfile + ?Sized>(profile: &P, band: &str)
     trust_band_text(band).to_string()
 }
 
+/// The last-chance line when a pulled CDL is what put the driver there.
+///
+/// The carrier does not weigh a suspension or a disqualification against
+/// the seat (`carrier_termination_due` never reads the licence): it simply
+/// has no loads for a driver who cannot drive, and a lifetime
+/// disqualification ends dispatch for good. "The carrier is deciding whether
+/// to keep you" said neither. `None` when the licence is clear, or when the
+/// carrier really is weighing the seat over the record or the service.
+fn licence_trust_text<P: StandingProfile + ?Sized>(profile: &P, band: &str) -> Option<String> {
+    let record = profile.driving_record()?;
+    if band != TRUST_LAST_CHANCE || !record.suspended(profile.game_hours()) {
+        return None;
+    }
+    if record.lifetime_disqualified {
+        return Some(
+            "Dispatch trust: none. With a lifetime CDL disqualification there is no dispatch."
+                .to_string(),
+        );
+    }
+    if carrier_termination_due(profile) {
+        return None;
+    }
+    Some(format!(
+        "Dispatch trust: last chance. No loads at all while your CDL is {}.",
+        status_verb(record)
+    ))
+}
+
 /// [`trust_text`] for this driver: the sufferance wording where it applies,
 /// and [`NO_CARRIER_TRUST_TEXT`] with no carrier.
 pub fn trust_text_for<P: StandingProfile + ?Sized>(profile: &P, reputation: f64) -> String {
@@ -578,7 +646,8 @@ pub fn trust_text_for<P: StandingProfile + ?Sized>(profile: &P, reputation: f64)
     }
     let band = trust_band(reputation);
     let text = trust_band_text_for(profile, band);
-    if band == TRUST_FULL {
+    // Clean runs rebuild service, not a pulled licence.
+    if band == TRUST_FULL || licence_trust_text(profile, band).is_some() {
         return text;
     }
     format!("{text} Clean on-time runs rebuild it.")
@@ -752,14 +821,62 @@ pub fn record_window_phrase(record: &DrivingRecord, game_hours: f64) -> String {
     format!("{} in the last year", parts.join(" and "))
 }
 
-/// The spoken calendar day the oldest counted violation leaves the window.
-pub fn record_ages_out_text<P: StandingProfile + ?Sized>(profile: &P) -> String {
+/// The spoken calendar day the record stops meeting `holds(citations,
+/// serious)` as its violations age out, with nothing new added.
+pub fn record_clears_text<P: StandingProfile + ?Sized>(
+    profile: &P,
+    holds: impl Fn(i64, i64) -> bool,
+) -> String {
     let record = record_of(profile);
-    let Some(at) = record.window_ages_out_at(profile.game_hours()) else {
+    let Some(at) = record.window_clears_at(profile.game_hours(), holds) else {
         return String::new();
     };
-    let at = at + profile.calendar_offset_days() * HOURS_PER_DAY;
-    format!("{}, {}", weekday_name(at), date_text(at))
+    calendar_day_text(profile, at)
+}
+
+/// A point on the career clock as the spoken day the player will reach it.
+///
+/// Counted forward from the date the player hears now, never from the
+/// career's own calendar: with live weather driving the calendar the two
+/// differ, and a suspension once "cleared" on a day already gone
+/// (reported 2026-09-29). A day a new year away says so, or a year-long
+/// disqualification would name today's own date.
+fn calendar_day_text<P: StandingProfile + ?Sized>(profile: &P, career_hours: f64) -> String {
+    let now = profile.calendar_now_hours();
+    let at = now + (career_hours - profile.game_hours()).max(0.0);
+    let year = |h: f64| ((CAREER_START_DAY_OF_YEAR + h / HOURS_PER_DAY) / DAYS_PER_YEAR).floor();
+    let when = match (year(at) - year(now)) as i64 {
+        0 => "",
+        1 => ", next year",
+        _ => ", the year after next",
+    };
+    let weekday = if profile.calendar_is_live() {
+        crate::sim::season::real_weekday_name(at, None)
+    } else {
+        weekday_name(at)
+    };
+    format!("{weekday}, {}{when}", date_text(at))
+}
+
+/// The spoken day the oldest violation still counted leaves the review
+/// window, or empty with nothing counted.
+fn record_oldest_ages_out_text<P: StandingProfile + ?Sized>(profile: &P) -> String {
+    let counted = std::cell::Cell::new(None::<i64>);
+    record_clears_text(profile, |citations, serious| {
+        let total = citations + serious;
+        let first = counted.get().unwrap_or_else(|| {
+            counted.set(Some(total));
+            total
+        });
+        total > 0 && total >= first
+    })
+}
+
+/// The day the carrier's record review lets go: back under its floor.
+pub fn record_review_clears_text<P: StandingProfile + ?Sized>(profile: &P) -> String {
+    record_clears_text(profile, |citations, serious| {
+        citations > CARRIER_REVIEW_CITATIONS || serious >= CARRIER_REVIEW_SERIOUS
+    })
 }
 
 /// The insurer's multiplier on an owner-operator's insurance reserve.
@@ -795,9 +912,9 @@ pub fn record_consequence_text<P: StandingProfile + ?Sized>(profile: &P) -> Stri
         }
         let percent = round_py_int((surcharge - 1.0) * 100.0);
         return format!(
-            "Your insurance reserve is up {percent} percent for it, on every settlement, \
-             until the oldest ages out {}.",
-            record_ages_out_text(profile)
+            "Your insurance reserve is up {percent} percent for it, on every settlement. It \
+             comes down as the record ages out, and is gone {}.",
+            record_clears_text(profile, |citations, serious| citations + serious > 0)
         );
     }
     if has_no_carrier(profile) || !under_carrier_review(profile) {
@@ -807,7 +924,7 @@ pub fn record_consequence_text<P: StandingProfile + ?Sized>(profile: &P) -> Stri
         // Never let go over the record (`carrier_termination_due`), so no
         // countdown to a let-go is spoken here, and a clean record (nothing
         // left to age out) needs no line at all.
-        let ages_out = record_ages_out_text(profile);
+        let ages_out = record_oldest_ages_out_text(profile);
         if ages_out.trim().is_empty() {
             return String::new();
         }
@@ -818,7 +935,11 @@ pub fn record_consequence_text<P: StandingProfile + ?Sized>(profile: &P) -> Stri
         if record_past_termination_floor(record, game_hours) {
             return format!(
                 "The carrier's insurer will not carry a record like that; {keeper} keeps you on \
-                 sufferance until the oldest ages out {ages_out}."
+                 sufferance until {}.",
+                record_clears_text(profile, |citations, serious| {
+                    citations >= CARRIER_TERMINATION_CITATIONS
+                        || serious >= CARRIER_TERMINATION_SERIOUS
+                })
             );
         }
         return format!(
@@ -845,9 +966,8 @@ pub fn record_consequence_text<P: StandingProfile + ?Sized>(profile: &P) -> Stri
             )
         };
         return format!(
-            "The carrier's record review holds your equipment back until the oldest ages \
-             out {}. {next}",
-            record_ages_out_text(profile)
+            "The carrier's record review holds your equipment back until {}. {next}",
+            record_review_clears_text(profile)
         );
     }
     String::new()
@@ -893,8 +1013,8 @@ pub fn disqualification_notice_lines() -> Vec<String> {
          it out."
             .to_string(),
         "No carrier can put you in a seat, the dispatch board is closed to you, and the \
-         owner-operator buy-in is off the table. Rest, the garage, the truck dealer, the \
-         logbook and your stats still work here."
+         owner-operator buy-in is off the table. Rest, the garage, the logbook and your \
+         stats still work here."
             .to_string(),
         "Nothing is taken away. Your money, your levels, your achievements, your road journal \
          and your whole record stay, and this career can be opened and read any time."
@@ -924,17 +1044,20 @@ pub fn standing_way_back<P: StandingProfile + ?Sized>(profile: &P) -> String {
             return "Your CDL is disqualified for life, so the seat is not coming back."
                 .to_string();
         }
+        let record = record_of(profile);
         return format!(
-            "Your CDL is suspended, so the yard holds your seat until it clears {clears}."
+            "Your CDL is {}, so the yard holds your seat until the {} ends {clears}.",
+            status_verb(record),
+            status_noun(record)
         );
     }
     if cause == CAUSE_RECORD {
         let record = record_of(profile);
         return format!(
             "Your driving record is what is holding it: {}. The carrier's review keeps it \
-             there until the oldest ages out {}; keep the record clean until then.",
+             there until {}; keep the record clean until then.",
             record_window_phrase(record, profile.game_hours()),
-            record_ages_out_text(profile)
+            record_review_clears_text(profile)
         );
     }
     if cause == CAUSE_DEBT {
@@ -1065,9 +1188,7 @@ pub fn clears_text<P: StandingProfile + ?Sized>(profile: &P) -> String {
     if record.lifetime_disqualified {
         return String::new();
     }
-    let offset = profile.calendar_offset_days() * HOURS_PER_DAY;
-    let at = record.suspended_until_h + offset;
-    format!("{}, {}", weekday_name(at), date_text(at))
+    calendar_day_text(profile, record.suspended_until_h)
 }
 
 /// A serious-violation ladder suspends; a major offense disqualifies.

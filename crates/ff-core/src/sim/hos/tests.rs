@@ -1236,6 +1236,112 @@ fn test_fatigue_grows_faster_at_night() {
 }
 
 #[test]
+fn awake_fatigue_gain_uses_day_and_night_rates() {
+    // Eight daytime hours at the day rate.
+    let day_8h = awake_fatigue_gain(8.0, 8.0 * 60.0);
+    assert!(approx(day_8h, fatigue_rate_per_min(false) * 8.0 * 60.0));
+    // A full day crosses night, so it outpaces pure day rate and stays finite.
+    let day_24h = awake_fatigue_gain(8.0, 24.0 * 60.0);
+    assert!(day_24h > fatigue_rate_per_min(false) * 24.0 * 60.0);
+    assert!(day_24h.is_finite());
+}
+
+#[test]
+fn course_fatigue_is_half_the_driving_rate_day_and_night() {
+    // An 8 h day class from 10: 0.0575/min x 480 = 27.6, landing at 37.6.
+    let day = course_fatigue(10.0, 8.0, 8.0 * 60.0, |_| 1.0);
+    assert!(approx(day, 37.6), "8 h day class: {day}");
+    assert!(approx(
+        day - 10.0,
+        CLASSROOM_FATIGUE_FACTOR * awake_fatigue_gain(8.0, 8.0 * 60.0)
+    ));
+    // 9 PM to 5 AM is all night: 0.085/min x 480 = 40.8, landing at 50.8.
+    let night = course_fatigue(10.0, 21.0, 8.0 * 60.0, |_| 1.0);
+    assert!(approx(night, 50.8), "8 h night class: {night}");
+}
+
+#[test]
+fn course_fatigue_scale_multiplies_each_minute() {
+    // A buff at rate 0.5 for the first four hours only.
+    let buffed = course_fatigue(0.0, 8.0, 8.0 * 60.0, |h| if h < 4.0 { 0.5 } else { 1.0 });
+    let plain_half = 0.0575 * 240.0;
+    assert!(approx(buffed, plain_half * 0.5 + plain_half), "{buffed}");
+}
+
+#[test]
+fn multi_day_course_counts_only_the_last_class_day() {
+    // 24 h from 7 AM: the last class day is 8 AM to 4 PM, all day rate:
+    // 0.0575 x 480 = 27.6, whatever the driver walked in with.
+    let fresh = course_fatigue(0.0, 7.0, 24.0 * 60.0, |_| 1.0);
+    let tired = course_fatigue(95.0, 7.0, 24.0 * 60.0, |_| 1.0);
+    assert!(approx(fresh, 27.6), "24 h course: {fresh}");
+    assert!(
+        approx(fresh, tired),
+        "arrival fatigue is replaced, not added"
+    );
+    assert!(approx(
+        fresh,
+        CLASSROOM_FATIGUE_FACTOR * awake_fatigue_gain(8.0, 8.0 * 60.0)
+    ));
+    // The 10 h threshold: a 10 h course is two days, a 9.9 h course is one.
+    let ten = course_fatigue(50.0, 8.0, 10.0 * 60.0, |_| 1.0);
+    assert!(approx(ten, 27.6), "10 h course: {ten}");
+    let under = course_fatigue(50.0, 8.0, 9.9 * 60.0, |_| 1.0);
+    assert!(under > 50.0);
+    // The cliff the cutoff comment describes: 599 min from 8 AM at 50.
+    let cliff = course_fatigue(50.0, 8.0, 599.0, |_| 1.0);
+    assert!(approx(cliff, 50.0 + 0.0575 * 599.0), "599 min: {cliff}");
+}
+
+#[test]
+fn multi_day_course_class_day_is_daytime_from_any_start_hour() {
+    // Schools teach 8 AM to 4 PM: a course starting at 3 to 7 AM must not
+    // run its last class day overnight.
+    for start in [3.0, 5.0, 7.0, 12.0, 21.0, 23.5, 0.0] {
+        for arrival in [0.0, 40.0, 95.0] {
+            let after = course_fatigue(arrival, start, 24.0 * 60.0, |_| 1.0);
+            assert!(
+                approx(after, 27.6),
+                "start {start}, arrival {arrival}: {after}"
+            );
+        }
+    }
+    // Days past the first and a long-running game clock change nothing.
+    assert!(approx(
+        course_fatigue(0.0, 1000.0 + 5.0, 24.0 * 60.0, |_| 1.0),
+        27.6
+    ));
+    assert!(approx(
+        course_fatigue(0.0, 21.0, 10.0 * 60.0, |_| 1.0),
+        27.6
+    ));
+}
+
+#[test]
+fn multi_day_course_buffs_follow_the_class_day_hours() {
+    // From 3 AM the class day runs 5 to 13 hours into the course. A half
+    // rate buff for the first 9 hours covers its first four class hours.
+    let buffed = course_fatigue(0.0, 3.0, 24.0 * 60.0, |h| if h < 9.0 { 0.5 } else { 1.0 });
+    let half = 0.0575 * 240.0;
+    assert!(approx(buffed, half * 0.5 + half), "from 3 AM: {buffed}");
+    // From 9 PM the class day is 8 AM to 4 PM next day, 11 to 19 hours in.
+    let buffed = course_fatigue(0.0, 21.0, 24.0 * 60.0, |h| if h < 15.0 { 0.5 } else { 1.0 });
+    assert!(approx(buffed, half * 0.5 + half), "from 9 PM: {buffed}");
+    // A flat mode multiplier scales the whole day.
+    assert!(approx(
+        course_fatigue(0.0, 5.0, 24.0 * 60.0, |_| 0.8),
+        0.8 * 27.6
+    ));
+}
+
+#[test]
+fn course_fatigue_clamps_and_ignores_bad_minutes() {
+    assert_eq!(course_fatigue(95.0, 21.0, 8.0 * 60.0, |_| 1.0), 100.0);
+    assert_eq!(course_fatigue(12.0, 8.0, f64::NAN, |_| 1.0), 12.0);
+    assert_eq!(course_fatigue(12.0, 8.0, -60.0, |_| 1.0), 12.0);
+}
+
+#[test]
 fn test_fatigue_shortens_the_reaction_window() {
     assert_eq!(reaction_window_mult(0.0), 1.0);
     assert_eq!(reaction_window_mult(FATIGUE_DROWSY), 1.0);
@@ -1740,4 +1846,416 @@ fn arrival_note_names_the_cycle_when_it_binds() {
         clock.arrival_note("realistic", 40.0),
         " You would arrive before your 70-hour cycle runs out."
     );
+}
+
+#[test]
+fn jurisdiction_rules_map_and_round_trip_keys() {
+    for (jurisdiction, rules, key) in [
+        ("Alaska", HosRules::Alaska, "alaska"),
+        ("Yukon", HosRules::CanadaNorth60, "canada_north_60"),
+        (
+            "Northwest Territories",
+            HosRules::CanadaNorth60,
+            "canada_north_60",
+        ),
+        ("Nunavut", HosRules::CanadaNorth60, "canada_north_60"),
+        (
+            "British Columbia",
+            HosRules::CanadaSouth60,
+            "canada_south_60",
+        ),
+        ("Alberta", HosRules::CanadaSouth60, "canada_south_60"),
+        ("Saskatchewan", HosRules::CanadaSouth60, "canada_south_60"),
+        ("Manitoba", HosRules::CanadaSouth60, "canada_south_60"),
+        ("Ontario", HosRules::CanadaSouth60, "canada_south_60"),
+        ("Quebec", HosRules::CanadaSouth60, "canada_south_60"),
+        ("New Brunswick", HosRules::CanadaSouth60, "canada_south_60"),
+        ("Nova Scotia", HosRules::CanadaSouth60, "canada_south_60"),
+        (
+            "Prince Edward Island",
+            HosRules::CanadaSouth60,
+            "canada_south_60",
+        ),
+        (
+            "Newfoundland and Labrador",
+            HosRules::CanadaSouth60,
+            "canada_south_60",
+        ),
+        ("Washington", HosRules::Us, "us"),
+        ("", HosRules::Us, "us"),
+    ] {
+        assert_eq!(HosRules::for_jurisdiction(jurisdiction), rules);
+        assert_eq!(rules.key(), key);
+        assert_eq!(HosRules::from_key(key), rules);
+    }
+    assert_eq!(HosRules::from_key("unknown"), HosRules::Us);
+}
+
+#[test]
+fn alaska_has_fifteen_driving_hours_and_no_break_limit() {
+    let mut clock = HosClock::new();
+    clock.set_rules(HosRules::Alaska);
+    clock.drive(12.0 * 60.0);
+    assert!(!clock.in_violation("realistic"));
+    assert!(!clock
+        .statuses("realistic")
+        .iter()
+        .any(|limit| limit.kind == "break"));
+
+    clock.drive(2.0 * 60.0 + 59.0);
+    assert!(!clock.in_violation("realistic"));
+    clock.drive(1.0);
+    assert_eq!(clock.blown_kinds("realistic"), vec!["drive"]);
+    clock.drive(1.0);
+    assert_eq!(clock.blown_kinds("realistic"), vec!["drive"]);
+    assert_eq!(
+        clock.next_limit("realistic").unwrap().due,
+        "your Alaska driving limit is reached. You need 10 hours off"
+    );
+
+    let mut duty = HosClock::new();
+    duty.set_rules(HosRules::Alaska);
+    duty.drive(10.0 * 60.0);
+    duty.on_duty(9.0 * 60.0 + 59.0);
+    assert!(!duty.in_violation("realistic"));
+    duty.on_duty(1.0);
+    assert_eq!(duty.blown_kinds("realistic"), vec!["duty"]);
+    duty.on_duty(1.0);
+    assert_eq!(duty.blown_kinds("realistic"), vec!["duty"]);
+    assert_eq!(
+        duty.next_limit("realistic").unwrap().due,
+        "your 20 hours on duty are used. You need 10 hours off"
+    );
+
+    let mut us = HosClock::new();
+    us.drive(12.0 * 60.0);
+    assert!(us.in_violation("realistic"));
+}
+
+#[test]
+fn canada_south_limits_and_eight_hour_rest_reset() {
+    let mut clock = HosClock::new();
+    clock.set_rules(HosRules::CanadaSouth60);
+    clock.drive(12.0 * 60.0 + 59.0);
+    assert!(!clock.in_violation("realistic"));
+    clock.drive(1.0);
+    assert_eq!(clock.blown_kinds("realistic"), vec!["drive"]);
+    clock.drive(1.0);
+    assert_eq!(clock.blown_kinds("realistic"), vec!["drive"]);
+    assert_eq!(
+        clock.next_limit("realistic").unwrap().due,
+        "your Canadian driving limit is reached. You need 8 hours off"
+    );
+
+    let mut duty = HosClock::new();
+    duty.set_rules(HosRules::CanadaSouth60);
+    duty.on_duty(13.0 * 60.0 + 59.0);
+    assert!(!duty.in_violation("realistic"));
+    duty.on_duty(1.0);
+    assert_eq!(duty.blown_kinds("realistic"), vec!["duty"]);
+    duty.on_duty(1.0);
+    assert_eq!(
+        duty.next_limit("realistic").unwrap().due,
+        "your Canadian on-duty limit is reached. You need 8 hours off"
+    );
+
+    let mut rested = HosClock::new();
+    rested.set_rules(HosRules::CanadaSouth60);
+    rested.drive(6.0 * 60.0);
+    rested.off_duty(8.0 * 60.0);
+    assert_eq!(rested.ca_driving_min, 0.0);
+    assert_eq!(rested.ca_on_duty_min, 0.0);
+    assert_eq!(rested.ca_elapsed_min, 0.0);
+    rested.drive(12.0 * 60.0 + 59.0);
+    assert!(!rested.in_violation("realistic"));
+    assert_eq!(rested.driving_min, 18.0 * 60.0 + 59.0);
+    rested.drive(1.0);
+    assert_eq!(rested.blown_kinds("realistic"), vec!["drive"]);
+    assert_eq!(rested.driving_min, 19.0 * 60.0);
+}
+
+#[test]
+fn canada_shift_limit_warns_with_jurisdiction_wording() {
+    let mut clock = HosClock::new();
+    clock.set_rules(HosRules::CanadaSouth60);
+    clock.drive(6.0 * 60.0);
+    clock.off_duty(7.0 * 60.0);
+    clock.drive(2.0 * 60.0 + 59.0);
+    assert!(!clock.in_violation("realistic"));
+    clock.drive(1.0);
+    assert_eq!(clock.blown_kinds("realistic"), vec!["shift"]);
+    clock.drive(1.0);
+    assert_eq!(clock.blown_kinds("realistic"), vec!["shift"]);
+    assert_eq!(
+        clock.next_limit("realistic").unwrap().due,
+        "your shift has run too long since your last 8 hours off. You need 8 hours off"
+    );
+    assert_eq!(
+        clock.check_warnings("realistic"),
+        vec!["Hours of service violation: your shift has run too long since your last 8 hours off. You need 8 hours off. Driving on risks fines at inspections."]
+    );
+    assert_eq!(clock.out_of_service_minutes("realistic"), 8.0 * 60.0);
+    assert_eq!(
+        clock.violation_causes("realistic"),
+        vec!["you had driven 16 hours after your last 8 hours off"]
+    );
+    assert_eq!(
+        clock.summary("realistic"),
+        "Hours of service: past your limit. Take 8 hours off at a rest stop to reset."
+    );
+}
+
+#[test]
+fn canada_north_driving_duty_and_elapsed_limits() {
+    let mut driving = HosClock::new();
+    driving.set_rules(HosRules::CanadaNorth60);
+    driving.drive(14.0 * 60.0 + 59.0);
+    assert!(!driving.in_violation("realistic"));
+    driving.drive(1.0);
+    assert_eq!(driving.blown_kinds("realistic"), vec!["drive"]);
+    driving.drive(1.0);
+    assert_eq!(
+        driving.next_limit("realistic").unwrap().due,
+        "your Canadian driving limit is reached. You need 8 hours off"
+    );
+
+    let mut duty_at_limit = HosClock::new();
+    duty_at_limit.set_rules(HosRules::CanadaNorth60);
+    duty_at_limit.on_duty(17.0 * 60.0 + 59.0);
+    assert!(!duty_at_limit.in_violation("realistic"));
+    duty_at_limit.on_duty(1.0);
+    assert_eq!(duty_at_limit.blown_kinds("realistic"), vec!["duty"]);
+
+    let mut duty = HosClock::new();
+    duty.set_rules(HosRules::CanadaNorth60);
+    duty.on_duty(18.0 * 60.0 + 1.0);
+    assert_eq!(duty.blown_kinds("realistic"), vec!["duty"]);
+    assert_eq!(
+        duty.next_limit("realistic").unwrap().due,
+        "your Canadian on-duty limit is reached. You need 8 hours off"
+    );
+
+    let mut shift = HosClock::new();
+    shift.set_rules(HosRules::CanadaNorth60);
+    shift.on_duty(17.0 * 60.0);
+    shift.off_duty(2.0 * 60.0 + 59.0);
+    assert!(!shift.in_violation("realistic"));
+    shift.off_duty(1.0);
+    assert_eq!(shift.blown_kinds("realistic"), vec!["shift"]);
+    shift.off_duty(1.0);
+    assert_eq!(
+        shift.violation_causes("realistic"),
+        vec!["you had driven 20 hours after your last 8 hours off"]
+    );
+}
+
+#[test]
+fn jurisdiction_summaries_name_the_active_rules_and_limits() {
+    let mut alaska = HosClock::new();
+    alaska.set_rules(HosRules::Alaska);
+    assert_eq!(
+        alaska.summary("realistic"),
+        "Alaska hours rules. 15 hours of driving and 20 hours on duty left. ELD status off duty."
+    );
+
+    let mut south = HosClock::new();
+    south.set_rules(HosRules::CanadaSouth60);
+    assert_eq!(
+        south.summary("realistic"),
+        "Canadian hours rules. 13 hours of driving, 14 hours on duty, and 16 hours of shift left. ELD status off duty."
+    );
+
+    let mut north = HosClock::new();
+    north.set_rules(HosRules::CanadaNorth60);
+    assert_eq!(
+        north.summary("realistic"),
+        "North of 60 hours rules. 15 hours of driving, 18 hours on duty, and 20 hours of shift left. ELD status off duty."
+    );
+
+    south.cycle_clock_min = CYCLE_WINDOW_MIN;
+    south.cycle_entries = vec![CycleEntry {
+        end_min: south.cycle_clock_min,
+        on_duty_min: 60.0 * 60.0,
+    }];
+    assert_eq!(
+        south.summary("realistic"),
+        "Canadian hours rules. 13 hours of driving, 14 hours on duty, and 16 hours of shift left. ELD status off duty. Cycle: 60 hours used of 70 hours, 10 hours left."
+    );
+}
+
+#[test]
+fn cycle_window_varies_without_changing_the_eight_day_ledger() {
+    let mut clock = HosClock::new();
+    clock.cycle_clock_min = CYCLE_WINDOW_MIN;
+    clock.cycle_entries = vec![CycleEntry {
+        end_min: 12.0 * 60.0,
+        on_duty_min: 60.0,
+    }];
+    assert_eq!(clock.cycle_used_min_within(CYCLE_WINDOW_MIN), 60.0);
+    assert_eq!(
+        clock.cycle_remaining_min("realistic"),
+        Some(CYCLE_LIMIT_MIN - 60.0)
+    );
+    clock.set_rules(HosRules::Alaska);
+    assert_eq!(
+        clock.cycle_remaining_min("realistic"),
+        Some(ALASKA_CYCLE_LIMIT_MIN - 60.0)
+    );
+    clock.set_rules(HosRules::CanadaSouth60);
+    assert_eq!(clock.cycle_used_min(), 60.0);
+    assert_eq!(clock.cycle_used_min_within(CANADA_CYCLE_WINDOW_MIN), 0.0);
+    assert_eq!(
+        clock.cycle_remaining_min("realistic"),
+        Some(CANADA_SOUTH_CYCLE_LIMIT_MIN)
+    );
+
+    let mut alaska_cycle = HosClock::new();
+    alaska_cycle.set_rules(HosRules::Alaska);
+    alaska_cycle.cycle_clock_min = CYCLE_WINDOW_MIN;
+    alaska_cycle.cycle_entries = vec![CycleEntry {
+        end_min: CYCLE_WINDOW_MIN,
+        on_duty_min: ALASKA_CYCLE_LIMIT_MIN - 1.0,
+    }];
+    assert!(!alaska_cycle.in_violation("realistic"));
+    alaska_cycle.cycle_entries[0].on_duty_min = ALASKA_CYCLE_LIMIT_MIN;
+    assert_eq!(alaska_cycle.blown_kinds("realistic"), vec!["cycle"]);
+    alaska_cycle.cycle_entries[0].on_duty_min += 1.0;
+    assert_eq!(alaska_cycle.blown_kinds("realistic"), vec!["cycle"]);
+
+    let mut south = HosClock::new();
+    south.set_rules(HosRules::CanadaSouth60);
+    for _ in 0..6 {
+        south.drive(600.0);
+        south.off_duty(600.0);
+    }
+    south.drive(599.0);
+    south.off_duty(600.0);
+    assert!(!south.in_violation("realistic"));
+    south.drive(1.0);
+    assert_eq!(south.blown_kinds("realistic"), vec!["cycle"]);
+    south.drive(1.0);
+    assert_eq!(south.blown_kinds("realistic"), vec!["cycle"]);
+    assert_eq!(
+        south.out_of_service_minutes("realistic"),
+        CANADA_RESTART_MIN
+    );
+    assert_eq!(
+        south.summary("realistic"),
+        "Hours of service: your 70-hour Canadian cycle is used up. Take 36 hours off to restart your cycle, or wait for hours to age off your 7-day ledger."
+    );
+
+    let mut north = HosClock::new();
+    north.set_rules(HosRules::CanadaNorth60);
+    for _ in 0..7 {
+        north.drive(600.0);
+        north.off_duty(600.0);
+    }
+    north.drive(599.0);
+    north.off_duty(600.0);
+    assert!(!north.in_violation("realistic"));
+    north.drive(1.0);
+    assert_eq!(north.blown_kinds("realistic"), vec!["cycle"]);
+    north.drive(1.0);
+    assert_eq!(north.blown_kinds("realistic"), vec!["cycle"]);
+}
+
+#[test]
+fn canadian_cycle_requires_thirty_six_hours_while_us_uses_thirty_four() {
+    let mut canada = HosClock::new();
+    canada.set_rules(HosRules::CanadaSouth60);
+    canada.drive(600.0);
+    canada.off_duty(34.0 * 60.0);
+    assert_eq!(canada.cycle_used_min(), 600.0);
+    canada.off_duty(2.0 * 60.0);
+    assert_eq!(canada.cycle_used_min(), 0.0);
+
+    let mut us = HosClock::new();
+    us.drive(600.0);
+    us.off_duty(34.0 * 60.0);
+    assert_eq!(us.cycle_used_min(), 0.0);
+}
+
+#[test]
+fn set_rules_rearms_all_jurisdiction_warnings() {
+    let mut clock = HosClock::new();
+    clock.drive(8.0 * 60.0);
+    clock.off_duty(30.0);
+    clock.drive(2.0 * 60.0 + 1.0);
+    clock.on_duty(30.0);
+    let us_warning = clock.check_warnings("realistic");
+    assert_eq!(us_warning.len(), 1);
+    assert!(us_warning[0].contains("driving time for this shift ends"));
+    assert!(!clock.warned.is_empty());
+    clock.warned.extend(
+        ["duty:120", "shift:120", "break:120", "cycle:120"]
+            .into_iter()
+            .map(str::to_string),
+    );
+    assert!(clock.set_rules(HosRules::Alaska));
+    assert!(clock.warned.is_empty());
+    assert!(clock.check_warnings("realistic").is_empty());
+    clock.drive(179.0);
+    assert_eq!(
+        clock.check_warnings("realistic"),
+        vec!["Hours of service: 2 hours until your Alaska driving limit is reached. You need 10 hours off."]
+    );
+    assert!(!clock.set_rules(HosRules::Alaska));
+}
+
+#[test]
+fn alaska_split_credit_recalculates_on_duty_since_first_rest() {
+    let mut clock = HosClock::new();
+    clock.set_rules(HosRules::Alaska);
+    clock.drive(10.0 * 60.0);
+    clock.sleeper(7.0 * 60.0);
+    clock.drive(2.0 * 60.0);
+    clock.off_duty(3.0 * 60.0);
+    assert_eq!(clock.shift_on_duty_min, 2.0 * 60.0);
+    assert_eq!(clock.driving_min, 2.0 * 60.0);
+}
+
+#[test]
+fn hos_save_keeps_the_us_key_set_and_round_trips_canadian_fields() {
+    let us = HosClock::new().to_dict();
+    let mut keys: Vec<_> = us.as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "cycle_clock_min",
+            "cycle_entries",
+            "driving_min",
+            "duty_min",
+            "history",
+            "non_driving_min",
+            "off_duty_min",
+            "restart_off_min",
+            "since_break_min",
+            "split_credit_key",
+            "split_rest_history",
+            "status",
+            "warned",
+        ]
+    );
+
+    let mut canada = HosClock::new();
+    canada.set_rules(HosRules::CanadaNorth60);
+    canada.drive(90.0);
+    canada.on_duty(30.0);
+    let saved = canada.to_dict();
+    assert_eq!(saved["hos_rules"], "canada_north_60");
+    assert_eq!(HosClock::from_dict(&saved), canada);
+
+    let invalid = HosClock::from_dict(&json!({
+        "hos_rules": "unknown",
+        "shift_on_duty_min": [],
+        "ca_driving_min": "invalid",
+        "ca_on_duty_min": null,
+        "ca_elapsed_min": false,
+    }));
+    assert_eq!(invalid.rules, HosRules::Us);
+    assert_eq!(invalid.shift_on_duty_min, 0.0);
+    assert_eq!(invalid.ca_driving_min, 0.0);
+    assert_eq!(invalid.ca_on_duty_min, 0.0);
+    assert_eq!(invalid.ca_elapsed_min, 0.0);
 }

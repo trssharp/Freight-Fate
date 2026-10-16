@@ -9,6 +9,7 @@
 //! stop, and an overnight run could pass a row of open pumps and still go
 //! dry.
 
+use ff_core::models::economy::{cad_per_litre, canada_diesel_usd_per_gal};
 use ff_core::models::loyalty::loyalty_earnings_text;
 use ff_core::pyfmt::{fmt_f, fmt_grouped};
 use ff_core::sim::trip_models::RoadStop;
@@ -26,9 +27,6 @@ use crate::states::driving_menu_states::DriveRef;
 pub trait FuelPump: Menu {
     fn drive(&self) -> &DriveRef;
     fn stop(&self) -> &RoadStop;
-    /// A fuel purchase this visit (free showers).
-    fn fueled_here(&self) -> bool;
-    fn set_fueled_here(&mut self, fueled: bool);
 
     fn weight_margin_text(label: &str, margin_kg: f64) -> String {
         let pounds = fmt_grouped((margin_kg.abs() / KG_PER_LB).round(), 0);
@@ -60,7 +58,19 @@ pub trait FuelPump: Menu {
                 fmt_f(need, 0)
             );
         }
-        let cost = ctx.economy.fuel_cost(d.trip.current_region(), need) + 35.0;
+        let region = d.trip.current_region();
+        let jurisdiction = d.trip.state_at(None);
+        let price = ctx.economy.fuel_price_at(region, &jurisdiction);
+        let cost = ctx.economy.fuel_cost_at(region, &jurisdiction, need) + 35.0;
+        if canada_diesel_usd_per_gal(&jurisdiction).is_some() {
+            return format!(
+                "Refuel {} gallons for {} dollars. Diesel here is {} Canadian dollars a litre. \
+                 {margin}",
+                fmt_f(need, 0),
+                fmt_grouped(cost, 0),
+                fmt_f(cad_per_litre(price), 2)
+            );
+        }
         format!(
             "Refuel {} gallons for {} dollars. {margin}",
             fmt_f(need, 0),
@@ -69,10 +79,11 @@ pub trait FuelPump: Menu {
     }
 
     fn refuel(&mut self, ctx: &mut GameContext) {
-        let Some((mut need, region, engine_on)) = self.drive().with(ctx, |d, _| {
+        let Some((mut need, region, jurisdiction, engine_on)) = self.drive().with(ctx, |d, _| {
             (
                 d.trip.truck.specs.fuel_tank_gal - d.trip.truck.fuel_gal,
                 d.trip.current_region().to_string(),
+                d.trip.state_at(None),
                 d.trip.truck.engine_on,
             )
         }) else {
@@ -89,42 +100,45 @@ pub trait FuelPump: Menu {
             ctx.say("The tank is already full.");
             return;
         }
-        let stop_name = self.stop().name.clone();
+        let stop = self.stop().clone();
         let carrier_card = !player_pays_operating_costs(&profile_of(ctx).business_status);
         let mut cost = 0.0;
         if !carrier_card {
-            cost = ctx.economy.fuel_cost(&region, need) + 35.0;
+            cost = ctx.economy.fuel_cost_at(&region, &jurisdiction, need) + 35.0;
             if profile_of(ctx).money() < cost {
-                let partial_gal =
-                    ((profile_of(ctx).money() - 35.0) / ctx.economy.fuel_price(&region)).max(0.0);
+                let partial_gal = ((profile_of(ctx).money() - 35.0)
+                    / ctx.economy.fuel_price_at(&region, &jurisdiction))
+                .max(0.0);
                 if partial_gal < 5.0 {
                     ctx.audio.play("ui/error");
                     ctx.say("You cannot afford fuel here.");
                     return;
                 }
                 need = partial_gal;
-                cost = ctx.economy.fuel_cost(&region, need) + 35.0;
+                cost = ctx.economy.fuel_cost_at(&region, &jurisdiction, need) + 35.0;
             }
             profile_mut_of(ctx).spend(cost);
         }
         let margin_kg = self.drive().clone().with(ctx, |d, ctx| {
             d.trip.truck.refuel(Some(need));
+            // free showers with fuel
+            d.stop_visit(&stop).fueled = true;
             advance_rest_clock(d, ctx, FUEL_STOP_MIN, None, "");
             hos_mut_of(ctx).on_duty(FUEL_STOP_MIN);
             d.trip.truck.gross_weight_margin_kg()
         });
         let margin = Self::weight_margin_text("Gross weight", margin_kg.unwrap_or(0.0));
-        self.set_fueled_here(true);
-        self.save_here(ctx, true);
         ctx.audio.play("vehicle/fuel_pump");
 
-        // Award loyalty points for fueling
+        // Award loyalty points for fueling, then save: saved first, the
+        // points and shower credit were lost to a quit before the next save.
         let loyalty_text = {
             let result = profile_mut_of(ctx)
                 .loyalty
-                .add_fueling(need, None, &stop_name, &region);
+                .add_fueling(need, None, &stop.name, &region);
             loyalty_earnings_text(need, result.points_earned, &result.rewards)
         };
+        self.save_here(ctx, true);
 
         if carrier_card {
             // the carrier fuel card covers road fuel for company drivers
