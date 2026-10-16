@@ -22,11 +22,14 @@ mod hazards;
 mod ramps;
 pub use hazards::{eligible_hazards, hazard_is_in_lane, hazard_name, HazardDef, OpenSide, HAZARDS};
 pub use ramps::{
-    acceleration_lane_capability_mph, acceleration_lane_mi, deceleration_lane_mi,
-    merge_traffic_target_mph, ramp_speed_mph, truck_merge_speed_mph, RampAdvisorySpeed,
-    ACCELERATION_LANE_FT, ACCELERATION_LANE_GRADE_FACTOR, DECELERATION_LANE_FT,
-    GRADE_MODEL_MAX_PCT, GRADE_MODEL_MIN_PCT, MERGE_TRAFFIC_SPEED_SHARE, RAMP_DIRECTIONAL_SHARE,
-    RAMP_MIN_DESIGN_MPH, RAMP_SURFACE_SHARE, TRUCK_ACCEL_ALPHA_FPS2, TRUCK_ACCEL_BETA,
+    acceleration_lane_capability_mph, acceleration_lane_mi, deceleration_lane_mi, exit_ramp_layout,
+    merge_traffic_target_mph, ramp_curve_mi, ramp_speed_mph, truck_merge_speed_mph, ExitRampLayout,
+    RampAdvisorySpeed, ACCELERATION_LANE_FT, ACCELERATION_LANE_GRADE_FACTOR, DECELERATION_LANE_FT,
+    DECELERATION_LANE_GRADE_FACTOR, DECELERATION_LANE_RAMP_MPH, GRADE_MODEL_MAX_PCT,
+    GRADE_MODEL_MIN_PCT, MERGE_RECOVERY_MAX_MI, MERGE_RECOVERY_MAX_REAL_S,
+    MERGE_TRAFFIC_SPEED_SHARE, RAMP_CURVE_DEFLECTION_RAD, RAMP_DIRECTIONAL_SHARE,
+    RAMP_MIN_DESIGN_MPH, RAMP_QUEUE_FT, RAMP_SURFACE_SHARE, RAMP_TANGENT_CLIMB_FT,
+    TRUCK_ACCEL_ALPHA_FPS2, TRUCK_ACCEL_BETA,
 };
 
 pub const BASE_SPEED_LIMIT_MPH: f64 = 70.0;
@@ -274,6 +277,16 @@ pub const DESTINATION_APPROACH_LIMIT_MPH: f64 = RAMP_MAX_MPH;
 /// private facility, so this is the game's number, chosen at the top of the
 /// observed 5-15 range.
 pub const FACILITY_GATE_LIMIT_MPH: f64 = 15.0;
+/// The yard limit: past the driveway, on the facility's own way, up to the
+/// check-in stop at the gate. INDUSTRY PRACTICE, ASSUMED for any one yard: no
+/// public law reaches inside a private gate, and operators post their own --
+/// New Orleans Terminal "15 MPH in the yard" (notml.com/trucker-information),
+/// Northwest Seaport Alliance terminals 10-15 (nwseaportalliance.com terminal
+/// safety rules), Port Houston Bayport 20 (HSSE SAF401 driver manual), the
+/// Amazon carrier SOP 10 mph on site (Pan-EU/GB, Dec 2025; not US). 15 is the
+/// middle of that spread, and the gate's own number, so the check-in rules
+/// and the yard agree.
+pub const YARD_LIMIT_MPH: f64 = FACILITY_GATE_LIMIT_MPH;
 pub const FACILITY_GATE_ZONE_MI: f64 = 0.5;
 /// ...but never more than this share of the approach.
 pub const FACILITY_GATE_MAX_SHARE: f64 = 0.35;
@@ -455,13 +468,141 @@ pub const ZONE_WARNING_MAX_MI: f64 = 10.0;
 /// Clock multiplier when stopped or crawling; full pacing resumes at cruise.
 pub const LOW_SPEED_TIME_SCALE: f64 = 4.0;
 pub const FULL_COMPRESSION_MPH: f64 = 50.0;
+/// An open scale crossed faster than this is a bypass; at or under it the
+/// truck is pulling in. The scale reminder's real-time hold pins the clock
+/// only above it (`Trip::real_time_override`).
+pub const SCALE_BYPASS_MPH: f64 = 15.0;
+/// A pacing change made mid-trip waits until the truck is slower than this.
+/// Motion integrates on real seconds while the road passes at the pace, and
+/// fuel is billed at the pace, so at any one pace a hill, a coast and a
+/// climb each cost what they should per mile. Speed a hill gave on one clock
+/// and spent on another is free: descend in Real time, switch to Standard,
+/// and coast for miles (flight, 2026-09-22).
+pub const PACE_CHANGE_MAX_MPH: f64 = 0.5;
 /// Parked with the brake set, waiting runs at double the configured pacing.
 pub const PARKED_TIME_SCALE_MULT: f64 = 2.0;
 pub const CONSTRUCTION_ENFORCEMENT_GRACE_MI: f64 = 1.5;
 pub const CHAIN_LAW_MIN_GRADE: f64 = 0.05;
+/// States that post commercial chain controls on their mountain routes, so a
+/// sustained grade there can carry a chain law. READ, from each state's own
+/// program: CDOT's Commercial Vehicle Chain Law (I-70), WYDOT's chain law,
+/// Caltrans chain controls R-1 to R-3, ODOT snow zones, WSDOT chain
+/// requirements over 10,000 lb, and the Idaho, Montana, Nevada and Utah chain
+/// restrictions on their passes. Nowhere else runs a commercial chain-control
+/// program, so a steep mile in Texas or Wisconsin is only a steep mile
+/// (seasonal audit, 2026-10-01: 218 legs in 35 states had chain areas).
+pub const CHAIN_CONTROL_STATES: [&str; 9] = ["CA", "CO", "ID", "MT", "NV", "OR", "UT", "WA", "WY"];
+/// Whether the player's rig (a five-axle tractor-trailer on a tandem drive)
+/// must chain under a chain law at `level` in `state`. Heavy trucks get no
+/// winter-tire exemption: Caltrans R-1 to R-3 ("no exemption for heavy-duty
+/// commercial vehicles ... equipped with snow tires", dot.ca.gov chain
+/// requirements) and WSDOT over 10,000 lb (WAC 204-24-050) chain trucks.
+/// Oregon's lower level ("Chains or traction tires required") chains only
+/// single-drive-axle trucks over 10,000 lb, and "Chains required" chains
+/// every truck (ODOT, oregon.gov/odot/mct/pages/chains-and-traction-tires.aspx).
+/// Colorado is the one split: Level 1 chains single-drive-axle combinations
+/// only, and Level 2 chains every truck (CDOT Commercial Vehicle Chain Law,
+/// csp.colorado.gov/chain-law-information). Wyoming Level 1 accepts snow
+/// tires or chains, and Level 2 requires chains on two tires of one drive
+/// axle (WYDOT chain law; W.S. 31-5-956(e)). ID, MT, NV and UT are
+/// UNVERIFIED and follow the general rule: trucks chain.
+pub fn rig_must_chain(state: Option<&str>, level: i64) -> bool {
+    match level {
+        ..=0 => false,
+        1 => !matches!(state, Some("CO") | Some("WY") | Some("OR")),
+        _ => true,
+    }
+}
+
+/// The rule a chain-law sign speaks for `state` (two-letter code) at
+/// `level` (`rig_must_chain`).
+pub fn chain_law_sign_rule(state: Option<&str>, level: i64) -> &'static str {
+    match (state, level >= 2) {
+        (Some("WY"), true) => "level 2: chains required on two tires of one drive axle",
+        (_, true) => "level 2: chains required on all trucks",
+        (Some("CO") | Some("OR"), false) => "level 1: chains required on single-drive-axle trucks",
+        (Some("WY"), false) => "level 1: snow tires or chains required",
+        (_, false) => "level 1: chains required on trucks",
+    }
+}
+
 pub const CHAIN_LAW_MIN_RUN_MI: f64 = 1.0;
 pub const CHAIN_LAW_JOIN_GAP_MI: f64 = 2.0;
-pub const CHAIN_LAW_LEAD_MI: f64 = 0.5;
+/// Caltrans: "about a mile between 'Chains Required' signs and the
+/// checkpoint" (winter driving tips).
+pub const CHAIN_LAW_LEAD_MI: f64 = 1.0;
+
+/// The highways each sourced state runs commercial chain controls on. A
+/// steep run in one of these states makes a chain-law area only on one of
+/// its listed highways; a state not listed (MT, NV, UT, WY) keeps the
+/// grade-only rule, UNVERIFIED until their own route lists are read. Leg
+/// highways carry no mileposts, so the listed mileposts below are matched by
+/// highway plus the steep-grade rule, not by milepost.
+/// - CO: the chain-carry corridors (csp.colorado.gov/chain-law-information):
+///   I-70 west of MP 259, CO-9 MP 63-97, US-40 west of MP 256, US-50 west of
+///   MP 225, US-160 west of MP 304, US-285 west of MP 250, US-550 MP 0-130.
+/// - CA: I-80 Donner and I-5 Grapevine and Siskiyou (Caltrans chain
+///   requirements); US-50 Echo, CA-58 Tehachapi and I-15 Cajon are
+///   UNVERIFIED rows, kept because Caltrans posts controls there.
+/// - WA: WAC 204-24-050(2)(i): I-90 MP 32-101, I-82 MP 3-26, US-2 MP 36-108,
+///   US-12 MP 135-187, US-97 (two stretches), SR-410, SR-20, SR-155, SR-970,
+///   SR-14 and SR-542.
+/// - ID: I-90 (Fourth of July and Lookout passes) and US-12 (Lolo Pass).
+/// - OR: ODOT snow zones on I-84 Cabbage Hill, I-5 Siskiyou, US-26 and
+///   OR-58 (Willamette Pass).
+pub const CHAIN_CORRIDORS: [(&str, &[&str]); 5] = [
+    (
+        "CO",
+        &[
+            "I-70", "CO-9", "US-40", "US-50", "US-160", "US-285", "US-550",
+        ],
+    ),
+    ("CA", &["I-80", "I-5", "US-50", "CA-58", "I-15"]),
+    (
+        "WA",
+        &[
+            "I-90", "I-82", "US-2", "US-12", "US-97", "WA-410", "WA-20", "WA-155", "WA-970",
+            "WA-14", "WA-542",
+        ],
+    ),
+    ("OR", &["I-84", "I-5", "US-26", "OR-58"]),
+    ("ID", &["I-90", "US-12"]),
+];
+
+/// Whether `highway` in `state` can carry a chain law (`CHAIN_CORRIDORS`).
+pub fn on_chain_corridor(state: &str, highway: &str) -> bool {
+    match CHAIN_CORRIDORS.iter().find(|(code, _)| *code == state) {
+        Some((_, highways)) => highways.contains(&highway),
+        None => true,
+    }
+}
+
+/// Colorado's carry rule: a commercial vehicle over 16,000 lb on these
+/// corridors must carry chains from September 1 to May 31 (CSP chain-law
+/// page). Matched by highway, inside a chain-law area (the mountain run).
+pub const CO_CHAIN_CARRY_CORRIDORS: [&str; 7] = [
+    "I-70", "CO-9", "US-40", "US-50", "US-160", "US-285", "US-550",
+];
+
+/// Montana: trucks of 26,001 lb or more must carry chains from October 1 to
+/// April 30 (MCA 61-9-436). No fine is verified, so the game only warns.
+pub fn in_mt_chain_carry_season(month: u32) -> bool {
+    !(5..=9).contains(&month)
+}
+
+/// Which Montana chain season (October 1 to April 30) a point on the career
+/// clock falls in, counted from the career's first October; January to
+/// April belong to the season that began the October before.
+pub fn mt_chain_season_id(game_hours: f64) -> i64 {
+    // Day of year 274 is October 1 on the career's fixed 365-day year.
+    let days = crate::sim::season::CAREER_START_DAY_OF_YEAR + game_hours / 24.0 - 274.0;
+    (days / 365.0).floor() as i64
+}
+
+/// September 1 to May 31: Colorado's chain-carry season.
+pub fn in_co_chain_carry_season(month: u32) -> bool {
+    !(6..=8).contains(&month)
+}
 pub const CHAIN_LAW_SAMPLE_MI: f64 = 0.25;
 pub const CONDITIONS_SPEED_MARGIN_MPH: f64 = 8.0;
 pub const CONDITIONS_GRIP_CEILING: f64 = 0.85;
@@ -598,6 +739,12 @@ pub struct TripEventData {
     /// thing sitting in the lane, the moving-hazard safe speed for weather
     /// that spans the road.
     pub in_lane: Option<bool>,
+    /// Which neighbouring lane the call found open, the reading
+    /// `dodgeable` folds in. Set on a vehicle-ahead hazard.
+    pub open_side: Option<OpenSide>,
+    /// The vehicle-ahead call as lane keeping on full answers it, by
+    /// passing into `open_side` (see `passing_hazard_call`).
+    pub pass_message: Option<SpokenMessage>,
     pub name: Option<String>,
     pub weather: Option<WeatherKind>,
     pub curve: Option<RouteCurve>,
@@ -743,6 +890,9 @@ pub struct RoadStop {
     /// Surveyed truck-parking spot count; 0 means unsurveyed.
     pub parking_spaces: i64,
     pub vehicle_access: String,
+    /// Route mile of the interchange record that serves this stop, when the
+    /// bake decided one: matched exactly, never searched near.
+    pub interchange_mi: Option<f64>,
 }
 
 impl RoadStop {
@@ -757,6 +907,7 @@ impl RoadStop {
             exit_label: String::new(),
             parking_spaces: 0,
             vehicle_access: DEFAULT_VEHICLE_ACCESS.to_string(),
+            interchange_mi: None,
         }
     }
 

@@ -1,6 +1,6 @@
 //! `DrivingState.__init__` (port of `freight_fate/states/driving.py`), plus
 //! the `__init__`-time work the mixins delegated: `_enforcement_init`,
-//! `_reset_traffic_passes`, `_reset_lane_gap`, `_reset_turn_state_for_trip`.
+//! `_reset_lane_gap`, `_reset_turn_state_for_trip`.
 //!
 //! Field order follows the Python constructor, and every field the struct
 //! declares is assigned here -- no `..Default::default()`, so a field added
@@ -14,6 +14,7 @@ use ff_core::data::world_models::Route;
 use ff_core::models::cargo_condition::cargo_fragility;
 use ff_core::models::jobs::Job;
 use ff_core::pyrandom::PyRandom;
+use ff_core::radio::community::{load_community_stations, new_community_stations};
 use ff_core::radio::{
     default_radio_catalog, load_personal_playlists, RadioState, RadioStation, PLAYLISTS_DIR_NAME,
 };
@@ -25,12 +26,17 @@ use ff_core::sim::season::real_clock_game_hours;
 use ff_core::sim::surge::{liquid_load_for, LiquidCargo};
 use ff_core::sim::trip_traffic::TrafficProvider;
 use ff_core::sim::truck_parking::TruckParkingProvider;
+use ff_core::sim::turn_guide::TurnGuide;
 use ff_core::sim::vehicle::TruckState;
 use ff_core::sim::weather::WeatherProvider;
 
 use crate::app::GameContext;
 use crate::net::UreqTransport;
 use crate::states::driving_core::*;
+use crate::states::driving_events::billboard_moment::BillboardWatch;
+use crate::states::driving_updates::radio_channel3000::{
+    channel3000_for_drive, channel3000_playable,
+};
 
 use super::DrivingState;
 
@@ -187,6 +193,16 @@ impl DrivingState {
                 ..Default::default()
             },
         );
+        // How often a trooper pulls this driver in for a routine inspection
+        // rides the safety record from the first mile.
+        {
+            let (scale, blitz) = crate::states::driving_enforcement::roadside_inspection_scale_for(
+                ctx,
+                trip.truck.damage_pct,
+            );
+            trip.roadside_inspection_scale = scale;
+            trip.roadcheck_blitz = blitz;
+        }
         if ctx.settings.time_scale == 1.0 && start_hour.is_none() {
             let local_hour = profile_of(ctx).calendar_game_hours().rem_euclid(24.0);
             let reference_hour = (local_hour - trip.start_timezone.offset_h).rem_euclid(24.0);
@@ -218,6 +234,16 @@ impl DrivingState {
         let music_night = is_night(trip.local_start_hour());
 
         let mut catalog: Vec<RadioStation> = default_radio_catalog().to_vec();
+        let channel3000 = channel3000_for_drive(
+            trip_seed,
+            trip.local_start_hour(),
+            initial_airtime_s(trip_seed),
+        );
+        if !channel3000_playable(channel3000.as_ref()) {
+            catalog.retain(|station| !DrivingState::is_channel3000(station));
+        }
+        let community = load_community_stations(&crate::community_stations::cache_path());
+        catalog.extend(new_community_stations(&catalog, community));
         catalog.extend(load_personal_playlists(&personal_playlists_dir()));
         let radio = RadioState::from_settings(
             catalog,
@@ -262,6 +288,8 @@ impl DrivingState {
             start_brake_wear,
             start_engine_wear,
             rig_buffs: RigBuffs::new(),
+            stop_visit: Default::default(),
+            drove_automatic: false,
             weather_source_real: ctx.settings.real_weather,
             alerts_next_poll_mi: 0.0,
             alerts_pending: None,
@@ -276,15 +304,21 @@ impl DrivingState {
             radio,
             radio_station_id: String::new(),
             radio_playlist: Vec::new(),
+            radio_playing_key: String::new(),
             radio_track_index: 0,
             radio_elapsed_s: 0.0,
             radio_break_queue: Vec::new(),
             radio_break_pos: 0,
             radio_break_count: 0,
             radio_tracks_since_break: 0,
+            synth_music_applied: None,
+            radio_track_len: None,
             // The stations were already on the air before this drive began.
             radio_airtime_s: initial_airtime_s(trip_seed),
+            channel3000,
+            channel3000_serial: 0,
             playlist_positions: HashMap::new(),
+            playlist_shuffle: HashMap::new(),
             playlist_wait_s: 0.0,
             playlist_stream_tries: 0,
             playlist_stream_skips: 0,
@@ -305,6 +339,8 @@ impl DrivingState {
             hos_fine_count: 0,
             hos_stop_check_key: None,
             hos_stop_warning_pending: None,
+            hos_plan_hint_check_key: None,
+            hos_plan_hint_pending: None,
             enforcement_events: HashSet::new(),
             out_of_service_count: 0,
             drowsy_said: false,
@@ -337,14 +373,24 @@ impl DrivingState {
             overspeed_chime_timer: 0.0,
             construction_seen: false,
             traffic_seen: false,
+            billboard_watch: BillboardWatch::now(ctx, start_damage),
+            pool_billboards_heard: 0,
             brake_squeal_cooldown_s: 0.0,
             hydro_active: false,
             jake_slip_active: false,
             jake_selected_stage: JAKE_STAGES,
             chains_fast_active: false,
+            chain_cap_cruise_mph: None,
+            chain_cap_keeper_mph: None,
+            chain_cap_said: false,
             chain_law_warned: HashSet::new(),
             chain_law_cited: HashSet::new(),
-            curve_slip_active: false,
+            chain_checkpoint_hold: false,
+            chain_carry_warned: false,
+            chain_carry_rolled: false,
+            chain_slap_said: false,
+            chain_tightened: false,
+            curve_warned_mi: None,
             speeding_tickets: 0,
             ticket_fines_paid: 0.0,
             jake_zone_fines: 0,
@@ -370,11 +416,15 @@ impl DrivingState {
             failure_to_stop_count: 0,
             pull_over_grace_s: 0.0,
             pull_over_forced_s: 0.0,
-            pursuit_hold_s: 0.0,
+            pull_over_run_s: 0.0,
             record_events: Vec::new(),
             fatigue_events: 0,
-            weigh_station_notice_key: String::new(),
+            weigh_station_noticed: HashSet::new(),
             weigh_station_reminder_key: String::new(),
+            weigh_station_reminder_age_s: 0.0,
+            scale_reminder_held_by_game: HashSet::new(),
+            scale_reminder_late_by_driver: HashSet::new(),
+            scale_reannounce: None,
             weigh_station_pending: None,
             weigh_station_transponder_verdict: HashMap::new(),
             traced_jake_stage: -1,
@@ -403,6 +453,7 @@ impl DrivingState {
             deferred_post_ids: HashSet::new(),
             held_observation: None,
             pacing_mi: HashMap::new(),
+            post_id_scratch: String::new(),
             rescue_offered: false,
             damage_band,
             worst_damage_band: damage_band,
@@ -417,26 +468,30 @@ impl DrivingState {
             signal_timer: 0.0,
             exit_stop: None,
             selected_stop_key: None,
+            selected_stop_break: false,
             selected_stop_assist_armed: false,
             selected_stop_assist_said: false,
             selected_stop_assist_brake: 0.0,
             exit_signal_on: false,
             exit_signal_canceled: false,
-            exit_lane_alignment: 0.0,
-            exit_lane_prompt_said: false,
-            exit_lane_ready_said: false,
-            exit_commit_said: false,
+            canceled_exit_key: None,
+            exit_lane_entered: false,
+            exit_taper_said: false,
             exit_cancel_armed: false,
             exit_right_hold_s: 0.0,
             exit_right_taps: 0,
             exit_tap_hint_said: false,
             exit_countdown_said: Vec::new(),
             ramp_mi: None,
+            ramp_layout: None,
+            decel_lane_brake: 0.0,
+            decel_lane_assist_said: false,
             ramp_stop: None,
             ramp_end_said: false,
             ramp_arrival_grace_s: 0.0,
             ramp_terminal_miss_count: 0,
             ramp_control: String::new(),
+            ramp_light_profile: 0,
             ramp_light_offset_s: 0.0,
             ramp_light_timer: 0.0,
             ramp_light_announced: false,
@@ -446,13 +501,22 @@ impl DrivingState {
             ramp_waiting_at_sign: false,
             cross_bubble: None,
             ramp_creep_prompt_said: false,
+            ramp_creep_prompt_gap_mi: 0.0,
             ramp_gap_milestones_said: HashSet::new(),
             ramp_bar_tick_timer: 0.0,
             bar_solid_on: false,
             ramp_assist_said: false,
+            ramp_green_roll_said: false,
             ramp_assist_brake: 0.0,
             approach_pull_ahead: false,
             approach_pull_ahead_canceled: false,
+            street_bar_mi: None,
+            street_control_kind: String::new(),
+            street_controls_played: HashSet::new(),
+            street_controls_trip: 0,
+            street_light_split: None,
+            street_controls_on:
+                crate::states::driving_events::street_controls::STREET_CONTROLS_IN_PLAY,
             critical_curve: None,
             critical_call_age_s: 0.0,
             critical_respeak_at: None,
@@ -464,11 +528,16 @@ impl DrivingState {
             destination_exit_announced_key: String::new(),
             destination_exit_response_s: 0.0,
             surface_chain: false,
+            stop_chain: None,
+            stop_chain_end_said: false,
+            stop_streets_on: crate::states::driving_events::chains::STOP_STREETS_IN_PLAY,
+            facility_streets_on: ctx.settings.facility_streets,
             highway_trip: None,
             departure_chain: false,
             departure_checked: false,
             ladder_leg_index: -1,
             destination_exit_cache: None,
+            destination_exit_labeled: None,
             cruise_mph: None,
             cruise_working_mph: None,
             cruise_held_mph: None,
@@ -478,15 +547,22 @@ impl DrivingState {
             cruise_trim: 0.0,
             cruise_jake_stage: 0,
             cruise_jake_cooldown_s: 0.0,
+            cruise_jake_reverse_s: 0.0,
+            cruise_jake_last_step: 0,
             cruise_snubbing: false,
             pcc_phase: String::new(),
-            pcc_cue_s: 0.0,
             climb_cue_said: false,
             climb_cue_s: 0.0,
             climb_beaten_s: 0.0,
-            descent_cue_s: 0.0,
+            descent_said_mph: None,
+            descent_safe_mph: None,
+            descent_safe_key: None,
+            descent_posted_cap_mph: None,
             trailer_refused: false,
+            trailer_repaired: false,
+            visible_trailer_defect: (String::new(), f64::NEG_INFINITY),
             nice_speed_mi: 0.0,
+            double_nickel_mi: 0.0,
             jake_descent_mi: 0.0,
             radio_states_station: String::new(),
             radio_states_held: HashSet::new(),
@@ -508,6 +584,7 @@ impl DrivingState {
             acc_limit_cap_said: None,
             acc_weather_cap_said: None,
             construction_slowdown: None,
+            construction_taper_stage: None,
             acc_limit_hold: None,
             acc_follow_cue_s: 0.0,
             descent_control_active: false,
@@ -515,22 +592,24 @@ impl DrivingState {
             descent_beaten_s: 0.0,
             descent_capture_active: false,
             assist_exit_slowing_said: false,
-            lane_keeping_grant_said: false,
-            lane_keeping_takes_exit_said: false,
             curve_assist_active: false,
             curve_assist_cue_s: 0.0,
             curve_assist_spoke: false,
             curve_servo: None,
+            curve_servo_declined_to_mi: None,
             transition_assist_active: false,
             keeper_mph: None,
             keeper_throttle: 0.0,
             keeper_zone: String::new(),
+            speed_control_floor_said: false,
             keeper_zone_limit: None,
             keeper_ease_said: None,
             keeper_ease_target: None,
             keeper_held_mph: None,
             keeper_held_reason: String::new(),
             keeper_snub: 0.0,
+            keeper_corner_braking: false,
+            keeper_snub_target_mph: 0.0,
             keeper_droop_s: 0.0,
             keeper_droop_said: false,
             keeper_droop_cue_s: 0.0,
@@ -546,9 +625,9 @@ impl DrivingState {
             gate_miss_count: 0,
             wrong_way_mi: 0.0,
             wrong_way_said_at: 0.0,
-            traffic_pass_side: HashMap::new(),
-            traffic_passed_keys: HashSet::new(),
-            traffic_pass_cooldown_s: 0.0,
+            traffic_sounds: [None, None, None],
+            traffic_bed_volume: 0.0,
+            traffic_ramp_rolled_ft: 0.0,
             lane_gap_watch: None,
             lane_gap_prev_lane: Some(0),
             lane_gap_blocker_key: None,
@@ -558,11 +637,16 @@ impl DrivingState {
             turn_miss_count: 0,
             turn_trip_id: 0,
             turn_advised: HashSet::new(),
-            turn_missed: HashSet::new(),
             turn_resolved: HashSet::new(),
+            turn_announced: HashSet::new(),
+            turn_called_now: HashSet::new(),
             turn_grace_s: 0.0,
             air_ready_said: air_ready,
             low_air_said: air_low_warning,
+            // New drives start clear so a tank already under the line still
+            // earns one cue; resumed drives re-derive the latch below.
+            low_fuel_said: false,
+            fuel_range_short_said: false,
             spring_brake_said: spring_brakes_active,
             brake_lockout_cue_timer: 0.0,
             brake_air_hissed: false,
@@ -571,12 +655,20 @@ impl DrivingState {
             overrev_s: 0.0,
             overrev_warn_due: OVERREV_GRACE_S,
             lane_change_target: None,
+            stick_lane_request: 0,
             lane_change_timer: 0.0,
             lane_signal_timer: 0.0,
+            passing: None,
+            pass_returning: false,
+            keeping_lane_change: false,
+            pass_return_ease_mph: None,
+            keep_right_excused_s: 0.0,
             merge_deadline: None,
             departure_ramp_mi: None,
+            departure_merge_road_mph: 0.0,
             departure_cruise_handoff_mph: None,
             departure_merge_recovery: false,
+            clock_pacing: Default::default(),
             lane_count_seen: None,
             lane_before_narrow: None,
             merge_taper_warned: None,
@@ -592,14 +684,17 @@ impl DrivingState {
             next_joint_distance_m,
             lane_guidance: LaneGuidance::new(),
             edge_loop_key: None,
-            road_pan_applied: 0.0,
+            road_pan_applied: None,
             lane_guide_tone_on: false,
             lane_guide_pan_applied: 0.0,
+            turn_guide: TurnGuide::new(),
+            engine_guide_pan_applied: None,
             transverse_strip_miles,
             transverse_fired: Vec::new(),
             lane_locator_on: false,
             lane_locator_timer: 0.0,
             steer_cue_active: false,
+            exit_blinker_active: false,
             steer_cue_timer: 0.0,
             steer_cue_hold_s: 0.0,
             curve_run: None,
@@ -609,14 +704,18 @@ impl DrivingState {
             reverse_cue_active: false,
             air_cue_active: false,
             jake_cue_key: None,
+            jake_cue_idle_s: 0.0,
             curve_assist_jake: false,
             auto_jake: false,
-            auto_jake_enabled: true,
+            auto_jake_enabled: ctx.settings.automatic_jake,
             resume_target_mph: None,
             auto_jake_hold_mph: None,
             auto_jake_cooldown_s: 0.0,
+            auto_jake_reverse_s: 0.0,
+            auto_jake_last_step: 0,
             shift_recover_t: 1.0,
             shift_hold_rpm: None,
+            manual_engage_clunk_pending: false,
             engine_audio_throttle: 0.0,
             reverse_brake_held: false,
             reverse_accel_held: false,

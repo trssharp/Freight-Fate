@@ -99,9 +99,8 @@ impl Menu for ShoulderSleepConfirmationState {
         let reason = self.reason.clone();
         let current = self.current_text(ctx);
         ctx.say(&format!(
-            "{title}. {reason} Shoulder sleep is emergency-only. Ten hours of poor rest. Hours \
-             of service reset if enforced. Possible parking ticket, possible minor truck damage, and the \
-             deadline keeps counting. {current}"
+            "{title}. {reason} Emergency shoulder sleep: 10 hours of poor rest, HOS reset if \
+             enforced. Ticket and light damage possible; the deadline keeps running. {current}"
         ));
     }
 

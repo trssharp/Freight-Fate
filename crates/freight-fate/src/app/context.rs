@@ -20,17 +20,18 @@
 //! duck) is in `app::speech_delivery`.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ff_core::achievements::{award, AchievementAward};
 use ff_core::data::world::World;
+use ff_core::l10n::Translator;
 use ff_core::message_log::{MessageCategory, MessageLog};
 use ff_core::models::economy::Economy;
 use ff_core::models::profile::Profile;
-use ff_core::music::music_track_duration_s;
+use ff_core::music_synth::SynthWorker;
 use ff_core::playtest_levers::LeverContext;
 use ff_core::settings::Settings;
 use ff_core::sim::real_fuel_price::FuelPriceProvider;
@@ -43,10 +44,12 @@ use ff_core::speech_text::achievement_announced;
 
 use crate::account_achievements::AccountAchievements;
 use crate::audio::{Audio, VolumeUpdate};
+use crate::bindings::KeyBindings;
 use crate::cloud_saves::{BackupAnnouncements, CloudSaves};
 use crate::controller::ControllerManager;
 use crate::discord_presence::DiscordPresence;
 use crate::duty_watch::DutyWatch;
+use crate::jaws_script::JawsScript;
 use crate::meaningful_play::MeaningfulPlayReason;
 use crate::net::UreqTransport;
 use crate::online_journal::{queue_achievement, JournalOutbox};
@@ -109,9 +112,10 @@ pub struct Services {
     /// The background watch on the drivers list (the "Say when drivers go
     /// on or off duty" row).
     pub duty: DutyWatch,
+    /// The optional JAWS arrow-key script (Settings, Speech).
+    pub jaws_script: JawsScript,
     pub cloud: CloudSaves,
     pub journal: JournalOutbox,
-    pub mastodon: JournalOutbox,
 }
 
 /// A career achievement and whether this installation can publish it publicly.
@@ -131,6 +135,9 @@ pub struct GameContext {
     pub audio: Box<dyn Audio>,
     pub controller: ControllerManager,
     pub settings: Settings,
+    /// Which key and pad button does what at the wheel, rebuilt from
+    /// `settings` by `apply_bindings` whenever the player moves one.
+    pub bindings: KeyBindings,
     pub world: &'static World,
     pub economy: Economy,
     pub profile: Option<Profile>,
@@ -138,6 +145,9 @@ pub struct GameContext {
     /// active career's progress and reward state.
     pub account_achievements: AccountAchievements,
     pub message_log: MessageLog,
+    /// Turns each finished English line into the player's language
+    /// (`app::language`); English passes lines through untouched.
+    pub translator: Translator,
     pub achievement_notice: String,
     pub achievement_notice_timer: f64,
     /// True while a playtest-lever scenario runs unsaved (see
@@ -169,13 +179,19 @@ pub struct GameContext {
     /// Whether the game mix is currently stepped down under the event voice
     /// (Settings > Audio; see `engage_speech_duck`).
     pub(crate) speech_ducked: bool,
-    /// Deadline for a duck an earcon opened, in real seconds. Zero when the
-    /// duck belongs to a spoken line, which the pacer's projection ends.
-    pub(crate) earcon_duck_until: f64,
     /// True only while a control the player actually pressed is being
     /// handled. See `player_asked`: a readout somebody asked for cuts the
     /// line in progress even at the wheel, where unasked-for lines queue.
     pub(crate) speech_requested: bool,
+    /// Which screen and row had focus when the copy mark was last set.
+    copy_focus_key: Option<(usize, usize)>,
+    /// `message_log.total_added()` when the screen opened or focus last
+    /// moved. While nothing newer is logged, the copy key copies the row.
+    pub(crate) copy_mark: u64,
+    /// `message_log.total_added()` at the end of the last input, so a
+    /// screen's opening lines (or a page line) logged by the input that
+    /// moved focus stay ahead of the mark and can be copied first.
+    copy_seen: u64,
     /// FIRST_OCCURRENCE and TRANSITIONS need memory of what has already
     /// been said; Settings cannot hold it, so it lives here beside the
     /// pacer. `ladder_said` is leg-scoped ("once per leg"), `ladder_last`
@@ -183,13 +199,27 @@ pub struct GameContext {
     /// change of state.
     pub(crate) ladder_said: HashSet<(String, String)>,
     pub(crate) ladder_last: HashMap<String, String>,
+    /// The cut lines the pacer has handed back, newest last (see
+    /// `requeue_cut_event`). A hand-back reaches the voice as a second
+    /// delivery of the same text, so anything counting what the GAME announced
+    /// from what the VOICE received has to be able to tell the two apart; the
+    /// playtest rig reads this. Bounded: only the recent ones are kept.
+    pub(crate) handed_back: VecDeque<String>,
 
     // -- music rotation ----------------------------------------------------------------
-    music_pool_positions: HashMap<(String, Vec<String>), usize>,
-    music_pool_last: HashMap<String, String>,
-    music_rotation_pool: Option<(String, Vec<String>)>,
+    pub(crate) music_pool_positions: HashMap<(String, Vec<String>), usize>,
+    pub(crate) music_pool_last: HashMap<String, String>,
+    /// The CALLER's pool and sequence, so leaving Synthesized mode finds the
+    /// soundtrack again (see `app::synth_music`).
+    pub(crate) music_rotation_pool: Option<(String, Vec<String>)>,
+    /// Whether the rotation was started in Synthesized mode; a flip since
+    /// then restarts it instead of refreshing it.
+    music_rotation_synth: bool,
     music_rotation_track: Option<String>,
     music_rotation_elapsed_s: f64,
+    music_rotation_duration_s: f64,
+    /// Renders synthesized pieces off the loop; shut down in `App::shutdown`.
+    pub synth_worker: SynthWorker,
 
     // -- live-data providers, lazy and session-long -----------------------------------
     real_weather: Option<Arc<RealWeatherProvider>>,
@@ -219,25 +249,21 @@ pub struct ContextParts {
 
 impl GameContext {
     pub fn new(parts: ContextParts) -> Self {
-        // The S4 ladder's earcons (LADDER_EARCONS) can play from any screen
-        // the silencing gate fires on, not only the Learn game sounds screen
-        // that used to be the sole registrant. Idempotent and cheap, so doing
-        // it once here means the drive never has to wait on that screen
-        // having been visited first.
-        ff_core::ladder_earcons::register_ladder_earcons();
-        // Same reason, same shape: the guide tone must exist before a drive
-        // starts, not only after the Learn screen has been opened.
+        // The guide tone must exist before a drive starts, not only after
+        // the Learn game sounds screen has been opened. Idempotent and cheap.
         ff_core::lane_guide_tone::register_lane_guide_tone();
         Self {
             speech: parts.speech,
             audio: parts.audio,
             controller: parts.controller,
+            bindings: KeyBindings::from_settings(&parts.settings),
             settings: parts.settings,
             world: parts.world,
             economy: parts.economy,
             profile: None,
             account_achievements: parts.account_achievements,
             message_log: parts.message_log,
+            translator: Translator::english(),
             achievement_notice: String::new(),
             achievement_notice_timer: 0.0,
             playtest_sandbox: false,
@@ -250,15 +276,21 @@ impl GameContext {
             input: HeldKeys::default(),
             running: false,
             speech_ducked: false,
-            earcon_duck_until: 0.0,
             speech_requested: false,
+            copy_focus_key: None,
+            copy_mark: 0,
+            copy_seen: 0,
             ladder_said: HashSet::new(),
             ladder_last: HashMap::new(),
+            handed_back: VecDeque::new(),
             music_pool_positions: HashMap::new(),
             music_pool_last: HashMap::new(),
             music_rotation_pool: None,
+            music_rotation_synth: false,
             music_rotation_track: None,
             music_rotation_elapsed_s: 0.0,
+            music_rotation_duration_s: 0.0,
+            synth_worker: SynthWorker::start(),
             real_weather: None,
             real_traffic: None,
             weather_alerts: None,
@@ -273,7 +305,7 @@ impl GameContext {
     /// individual `setting` are enabled.
     ///
     /// The master governs the orinks.net and sharing services only (drivers
-    /// board, profile sharing, cloud backup, Mastodon, Discord presence).
+    /// board, profile sharing, cloud backup, Discord presence).
     /// Live-data simulation sources -- weather, traffic, parking -- follow
     /// their own Settings toggles and are deliberately NOT gated here (owner
     /// ruling, 2026-08-08: two testers lost real weather to the master
@@ -480,6 +512,31 @@ impl GameContext {
                 }
             }
         }
+        self.note_copy_focus();
+    }
+
+    /// Set the copy mark when the top screen or its focused row changed. The
+    /// mark is the log count from before the input that changed focus, so
+    /// what that input logged (a screen's opening lines, a search result, a
+    /// page line) is copied first; what came earlier (a re-read row) is
+    /// behind the mark, so the next focus move copies the focused row.
+    pub(crate) fn note_copy_focus(&mut self) {
+        let Some(state) = self.state() else {
+            self.copy_focus_key = None;
+            return;
+        };
+        let Ok(borrowed) = state.try_borrow() else {
+            return;
+        };
+        let key = borrowed
+            .copy_focus(self)
+            .map(|focus| (Rc::as_ptr(&state) as *const () as usize, focus.index));
+        drop(borrowed);
+        if key != self.copy_focus_key {
+            self.copy_focus_key = key;
+            self.copy_mark = self.copy_seen;
+        }
+        self.copy_seen = self.message_log.total_added();
     }
 
     /// Push `state` and enter it (`push_state(state, should_enter=True)`).
@@ -720,12 +777,6 @@ impl GameContext {
             ));
     }
 
-    /// Reflect the Mastodon sharing setting (e.g. after a settings change).
-    pub fn apply_mastodon_sharing(&mut self) {
-        let enabled = self.online_enabled(self.settings.mastodon_sharing);
-        self.services.mastodon.set_enabled(enabled);
-    }
-
     /// The backup service, for the Cloud backup menu.
     pub fn cloud_saves_service(&self) -> &CloudSaves {
         &self.services.cloud
@@ -737,8 +788,7 @@ impl GameContext {
         self.services.online.set_identity(identity.clone());
         self.services.duty.set_identity(identity.as_ref());
         self.services.cloud.set_identity(identity.clone());
-        self.services.journal.set_identity(identity.clone());
-        self.services.mastodon.set_identity(identity);
+        self.services.journal.set_identity(identity);
     }
 
     /// Reflect the controller setting (e.g. after a settings change).
@@ -753,9 +803,38 @@ impl GameContext {
             .set_haptics_enabled(self.settings.haptics_enabled);
     }
 
-    /// Name a control for a spoken prompt, following the active device.
+    /// Rebuild the control table from the settings (after the player moves
+    /// a shortcut, or resets them).
+    pub fn apply_bindings(&mut self) {
+        self.bindings = KeyBindings::from_settings(&self.settings);
+    }
+
+    /// The key or button `action` is on, for whichever device is in use:
+    /// the pad button when a controller is active and the control has one,
+    /// else the keyboard key (the keyboard always stays active).
+    pub fn control_name(&self, action: crate::bindings::Action) -> String {
+        let device = self.controller.device();
+        if device == ff_core::input_hints::CONTROLLER && action.on_pad() {
+            self.bindings.pad_spoken(action)
+        } else if device == ff_core::input_hints::TOUCH {
+            self.bindings.touch_noun(action)
+        } else {
+            self.bindings.spoken(action)
+        }
+    }
+
+    /// Name a control for a spoken prompt, following the active device and
+    /// whatever key or button the player has it on.
     pub fn control_hint(&self, action: &str) -> String {
-        self.controller.hint(action)
+        let device = self.controller.device();
+        let moved = if device == ff_core::input_hints::CONTROLLER {
+            self.bindings.hint_pad_phrase(action)
+        } else if device == ff_core::input_hints::TOUCH {
+            self.bindings.hint_touch_phrase(action)
+        } else {
+            self.bindings.hint_key_phrase(action)
+        };
+        moved.unwrap_or_else(|| self.controller.hint(action))
     }
 
     pub fn apply_speech(&mut self) {
@@ -809,7 +888,8 @@ impl GameContext {
         fade_ms: u32,
         advance: bool,
     ) -> String {
-        if !advance {
+        let synth = self.settings.synth_music;
+        if !advance && self.music_rotation_synth == synth {
             if let (Some((pool, _)), Some(track)) =
                 (&self.music_rotation_pool, &self.music_rotation_track)
             {
@@ -823,18 +903,30 @@ impl GameContext {
                 }
             }
         }
-        let track = self.next_music_track(pool_name, sequence);
-        if track.is_empty() {
+        let effective = self.effective_sequence(pool_name, sequence);
+        let effective_refs: Vec<&str> = effective.iter().map(String::as_str).collect();
+        let picked = self.next_music_track(pool_name, &effective_refs);
+        if picked.is_empty() {
             self.clear_music_rotation();
-            return track;
+            return picked;
+        }
+        let track = self.resolve_synth(&picked);
+        // Queue the piece after this one so it is ready when this ends.
+        if let Some(pos) = effective.iter().position(|k| *k == picked) {
+            if let Some(next) = effective.get((pos + 1) % effective.len()) {
+                self.request_synth(next);
+            }
         }
         self.music_rotation_pool = Some((
             pool_name.to_string(),
             sequence.iter().map(|s| s.to_string()).collect(),
         ));
+        self.music_rotation_synth = synth;
         self.music_rotation_track = Some(track.clone());
         self.music_rotation_elapsed_s = 0.0;
         self.audio.play_music_with(&track, fade_ms);
+        // Once per track: a synth length is a full composition, too dear per frame.
+        self.music_rotation_duration_s = self.track_duration_s(&track);
         track
     }
 
@@ -843,7 +935,7 @@ impl GameContext {
         // Every state's per-frame update lands here, which makes it the one
         // place the live diesel price is sure to be kept current.
         self.sync_fuel_prices();
-        let (Some(_), Some(track)) = (&self.music_rotation_pool, &self.music_rotation_track) else {
+        let (Some(_), Some(_)) = (&self.music_rotation_pool, &self.music_rotation_track) else {
             // No menu bed is rotating. A drive sitting under this menu
             // (pause, settings, a traffic stop...) keeps its own playlist
             // turning over, so the music does not fall silent when the
@@ -852,7 +944,7 @@ impl GameContext {
             return;
         };
         self.music_rotation_elapsed_s += dt.max(0.0);
-        if self.music_rotation_elapsed_s < music_track_duration_s(track) {
+        if self.music_rotation_elapsed_s < self.music_rotation_duration_s {
             return;
         }
         let (pool_name, sequence) = self.music_rotation_pool.clone().expect("checked above");

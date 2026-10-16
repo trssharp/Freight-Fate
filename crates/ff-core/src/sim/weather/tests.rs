@@ -404,10 +404,7 @@ fn test_live_report_lines_read_the_station_back() {
     // 18 C -> 64.4 F -> "64".
     assert_eq!(ws.source_conditions(true), "rain, 64 degrees");
     assert_eq!(ws.source_conditions(false), "rain, 18 degrees Celsius");
-    assert_eq!(
-        ws.report_lead(true),
-        "Live weather: rain, 64 degrees. The observation is 12 minutes old"
-    );
+    assert_eq!(ws.report_lead(true), "Live weather: rain, 64 degrees");
     assert_eq!(ws.observation_age_value(), "12 minutes old");
     assert_eq!(ws.event_source_label(), "Live weather");
     assert_eq!(ws.conditions_label(), "Live conditions");
@@ -451,7 +448,7 @@ fn test_observation_age_text_rounds_down_to_whole_minutes() {
     );
     assert_eq!(
         ws.last_known_notice(),
-        "The observation is 1 minute old. Live weather is updating for your current location"
+        "Live weather is updating for your current location"
     );
     // No city tracked: nothing to age.
     let mut ws = with_provider(
@@ -463,7 +460,7 @@ fn test_observation_age_text_rounds_down_to_whole_minutes() {
         }),
     );
     assert_eq!(ws.observation_age_text(), None);
-    assert_eq!(ws.last_known_notice(), "Observation age is unavailable");
+    assert_eq!(ws.last_known_notice(), "");
     assert_eq!(
         ws.live_observation_notice(),
         "Observation age is unavailable"
@@ -813,7 +810,7 @@ fn test_live_change_omits_modeled_temperature_and_does_not_hide_later_stale_stat
     let delayed = kind_messages(&trip.update(0.0), TripEventKind::WeatherChange);
     assert_eq!(delayed.len(), 1, "{delayed:?}");
     assert!(
-        delayed[0].starts_with("The observation is 12 minutes old"),
+        delayed[0].starts_with("The latest live weather check failed"),
         "{}",
         delayed[0]
     );
@@ -822,7 +819,7 @@ fn test_live_change_omits_modeled_temperature_and_does_not_hide_later_stale_stat
 }
 
 #[test]
-fn test_freshly_fetched_old_observation_change_stays_live_and_announces_age() {
+fn test_freshly_fetched_old_observation_change_stays_live_and_leaves_the_age_unsaid() {
     use crate::sim::trip_models::TripEventKind;
 
     struct OldObservationProvider;
@@ -847,7 +844,7 @@ fn test_freshly_fetched_old_observation_change_stays_live_and_announces_age() {
         "{}",
         changes[0]
     );
-    assert!(changes[0].contains("The observation is 12 minutes old"));
+    assert!(!changes[0].contains("minutes old"));
     assert!(!changes[0].to_lowercase().contains("updat"));
 }
 
@@ -1099,17 +1096,13 @@ fn brake_until_speed(
     inspections
 }
 
-/// The lane-closure sentence the construction warning carries, if any.
+/// The merge clause the construction warning carries, if any.
 fn closure_part(zone: &crate::sim::trip_models::Zone) -> String {
     match zone.closed_lane {
-        None => "All lanes open through the work. ".to_string(),
+        None => String::new(),
         Some(lane) => {
-            let (shut, keep) = if lane == 0 {
-                ("right", "left")
-            } else {
-                ("left", "right")
-            };
-            format!("The {shut} lane is closed, merge {keep} at the taper. ")
+            let keep = if lane == 0 { "left" } else { "right" };
+            format!(" Merge {keep}.")
         }
     }
 }
@@ -1186,6 +1179,15 @@ fn real_time_empty_bubble_arrival_reaches_the_player_traffic_status() {
 
     let status = trip.npc_traffic_status();
     assert!(!status.contains("no close traffic"), "{status}");
+    // A slow lead is called once it is within earshot, so close on it.
+    if let Some(arrival) = trip
+        .traffic_manager
+        .vehicles
+        .iter()
+        .find(|vehicle| vehicle.key.starts_with("real-time:"))
+    {
+        trip.position_mi = arrival.position_mi - 0.3;
+    }
     trip.check_npc_traffic_cues();
     assert!(
         trip.events
@@ -1481,11 +1483,8 @@ fn test_trip_uses_only_curated_pois_at_runtime() {
     assert!(route.raw_stop_details().iter().all(|s| s.curated()));
     assert!(!route.stop_details().is_empty());
     assert!(!trip.stops.is_empty());
-    let curated: HashSet<&str> = route
-        .stop_details()
-        .iter()
-        .map(|s| s.name.as_str())
-        .collect();
+    let route_stops = route.stop_details();
+    let curated: HashSet<&str> = route_stops.iter().map(|s| s.name.as_str()).collect();
     assert!(trip.stops.iter().all(|s| curated.contains(s.name.as_str())));
 }
 
@@ -1660,12 +1659,31 @@ fn test_the_approach_speaks_no_more_often_than_it_used_to() {
     assert_eq!(arrival, vec!["destination approach", "facility gate"]);
 }
 
+/// A Chicago facility whose approach is the short synthetic single leg: no
+/// street chain, and short enough that the whole of it is access road. It
+/// used to be written as "Chicago's first facility", which held only while
+/// that facility's endpoint sat on the 2.1-mile floor; the 2026-09-17
+/// endpoint re-sweep moved it from a commuter line to a real intermodal
+/// yard 3.6 miles out, and a long approach starts as an arterial.
+fn short_synthetic_approach(world: &crate::data::world::World) -> crate::data::world_models::Route {
+    world
+        .city("Chicago")
+        .unwrap()
+        .locations
+        .iter()
+        .filter_map(|location| {
+            world
+                .facility_approach_route("Chicago", &location.name)
+                .ok()
+        })
+        .find(|route| route.legs.len() == 1 && route.miles() <= 2.5)
+        .expect("Chicago has a facility with a short synthetic approach")
+}
+
 #[test]
 fn test_pickup_deadhead_route_uses_local_facility_limits() {
     let world = crate::data::world::get_world();
-    let route = world
-        .facility_approach_route("Chicago", &world.city("Chicago").unwrap().locations[0].name)
-        .unwrap();
+    let route = short_synthetic_approach(world);
     let mut trip = trip_on(route, system("great_lakes", 1), seeded(2));
 
     let (limit, reason) = trip.speed_limit_at(0.1);
@@ -1747,6 +1765,42 @@ fn test_a_merged_city_stop_keeps_an_exit_label() {
     assert_eq!(merged[0].exit_label, "exit 2A");
 }
 
+/// Two stops on the trip that share a name, nearest first.
+///
+/// New York to Miami used to pass a run of stops all called "Love's Travel
+/// Stop", and these cases leaned on that. The 2026-09-17 store import gave
+/// each its town, so the map no longer promises a namesake anywhere. One is
+/// made when the route has none: the rule under test keys a plan by name AND
+/// mile, and needs only two stops that differ in the mile alone.
+fn namesakes_on(trip: &mut crate::sim::trip::Trip) -> Vec<crate::sim::trip_models::RoadStop> {
+    use crate::sim::trip_models::RoadStop;
+    let mut by_name: std::collections::BTreeMap<String, Vec<RoadStop>> = Default::default();
+    for stop in &trip.stops {
+        by_name
+            .entry(stop.name.clone())
+            .or_default()
+            .push(stop.clone());
+    }
+    let mut namesakes = by_name
+        .into_values()
+        .find(|group| group.len() >= 2)
+        .unwrap_or_else(|| {
+            let first = trip
+                .stops
+                .iter()
+                .find(|s| s.stop_type == "travel_center")
+                .cloned()
+                .expect("a travel center on the route");
+            let mut twin = first.clone();
+            twin.at_mi = first.at_mi + 60.0;
+            trip.stops.push(twin.clone());
+            trip.stops.sort_by(|a, b| a.at_mi.total_cmp(&b.at_mi));
+            vec![first, twin]
+        });
+    namesakes.sort_by(|a, b| a.at_mi.total_cmp(&b.at_mi));
+    namesakes
+}
+
 #[test]
 fn test_signaling_for_a_namesake_does_not_pass_as_taking_the_planned_exit() {
     let world = crate::data::world::get_world();
@@ -1760,13 +1814,7 @@ fn test_signaling_for_a_namesake_does_not_pass_as_taking_the_planned_exit() {
         .unwrap()
         .expect("a route");
     let mut trip = trip_on(route, system("southeast", 1), seeded(7));
-    let mut namesakes: Vec<_> = trip
-        .stops
-        .iter()
-        .filter(|s| s.name == "Love's Travel Stop")
-        .cloned()
-        .collect();
-    namesakes.sort_by(|a, b| a.at_mi.partial_cmp(&b.at_mi).unwrap());
+    let namesakes = namesakes_on(&mut trip);
     let (planned, other) = (namesakes[0].clone(), namesakes[1].clone());
     trip.planned_stop_key = Some(planned.key());
 
@@ -1805,13 +1853,7 @@ fn test_a_plan_survives_passing_a_stop_that_shares_its_name() {
         .unwrap()
         .expect("a route");
     let mut trip = trip_on(route, system("southeast", 1), seeded(7));
-    let mut namesakes: Vec<_> = trip
-        .stops
-        .iter()
-        .filter(|s| s.name == "Love's Travel Stop")
-        .cloned()
-        .collect();
-    namesakes.sort_by(|a, b| a.at_mi.partial_cmp(&b.at_mi).unwrap());
+    let namesakes = namesakes_on(&mut trip);
     assert!(namesakes.len() >= 2);
     let (target, earlier) = (namesakes[namesakes.len() - 1].clone(), namesakes[0].clone());
     trip.planned_stop_key = Some(target.key());
@@ -1891,9 +1933,7 @@ fn test_facility_gate_warns_before_final_low_speed_zone() {
     use crate::sim::trip_models::TripEventKind;
 
     let world = crate::data::world::get_world();
-    let route = world
-        .facility_approach_route("Chicago", &world.city("Chicago").unwrap().locations[0].name)
-        .unwrap();
+    let route = short_synthetic_approach(world);
     let mut trip = trip_on(route, system("great_lakes", 1), seeded(2));
 
     trip.position_mi = trip.total_miles() - 2.0;
@@ -1918,9 +1958,7 @@ fn test_zone_entry_is_worded_apart_from_its_advance_warning() {
     use crate::sim::trip_models::TripEventKind;
 
     let world = crate::data::world::get_world();
-    let route = world
-        .facility_approach_route("Chicago", &world.city("Chicago").unwrap().locations[0].name)
-        .unwrap();
+    let route = short_synthetic_approach(world);
     let mut trip = trip_on(route, system("great_lakes", 1), seeded(2));
     let gate = trip
         .zones
@@ -1984,7 +2022,7 @@ fn test_construction_zone_warns_before_entry() {
     assert_eq!(
         warnings,
         vec![format!(
-            "In {}, construction ahead. {}Speed limit {:.0} at the taper, then {:.0} through the work zone.",
+            "Construction, {}.{} Limit {:.0}, then {:.0}.",
             trip.ahead_text(lookahead),
             closure_part(&zone),
             CONSTRUCTION_TAPER_LIMIT_MPH,
@@ -2044,11 +2082,11 @@ fn test_construction_warning_lead_allows_normal_braking() {
 
     let events = trip.update(0.0);
     // NOT "Brake now!" -- that is the emergency hazard opening, and this
-    // warning fires miles out. It leads with the distance like every other
-    // zone warning (Shane, 2026-08-24).
+    // warning fires miles out. It names the work and its distance first
+    // (Shane, 2026-08-24).
     let first = &gps_messages(&events)[0];
     assert!(!first.starts_with("Brake now"));
-    assert!(first.starts_with("In "));
+    assert!(first.starts_with("Construction, "), "{first}");
 
     let inspections = brake_until_speed(&mut trip, zone.limit_mph, false, 20.0);
     assert!(trip.position_mi < zone.start_mi);
@@ -2100,12 +2138,12 @@ fn test_construction_zone_speeding_fine_waits_for_grace_distance() {
     // construction warning itself is what this test pins down.
     let construction_cues: Vec<String> = gps_messages(&advance)
         .into_iter()
-        .filter(|m| m.contains("construction ahead"))
+        .filter(|m| m.starts_with("Construction,"))
         .collect();
     assert_eq!(
         construction_cues,
         vec![format!(
-            "In 2 miles, construction ahead. {}Speed limit {:.0} at the taper, then {:.0} through the work zone.",
+            "Construction, 2 miles.{} Limit {:.0}, then {:.0}.",
             closure_part(&zone),
             CONSTRUCTION_TAPER_LIMIT_MPH,
             zone.limit_mph
@@ -2384,11 +2422,11 @@ fn test_merge_traffic_pressures_drop_the_speed_advisory() {
 
     assert_eq!(
         route_merge_msg.normal,
-        format!("Merging traffic in {distance}. Keep right.")
+        format!("Merging traffic, {distance}. Keep right.")
     );
     assert_eq!(
         construction_merge_msg.normal,
-        format!("Traffic squeezing at the construction taper in {distance}. Merge left early.")
+        format!("Taper squeezing, {distance}. Merge left.")
     );
     assert!(!route_merge_msg.normal.contains("35"));
     assert!(!construction_merge_msg.normal.contains("35"));
@@ -2434,8 +2472,8 @@ fn test_traffic_pressure_gps_cue_deduplicates() {
     };
     let cues: Vec<_> = first.iter().filter(|e| is_ours(e)).collect();
     assert_eq!(cues.len(), 1);
-    assert!(cues[0].text().contains("Exit traffic building"));
-    assert!(cues[0].text().contains("Hold the right exit lane"));
+    assert!(cues[0].text().contains("Exit traffic,"));
+    assert!(cues[0].text().contains("Hold right"));
     assert!(!second.iter().any(is_ours));
 }
 
@@ -2880,21 +2918,17 @@ fn test_gps_state_crossing_and_rest_stop_cues_deduplicate() {
     trip.traffic_manager.rolling_bubble = false;
     trip.traffic_manager.vehicles = Vec::new();
 
-    trip.position_mi = 23.0;
+    let line_mi = trip.route.legs[0].state_crossings()[0].at_mi;
+    trip.position_mi = (line_mi - 10.0).max(0.0);
     let advance = trip.update(0.0);
     let repeat = trip.update(0.0);
     assert!(gps_events(&advance).is_empty());
     assert!(gps_events(&repeat).is_empty());
 
-    trip.position_mi = 31.5;
+    trip.position_mi = (line_mi - 1.0).max(0.0);
     assert!(gps_events(&trip.update(0.0)).is_empty());
 
-    // Read the line's position rather than pinning a number to it. Correcting
-    // Chicago-Indianapolis from 183 to the 185 miles its baked route runs moved
-    // every along-route position, and a hardcoded probe then lands somewhere
-    // else entirely -- next to an interchange, in one case, whose exit cue
-    // joined the assertion.
-    let line_mi = trip.route.legs[0].state_crossings()[0].at_mi;
+    // Keep the probe tied to the archived route's state-boundary crossing.
     trip.position_mi = line_mi;
     let crossing = trip.update(0.0);
     assert_eq!(
@@ -3002,7 +3036,7 @@ fn test_toll_cues_and_charges_deduplicate() {
     let repeat = trip.update(0.0);
     assert_eq!(
         gps_messages(&advance),
-        vec!["ticket system toll point ahead, New Jersey Turnpike ticket entry. Estimated toll 18 dollars, billed to carrier settlement."]
+        vec!["ticket system toll point ahead, New Jersey Turnpike ticket entry. Toll about 18 dollars."]
     );
     assert!(gps_events(&repeat).is_empty());
 
@@ -3036,13 +3070,15 @@ fn test_zero_amount_toll_entry_marker_does_not_record_expense() {
     trip.position_mi = 16.1;
     assert_eq!(
         gps_messages(&trip.update(0.0)),
-        vec!["ticket system toll point ahead, Pennsylvania Turnpike eastern ticket entry. Entry recorded for carrier settlement."]
+        vec!["ticket system toll point ahead, Pennsylvania Turnpike eastern ticket entry."]
     );
     trip.position_mi = 18.0;
     let entry = trip.update(0.0);
-    assert_eq!(
-        gps_messages(&entry),
-        vec!["ticket system entry recorded at Pennsylvania Turnpike eastern ticket entry. Toll billed at carrier settlement."]
+    // Nothing is charged at a ticket entry, and the cue ahead named it.
+    assert!(
+        gps_messages(&entry).is_empty(),
+        "{:?}",
+        gps_messages(&entry)
     );
     assert_eq!(trip.toll_expense(), 0.0);
     assert!(kind_messages(&entry, TripEventKind::TollCharged).is_empty());
@@ -3111,7 +3147,7 @@ fn test_city_events_do_not_repeat_mapped_state_crossings() {
     let events = trip.update(0.0);
     assert_eq!(
         kind_messages(&events, TripEventKind::CityReached),
-        vec!["Passing Cleveland, Ohio. Continuing on I-76 toward Pittsburgh."]
+        vec!["Passing Cleveland, Ohio."]
     );
     let state_events = kind_messages(&events, TripEventKind::StateCrossing);
     assert!(
@@ -3140,7 +3176,7 @@ fn test_city_events_keep_crossing_fallback_without_mapped_state_line() {
     let events = trip.update(0.0);
     assert_eq!(
         kind_messages(&events, TripEventKind::CityReached),
-        vec!["Crossing into Ohio. Passing Cleveland, Ohio. Continuing on I-76 toward Pittsburgh."]
+        vec!["Crossing into Ohio. Passing Cleveland, Ohio."]
     );
 }
 
@@ -3154,7 +3190,7 @@ fn test_city_events_include_state_without_repeating_crossing() {
     let events = trip.update(0.0);
     assert_eq!(
         kind_messages(&events, TripEventKind::CityReached),
-        vec!["Passing Buffalo, New York. Continuing on I-90 toward Cleveland."]
+        vec!["Passing Buffalo, New York."]
     );
 }
 

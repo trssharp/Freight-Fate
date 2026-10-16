@@ -236,6 +236,30 @@ fn test_stable_channel_ignores_newer_19_tester_prerelease() {
     assert_eq!(info.tag, "v1.8.8.1");
 }
 
+#[test]
+fn test_stable_build_is_not_offered_its_own_release() {
+    // The 1.9.0 stable shipped stamped `1.9.0.dev0` and tagged `vv1.9.0`, so
+    // the version text said it was older than v1.9.0 and the updater offered
+    // the same release again on every start.
+    let api = |path: &str| -> Result<Value, NetError> {
+        assert_eq!(path, "/releases/latest");
+        Ok(release("v1.9.0"))
+    };
+    let env = env_on(Platform::Windows);
+    for tag in ["v1.9.0", "vv1.9.0"] {
+        let build = BuildInfo::new(tag, "stable", "2026-10-04");
+        let found = check_for_update_with("stable", "1.9.0.dev0", Some(&build), &env, &api);
+        assert_eq!(found.unwrap(), None, "{tag}");
+    }
+
+    // An older stable copy is still offered the release.
+    let build = BuildInfo::new("v1.8.8.1", "stable", "2026-08-08");
+    let info = check_for_update_with("stable", "1.8.8.1", Some(&build), &env, &api)
+        .unwrap()
+        .expect("a stable update");
+    assert_eq!(info.tag, "v1.9.0");
+}
+
 // -- dev channel --------------------------------------------------------------
 
 #[test]
@@ -522,6 +546,122 @@ fn test_19_snapshot_offers_the_arm64_linux_tarball_to_an_arm64_process() {
         .expect("an update");
     assert_eq!(info.tag, "1.9-tester-20260825");
     assert!(info.asset_name.ends_with("-linux-arm64.tar.gz"));
+}
+
+#[test]
+fn test_19_snapshot_rebuilt_under_the_same_tag_is_offered_by_commit() {
+    // 2026-10-03: the release candidate re-cut 1.9-tester-20261003 in the
+    // afternoon; the copy from that morning's run carried the same tag and
+    // was told it was up to date. The stamped commit tells them apart.
+    const MORNING: &str = "be5c41eae0a4d45b9193c705e48185479756ea44";
+    const AFTERNOON: &str = "47df2cd3e0f2d61e8e06188e8267910cbb7b7db1";
+    let mut rebuilt = tester("1.9-tester-20261003");
+    rebuilt["target_commitish"] = json!(AFTERNOON);
+    let releases = vec![tester("1.9-tester-20261002"), rebuilt];
+    let mut build = BuildInfo::new("1.9-tester-20261003", "dev", "2026-10-03");
+
+    build.commit = MORNING.to_string();
+    let info = snapshot_update_from(&releases, Some(&build), "1.9.0", None, &env())
+        .expect("the rebuild is offered");
+    assert_eq!(info.tag, "1.9-tester-20261003");
+
+    build.commit = AFTERNOON.to_string();
+    assert!(snapshot_update_from(&releases, Some(&build), "1.9.0", None, &env()).is_none());
+
+    // A copy stamped before commits were recorded stays where it was.
+    build.commit = String::new();
+    assert!(snapshot_update_from(&releases, Some(&build), "1.9.0", None, &env()).is_none());
+
+    let stamped = build_info_from_dict(
+        &json!({"tag": "1.9-tester-20261003", "commit": AFTERNOON}),
+        "1.9.0",
+    );
+    assert_eq!(stamped.commit, AFTERNOON);
+}
+
+#[test]
+fn test_19_snapshot_with_no_user_facing_changes_is_not_offered_over_its_stable() {
+    // 2026-10-07: the nightly cut 1.9-tester-20261007 four hours after v1.9.3
+    // with only a build-timeout change on top, and a 1.9.3 copy on the
+    // snapshot channel was offered it as an update to the same game.
+    const QUIET: &str = "Preview snapshot for players.\n\n\
+        ## Changes since the previous snapshot\n\n- No user-facing changes\n";
+    let quiet = release_with(
+        "1.9-tester-20261007",
+        true,
+        QUIET,
+        "2026-10-07T04:15:32Z",
+        &ALL_ASSETS,
+    );
+    let stable = release_with(
+        "v1.9.3",
+        false,
+        "## Fixes\n- **Snow chains stay on.**",
+        "2026-10-07T00:04:35Z",
+        &ALL_ASSETS,
+    );
+    let older = release_with(
+        "1.9-tester-20261006",
+        true,
+        "## Added\n- **LWorks Radio.**",
+        "2026-10-06T04:16:00Z",
+        &ALL_ASSETS,
+    );
+    let oldest = release_with(
+        "1.9-tester-20261005",
+        true,
+        "## Fixed\n- **Scales.**",
+        "2026-10-05T04:16:00Z",
+        &ALL_ASSETS,
+    );
+    let releases = vec![quiet.clone(), stable.clone(), older, oldest];
+
+    let on_stable = BuildInfo::new("v1.9.3", "dev", "2026-10-07");
+    assert!(snapshot_update_from(&releases, Some(&on_stable), "1.9.3", None, &env()).is_none());
+
+    // A copy from before the stable release still lacks its fixes, which the
+    // quiet snapshot's notes leave out because 1.9.3 listed them.
+    let before = BuildInfo::new("1.9-tester-20261006", "dev", "2026-10-06");
+    let info = snapshot_update_from(&releases, Some(&before), "1.9.0", None, &env())
+        .expect("the stable's fixes arrive through the snapshot");
+    assert_eq!(info.tag, "1.9-tester-20261007");
+    // What's new reads what this copy is getting, not "No user-facing changes".
+    assert_eq!(
+        info.notes,
+        [
+            "Freight Fate version 1.9.3",
+            "Fixes",
+            "Snow chains stay on."
+        ]
+    );
+
+    let further_back = BuildInfo::new("1.9-tester-20261005", "dev", "2026-10-05");
+    let info = snapshot_update_from(&releases, Some(&further_back), "1.9.0", None, &env())
+        .expect("the snapshot still carries the stable");
+    assert_eq!(
+        info.notes,
+        [
+            "Freight Fate version 1.9.3",
+            "Fixes",
+            "Snow chains stay on.",
+            "Freight Fate 1.9 tester snapshot 2026-10-06",
+            "Added",
+            "LWorks Radio.",
+        ]
+    );
+
+    // A later snapshot with real changes is offered over the stable as before.
+    let real = release_with(
+        "1.9-tester-20261008",
+        true,
+        "## Fixed\n- **A real fix.**",
+        "2026-10-08T04:15:00Z",
+        &ALL_ASSETS,
+    );
+    let releases = vec![real, quiet, stable];
+    let info = snapshot_update_from(&releases, Some(&on_stable), "1.9.3", None, &env())
+        .expect("a snapshot with changes");
+    assert_eq!(info.tag, "1.9-tester-20261008");
 }
 
 #[test]
@@ -959,10 +1099,7 @@ fn test_manual_update_check_explains_source_builds() {
         check.message.clone()
     };
     assert!(message.contains("This copy runs from source; update it with git."));
-    assert_eq!(
-        app.main_lines(),
-        vec![format!("{message} Escape goes back.")]
-    );
+    assert_eq!(app.main_lines(), vec![message]);
     app.shutdown();
 }
 
@@ -990,8 +1127,13 @@ fn test_packaged_logging_writes_info_to_game_log() {
     assert!(text.contains("Speech backend: Speech Dispatcher"), "{text}");
 }
 
+/// The main menu's session update checker is one process-wide static, so the
+/// tests that install into it run one at a time.
+static UPDATE_CHECK_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn test_startup_update_prompt_respects_skipped_version() {
+    let _serial = UPDATE_CHECK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
     use freight_fate::app::testing::TestApp;
     use freight_fate::states::main_menu::MainMenuState;
     use freight_fate::states::update::UpdateChecker;
@@ -1003,6 +1145,7 @@ fn test_startup_update_prompt_respects_skipped_version() {
         asset_name: "FreightFate-1.6.1-windows-portable.zip".to_string(),
         asset_url: "https://example.test/FreightFate.zip".to_string(),
         asset_size: 1,
+        asset_sha256: String::new(),
     };
     let mut app = TestApp::new();
     app.ctx.settings.skipped_update = "v1.6.1".to_string();
@@ -1022,6 +1165,7 @@ fn test_terminal_exit_arms_fresh_packaged_update_check() {}
 
 #[test]
 fn test_terminal_exit_does_not_check_for_updates_from_source() {
+    let _serial = UPDATE_CHECK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
     use freight_fate::app::testing::TestApp;
     use freight_fate::states::main_menu::MainMenuState;
 
@@ -1054,6 +1198,7 @@ fn test_remind_later_help_describes_terminal_exit_check() {
         asset_name: "FreightFate-1.6.1-windows-portable.zip".to_string(),
         asset_url: "https://example.test/FreightFate.zip".to_string(),
         asset_size: 1,
+        asset_sha256: String::new(),
     };
     let mut state = UpdatePromptState::new(info);
     let items = state.build_items(&mut app.ctx);
@@ -1446,6 +1591,7 @@ fn test_download_state_parks_update_when_not_auto_appliable() {
         asset_name: "FreightFate-9.9.9-linux-x86_64.AppImage".to_string(),
         asset_url: "https://example.test/a".to_string(),
         asset_size: 1,
+        asset_sha256: String::new(),
     };
     let new_root = tmp.path().join(&info.asset_name);
     fs::write(&new_root, b"new").unwrap();
@@ -1490,6 +1636,7 @@ fn test_update_info_is_plain_data() {
         asset_name: "FreightFate-9.9.9-linux-x86_64.AppImage".to_string(),
         asset_url: "https://example.test/a".to_string(),
         asset_size: 1,
+        asset_sha256: String::new(),
     };
     assert_eq!(info.clone(), info);
 }

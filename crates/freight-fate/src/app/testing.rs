@@ -255,11 +255,22 @@ impl TestApp {
         // app without knowing it exists.
         let settings = Settings {
             online_offer_seen: true,
+            // The one-time Driving assistance picker likewise.
+            assist_preset_chosen: true,
             // The live diesel feed is on by default for players; a test app
             // must not ask the network for it on every frame (the guard
             // would refuse it, noisily, from a worker thread). Tests that
             // want the week's price seed an offline provider and turn it on.
             real_fuel_prices: false,
+            // Off here, on for players since the fresh install moved to the
+            // Balanced preset (2026-09-18). A test that drives a gate or an
+            // arrival BY HAND must not have an assist reaching for the same
+            // pedals, and twenty-two of them stopped arriving the moment this
+            // default flipped. The cases that are about the assist turn it on
+            // themselves, which is the right way round: a fixture should not
+            // inherit a player-facing default that changes what the truck
+            // does for you.
+            destination_approach_assist: false,
             ..Default::default()
         };
         let _ = settings.save();
@@ -422,8 +433,8 @@ impl SpeechSink for SharedCapture {
             .borrow_mut()
             .say_adjustment_preview(setting, text, interrupt)
     }
-    fn refresh(&mut self, announce: bool) -> bool {
-        self.0.borrow_mut().refresh(announce)
+    fn refresh(&mut self) -> bool {
+        self.0.borrow_mut().refresh()
     }
     fn shutdown(&mut self) {
         self.0.borrow_mut().shutdown()
@@ -491,6 +502,17 @@ pub struct AudioCalls {
     /// holds: a stop that settles the truck to idle without telling the audio
     /// leaves the loop roaring at highway revs.
     pub engine_rpm: Vec<(f64, f64)>,
+    /// The loops sounding now, by channel: what a listener would hear.
+    pub loops: std::collections::HashMap<u32, RecordedLoop>,
+}
+
+/// One running loop as [`RecordingAudio`] last left it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordedLoop {
+    pub key: String,
+    pub volume: f64,
+    pub pan: f64,
+    pub rate: f64,
 }
 
 pub type AudioLog = Rc<RefCell<AudioCalls>>;
@@ -564,10 +586,42 @@ impl Audio for RecordingAudio {
     fn has_asset(&mut self, _key: &str) -> bool {
         true
     }
-    fn start_loop_with(&mut self, _channel: u32, _key: &str, _volume: f64, _fade_ms: u32) {}
-    fn set_loop_volume(&mut self, _channel: u32, _volume: f64) {}
-    fn set_loop_pan(&mut self, _channel: u32, _pan: f64) {}
-    fn stop_loop_with(&mut self, _channel: u32, _fade_ms: u32) {}
+    fn start_loop_with(&mut self, channel: u32, key: &str, volume: f64, _fade_ms: u32) {
+        let mut log = self.log.borrow_mut();
+        let entry = log.loops.entry(channel).or_insert_with(|| RecordedLoop {
+            key: key.to_string(),
+            volume,
+            pan: 0.0,
+            rate: 1.0,
+        });
+        if entry.key != key {
+            *entry = RecordedLoop {
+                key: key.to_string(),
+                volume,
+                pan: 0.0,
+                rate: 1.0,
+            };
+        }
+        entry.volume = volume;
+    }
+    fn set_loop_volume(&mut self, channel: u32, volume: f64) {
+        if let Some(entry) = self.log.borrow_mut().loops.get_mut(&channel) {
+            entry.volume = volume;
+        }
+    }
+    fn set_loop_pan(&mut self, channel: u32, pan: f64) {
+        if let Some(entry) = self.log.borrow_mut().loops.get_mut(&channel) {
+            entry.pan = pan;
+        }
+    }
+    fn set_loop_rate(&mut self, channel: u32, rate: f64) {
+        if let Some(entry) = self.log.borrow_mut().loops.get_mut(&channel) {
+            entry.rate = rate;
+        }
+    }
+    fn stop_loop_with(&mut self, channel: u32, _fade_ms: u32) {
+        self.log.borrow_mut().loops.remove(&channel);
+    }
     fn start_sustain_loop_with(
         &mut self,
         _channel: u32,

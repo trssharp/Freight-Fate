@@ -41,10 +41,19 @@
 //! `ping` are answered from the serve thread alone; the sandbox, the lock,
 //! the window, audio and speech all wait for the first play request, and a
 //! client that hangs up takes the game down with it.
+//!
+//! "Hangs up" is wider than stdin closing. On Windows the client's pipe can
+//! stay open after the client is gone, and orphaned servers with a game up
+//! held the lock against the next session until they were ended by hand
+//! (owner, 2026-10-08). So the server also ends when stdout stops taking
+//! replies and when the process that started it exits (`lifeline`), even in
+//! the middle of a `wait`; and a new server refused the lock reads who holds
+//! it (`holder`) and names that process rather than a bare "already running".
 
 use std::sync::mpsc;
 
 use crate::app::{App, PlayerInputFrame};
+use crate::bindings::{key_saved_name, Action, KeyBindings};
 use crate::states::base::{InputEvent, Key, Mods};
 
 /// One `wait` may hold the wheel for at most this much real time.
@@ -67,28 +76,63 @@ const CRUISE_REPLY_FRAMES: u32 = 30;
 const MAX_CRUISE_TAPS: i64 = 60;
 
 mod ears;
+mod holder;
+mod lifeline;
 mod protocol;
 
 pub use ears::{install_ears, Ears, SharedEars};
-pub use protocol::{build_command, serve_lines};
+pub use holder::{judge, HolderRecord, HolderVerdict};
+pub use lifeline::{
+    parent_alive_check, pid_alive, spawn_watch, spawn_watch_with, Lifeline, ParentWatch,
+};
+pub use protocol::{build_command, serve_lines, serve_lines_with_lifeline};
 
-use ears::drain_ears;
+use ears::{drain_ears, CAB_CUT_IN};
 use protocol::{discover, serve};
 // -- commands between the MCP thread and the game loop --------------------------------
 
+/// What a key tool was asked to press: a key by name, or a driving control
+/// by its shortcut id, resolved against the player's own table when the
+/// loop runs it (so a sandbox with moved keys is driven the way its player
+/// would drive it).
+#[derive(Clone, Debug, PartialEq)]
+pub enum KeySpec {
+    Key { key: Key, text: Option<char> },
+    Action(Action),
+}
+
+impl KeySpec {
+    /// The key, its typed character, and the modifiers the chord carries.
+    /// A control the keyboard does not have (the pad-only ones) is refused.
+    pub fn resolve(&self, bindings: &KeyBindings) -> Result<(Key, Option<char>, Mods), String> {
+        match self {
+            KeySpec::Key { key, text } => Ok((*key, *text, Mods::NONE)),
+            KeySpec::Action(action) => {
+                let chord = bindings
+                    .chords(*action)
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| format!("{} has no keyboard key", action.label()))?;
+                let text = key_saved_name(chord.key)
+                    .filter(|name| name.chars().count() == 1)
+                    .and_then(|name| name.chars().next());
+                Ok((chord.key, text, chord.mods))
+            }
+        }
+    }
+}
+
 pub enum Command {
     Press {
-        key: Key,
-        text: Option<char>,
+        key: KeySpec,
         mods: Mods,
         times: i64,
     },
     Hold {
-        key: Key,
-        text: Option<char>,
+        key: KeySpec,
     },
     Release {
-        key: Key,
+        key: KeySpec,
     },
     /// Put the sandbox career in any situation and reopen the terminal on
     /// it (`playtest::scenario`). Scenario staging, not play.
@@ -102,8 +146,7 @@ pub enum Command {
     /// throttle tap overshot the limit and every brake landed late (agent
     /// drive, 2026-09-02). Replies after the release with what was heard.
     Pedal {
-        key: Key,
-        text: Option<char>,
+        key: KeySpec,
         seconds: f64,
     },
     /// Run until a line carrying `text` is heard, or a menu opens, or the
@@ -129,6 +172,15 @@ pub enum Command {
     /// [`PlayerInputFrame::set_operator_keys`]).
     OperatorKeys {
         live: bool,
+    },
+    /// Freeze the world between tool calls, so time passes only inside
+    /// `wait`, `pedal`, `wait_for` and the frames a call scripts.
+    Lockstep {
+        on: bool,
+    },
+    /// Start the key probe, or stop it and report (`app::key_probe`).
+    KeyProbe {
+        start: bool,
     },
     Listen,
     Menu,
@@ -168,10 +220,12 @@ enum Until {
 struct Waiting {
     remaining: f64,
     until: Until,
-    /// Where in the ears the scan for `Heard` resumes.
+    /// Where in the ears the scan resumes.
     scanned: usize,
-    /// False for a plain `wait`; true for the tools whose reply should say
-    /// when the clock, not the thing waited for, ended the wait.
+    /// True for `wait_for`: it also stops when the cab cuts in, and says
+    /// when the clock, not the thing waited for, ended the wait. A blind
+    /// wait_for drove past "Exit lane opening. Steer right into it." and
+    /// missed the exit (agent drive, Dallas, 2026-09-25).
     reports_timeout: bool,
     reply: Reply,
 }
@@ -205,23 +259,45 @@ impl Request {
     pub fn answer(self, result: Result<String, String>) {
         let _ = self.reply.send(result);
     }
+
+    #[doc(hidden)]
+    pub fn for_test(command: Command, reply: Reply) -> Self {
+        Self { command, reply }
+    }
 }
 
-/// Block until the client asks for something only a running game can do,
-/// answering what needs no game on the way (a quit with nothing to quit).
-/// `None` when the client hangs up first: the handshake alone never boots a
-/// game, so a session that only asked for the tool list ends here, quietly.
+/// Block until the client asks for something only a running game can do.
+/// `None` when the client hangs up first, or quits with no game up: the
+/// handshake alone never boots a game, and an idle server still holds the
+/// release executable open, so a quit ends the process either way and the
+/// next build is not refused "access denied" (owner, 2026-09-22).
 pub fn await_play_request(requests: &mpsc::Receiver<Request>) -> Option<Request> {
-    loop {
-        let request = requests.recv().ok()?;
-        match request.command {
-            Command::Quit => request.answer(Ok(
-                "The game is not running; nothing to quit. Any other tool call boots it."
-                    .to_string(),
-            )),
-            _ => return Some(request),
-        }
+    await_play_request_for(requests, IDLE_SERVER_EXIT)
+}
+
+/// How long a server with no game waits for its first play request before
+/// it ends. Every open agent session spawns its servers at startup and keeps
+/// stdin open for as long as the session lives, so without a bound an idle
+/// session anywhere on the machine holds the release executable and the
+/// next build fails "access denied" (owner, 2026-10-08: "we always have this
+/// issue"). The client spawns a fresh server at the next tool call.
+pub const IDLE_SERVER_EXIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// [`await_play_request`] with the idle bound given: `None` as well when
+/// `idle` passes with no request at all.
+pub fn await_play_request_for(
+    requests: &mpsc::Receiver<Request>,
+    idle: std::time::Duration,
+) -> Option<Request> {
+    let request = requests.recv_timeout(idle).ok()?;
+    if matches!(request.command, Command::Quit) {
+        request.answer(Ok(
+            "No game was running; the server has ended. The next tool call starts a fresh one."
+                .to_string(),
+        ));
+        return None;
     }
+    Some(request)
 }
 
 /// The per-frame policy servicing agent commands inside the real game loop.
@@ -252,7 +328,15 @@ pub struct AgentPolicy {
     /// toggled the parking brake against the approach assist (found live,
     /// 2026-09-01). No finger taps inside a frame, so the agent must not.
     scripted: std::collections::VecDeque<Vec<InputEvent>>,
+    /// The world waits while no call is working. A client round trip is a
+    /// second or two of thinking, and with lane keeping off at highway speed
+    /// that is the truck across half a lane before the answer to a cue
+    /// lands (agent drive, 2026-09-23): every correction arrived late
+    /// whatever the guide said. Off by default, so an owner driving
+    /// alongside with operator keys keeps a live road.
+    lockstep: bool,
     quit: bool,
+    lifeline: Lifeline,
 }
 
 impl AgentPolicy {
@@ -265,8 +349,12 @@ impl AgentPolicy {
 
     /// Script a finger tap: down on one frame, up on the next.
     fn tap(&mut self, key: Key, text: Option<char>, mods: Mods) {
-        self.scripted
-            .push_back(vec![InputEvent::KeyDown { key, mods, text }]);
+        self.scripted.push_back(vec![InputEvent::KeyDown {
+            key,
+            mods,
+            text,
+            repeat: false,
+        }]);
         self.scripted
             .push_back(vec![InputEvent::KeyUp { key, mods }]);
     }
@@ -396,6 +484,35 @@ impl AgentPolicy {
         if self.quit {
             return false;
         }
+        if self.lifeline.is_cut() {
+            eprintln!(
+                "The MCP client is gone; {}.",
+                self.lifeline
+                    .reason()
+                    .unwrap_or_else(|| "the game is quitting".to_string())
+            );
+            let error = Err("The MCP client is gone; the game is quitting.".to_string());
+            if let Some(waiting) = self.waiting.take() {
+                let _ = waiting.reply.send(error.clone());
+            }
+            if let Some(plan) = self.cruise_plan.take() {
+                let _ = plan.reply.send(error);
+            }
+            for key in self.held.drain(..) {
+                input.queue_player_input(InputEvent::KeyUp {
+                    key,
+                    mods: Mods::NONE,
+                });
+            }
+            if let Some((key, _)) = self.timed_hold.take() {
+                input.queue_player_input(InputEvent::KeyUp {
+                    key,
+                    mods: Mods::NONE,
+                });
+            }
+            self.quit = true;
+            return false;
+        }
         for key in &self.held {
             input.assert_held(*key);
         }
@@ -420,26 +537,36 @@ impl AgentPolicy {
         if let Some(mut waiting) = self.waiting.take() {
             waiting.remaining -= dt;
             let out_of_time = waiting.remaining <= 0.0;
-            let released = match &waiting.until {
-                Until::Elapsed => out_of_time,
-                Until::Heard(needle) => {
-                    let ears = self.ears.borrow();
-                    let from = waiting.scanned.min(ears.lines.len());
-                    let heard = ears.lines[from..]
+            let (heard, cut_in) = {
+                let ears = self.ears.borrow();
+                let fresh = &ears.lines[waiting.scanned.min(ears.lines.len())..];
+                let heard = match &waiting.until {
+                    Until::Heard(needle) => fresh
                         .iter()
-                        .any(|line| line.to_lowercase().contains(needle.as_str()));
-                    waiting.scanned = ears.lines.len();
-                    heard || out_of_time
-                }
-                Until::Menu => input.menu_rows().is_some() || out_of_time,
+                        .any(|line| line.to_lowercase().contains(needle.as_str())),
+                    _ => false,
+                };
+                let cut_in =
+                    waiting.reports_timeout && fresh.iter().any(|l| l.starts_with(CAB_CUT_IN));
+                waiting.scanned = ears.lines.len();
+                (heard, cut_in)
             };
-            if !released {
+            let arrived = match &waiting.until {
+                Until::Elapsed => false,
+                Until::Heard(_) => heard,
+                Until::Menu => input.menu_rows().is_some(),
+            };
+            if !(arrived || cut_in || out_of_time) {
                 self.waiting = Some(waiting);
                 return true;
             }
             let mut text = drain_ears(&self.ears);
-            if out_of_time && waiting.reports_timeout && !matches!(waiting.until, Until::Elapsed) {
-                text.push_str("\n(the clock ran out before that arrived)");
+            if !arrived && waiting.reports_timeout && !matches!(waiting.until, Until::Elapsed) {
+                text.push_str(if cut_in {
+                    "\n(the cab cut in before that arrived)"
+                } else {
+                    "\n(the clock ran out before that arrived)"
+                });
             }
             let _ = waiting.reply.send(Ok(text));
         }
@@ -458,15 +585,26 @@ impl AgentPolicy {
             };
             let reply = request.reply;
             match request.command {
-                Command::Press {
-                    key,
-                    text,
-                    mods,
-                    times,
-                } => {
+                Command::Press { key, mods, times } => {
+                    let (key, text, chord_mods) = match key.resolve(input.bindings()) {
+                        Ok(resolved) => resolved,
+                        Err(text) => {
+                            let _ = reply.send(Err(text));
+                            continue;
+                        }
+                    };
+                    let mods = Mods {
+                        shift: mods.shift || chord_mods.shift,
+                        ctrl: mods.ctrl || chord_mods.ctrl,
+                        alt: mods.alt || chord_mods.alt,
+                    };
                     for _ in 0..times.clamp(1, 50) {
-                        self.scripted
-                            .push_back(vec![InputEvent::KeyDown { key, mods, text }]);
+                        self.scripted.push_back(vec![InputEvent::KeyDown {
+                            key,
+                            mods,
+                            text,
+                            repeat: false,
+                        }]);
                         self.scripted
                             .push_back(vec![InputEvent::KeyUp { key, mods }]);
                     }
@@ -476,7 +614,14 @@ impl AgentPolicy {
                             .to_string(),
                     ));
                 }
-                Command::Hold { key, text } => {
+                Command::Hold { key } => {
+                    let (key, text, _) = match key.resolve(input.bindings()) {
+                        Ok(resolved) => resolved,
+                        Err(text) => {
+                            let _ = reply.send(Err(text));
+                            continue;
+                        }
+                    };
                     if !self.held.contains(&key) {
                         self.held.push(key);
                     }
@@ -484,10 +629,18 @@ impl AgentPolicy {
                         key,
                         mods: Mods::NONE,
                         text,
+                        repeat: false,
                     });
                     let _ = reply.send(Ok("held down.".to_string()));
                 }
                 Command::Release { key } => {
+                    let (key, _, _) = match key.resolve(input.bindings()) {
+                        Ok(resolved) => resolved,
+                        Err(text) => {
+                            let _ = reply.send(Err(text));
+                            continue;
+                        }
+                    };
                     self.held.retain(|held| *held != key);
                     input.queue_player_input(InputEvent::KeyUp {
                         key,
@@ -501,7 +654,14 @@ impl AgentPolicy {
                     self.wait_until(seconds, Until::Elapsed, false, reply);
                     break;
                 }
-                Command::Pedal { key, text, seconds } => {
+                Command::Pedal { key, seconds } => {
+                    let (key, text, _) = match key.resolve(input.bindings()) {
+                        Ok(resolved) => resolved,
+                        Err(text) => {
+                            let _ = reply.send(Err(text));
+                            continue;
+                        }
+                    };
                     if self.timed_hold.is_some() {
                         let _ = reply.send(Err(
                             "A pedal is already down; its reply arrives when it lifts.".to_string(),
@@ -514,6 +674,7 @@ impl AgentPolicy {
                         key,
                         mods: Mods::NONE,
                         text,
+                        repeat: false,
                     });
                     let seconds = seconds.clamp(0.05, MAX_PEDAL_SECONDS);
                     self.timed_hold = Some((key, seconds));
@@ -673,12 +834,26 @@ impl AgentPolicy {
                 Command::OperatorKeys { live } => {
                     let _ = reply.send(Ok(input.set_operator_keys(live)));
                 }
+                Command::Lockstep { on } => {
+                    self.lockstep = on;
+                    let _ = reply.send(Ok(protocol::lockstep_reply(on)));
+                }
+                Command::KeyProbe { start } => {
+                    let _ = reply.send(Ok(input.key_probe(start)));
+                }
                 Command::Quit => {
                     let _ = reply.send(Ok("Quitting the game.".to_string()));
                     self.quit = true;
                     return false;
                 }
             }
+        }
+        let working = self.waiting.is_some()
+            || self.timed_hold.is_some()
+            || self.cruise_plan.is_some()
+            || !self.scripted.is_empty();
+        if self.lockstep && !working {
+            input.hold_world();
         }
         true
     }
@@ -700,6 +875,16 @@ pub fn policy(
     requests: mpsc::Receiver<Request>,
     first: Option<Request>,
 ) -> AgentPolicy {
+    policy_with_lifeline(ears, requests, first, Lifeline::new())
+}
+
+/// Build a policy that stops immediately when this MCP client's lifeline is cut.
+pub fn policy_with_lifeline(
+    ears: SharedEars,
+    requests: mpsc::Receiver<Request>,
+    first: Option<Request>,
+    lifeline: Lifeline,
+) -> AgentPolicy {
     AgentPolicy {
         requests,
         pending: first,
@@ -709,7 +894,9 @@ pub fn policy(
         timed_hold: None,
         cruise_plan: None,
         scripted: std::collections::VecDeque::new(),
+        lockstep: false,
         quit: false,
+        lifeline,
     }
 }
 
@@ -719,12 +906,12 @@ pub fn policy(
 /// stays up and the operator's keyboard reaches the game, so a human can
 /// take the wheel alongside the agent; off, the keys are dropped at the
 /// door (see [`run_with_staged`]).
-pub fn run(reset: bool, launch: Option<LaunchAt>, operator_keys: bool) -> i32 {
+pub fn run(reset: bool, launch: Option<LaunchAt>, operator_keys: bool, staging: bool) -> i32 {
     // Discover BEFORE the window opens: pure world data, and a failed
     // search should refuse cleanly rather than boot a game.
     let staged = match launch {
         None => None,
-        Some(at) => match discover(&at.feature, at.origin, at.destination, at.seed, 1) {
+        Some(at) => match discover(&at.feature, at.origin, at.destination, at.seed, 1, None) {
             Ok((hit, opts, found, _)) => {
                 eprintln!("Launching at ({found} match(es)): {}", hit.describe());
                 Some((hit, opts))
@@ -735,7 +922,7 @@ pub fn run(reset: bool, launch: Option<LaunchAt>, operator_keys: bool) -> i32 {
             }
         },
     };
-    run_with_staged(reset, staged, operator_keys)
+    run_with_staged(reset, staged, operator_keys, staging)
 }
 
 fn run_with_staged(
@@ -745,25 +932,42 @@ fn run_with_staged(
         crate::playtest::road::RoadOptions,
     )>,
     operator_keys: bool,
+    staging: bool,
 ) -> i32 {
     use crate::playtest::sandbox;
     let (requests, rx) = mpsc::channel();
-    std::thread::spawn(move || serve(requests));
+    let lifeline = Lifeline::new();
+    let serve_lifeline = lifeline.clone();
+    let serve_requests = requests.clone();
+    let server = std::thread::spawn(move || serve(serve_requests, serve_lifeline));
+    let _watch = spawn_watch(
+        lifeline.clone(),
+        requests.clone(),
+        parent_alive_check(),
+        std::time::Duration::from_secs(1),
+    );
+    drop(requests);
     eprintln!("MCP serving on stdio; the game boots at the first play request.");
     let mut staged = staged;
     loop {
         // Only a play request boots anything. A client that asked for the
         // tool list and hung up gets its answers and never a game window.
         let Some(first) = await_play_request(&rx) else {
+            lifeline.cut("the server is ending without a game");
+            finish_serving(&server);
             return 0;
         };
-        let (mut app, mut guard) = match boot(reset) {
+        let (mut app, mut guard) = match boot(reset, staging) {
             Ok(booted) => booted,
             Err(text) => {
                 // Answered, not fatal: "already running" clears when the
                 // human quits, and the next call tries again.
                 eprintln!("{text}");
                 first.answer(Err(text));
+                if lifeline.is_cut() {
+                    finish_serving(&server);
+                    return 0;
+                }
                 continue;
             }
         };
@@ -774,8 +978,11 @@ fn run_with_staged(
         // dropped at the door as well. `--operator-keys` is the owner's
         // opt-in to play alongside the agent (asked for 2026-09-11): the
         // window stays up and every key counts, so the keyboard belongs to
-        // the game for the whole session.
+        // the game for the whole session. Restoring shows a window the
+        // launcher's STARTUPINFO kept hidden (the desktop app spawns MCP
+        // servers that way) and gives it focus.
         if operator_keys {
+            app.restore_window();
             eprintln!("Operator keys are live: the keyboard reaches the game.");
         } else {
             app.minimize_window();
@@ -790,26 +997,62 @@ fn run_with_staged(
             }));
         }
         let ears = install_ears(&mut app);
-        let mut policy = policy(ears, rx, Some(first));
+        let mut policy = policy_with_lifeline(ears, rx, Some(first), lifeline.clone());
         eprintln!("Game up; it speaks aloud while the agent plays.");
         app.run_with_player_input(None, |input, dt| policy.step(input, dt));
+        lifeline.cut("the game has ended");
         guard.release();
         sandbox::close_session();
+        holder::remove_if_ours(&holder::path(), std::process::id());
+        finish_serving(&server);
         return 0;
     }
+}
+
+/// Give the stdio thread a bounded moment to write the last reply (the
+/// quit's own answer) before the process exits under it. It returns by
+/// itself after a quit or when stdin closes; a human quitting from the menu
+/// leaves it blocked on stdin, which the bound covers.
+fn finish_serving(server: &std::thread::JoinHandle<()>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !server.is_finished() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    eprintln!("MCP server exiting.");
 }
 
 /// Everything a running game needs, in the order it can be refused:
 /// the sandbox prepared and audited, the one-game-at-a-time lock, the
 /// session file for the watcher, then the real window, audio and speech.
 /// An error leaves nothing held, so the next play request can try again.
-fn boot(reset: bool) -> Result<(App, crate::single_instance::SingleInstanceGuard), String> {
+fn boot(
+    reset: bool,
+    staging: bool,
+) -> Result<(App, crate::single_instance::SingleInstanceGuard), String> {
     use crate::playtest::sandbox;
-    let dir = sandbox::default_sandbox();
     let source = sandbox::real_saves();
-    sandbox::prepare(&dir, reset, true, &source)
-        .map_err(|e| format!("Could not prepare the agent sandbox: {e}"))?;
-    let problems = sandbox::audit(&dir);
+    let dir = if staging {
+        sandbox::staging_sandbox()
+    } else {
+        sandbox::default_sandbox()
+    };
+    if staging {
+        sandbox::prepare_staging(&dir, reset, &source)
+            .map_err(|e| format!("Could not prepare the staging agent session: {e}"))?;
+        eprintln!(
+            "STAGING: this session's own driver backs up to {}; connect it from the \
+             Online menu the first time.",
+            sandbox::STAGING_URL
+        );
+    } else {
+        sandbox::prepare(&dir, reset, true, &source)
+            .map_err(|e| format!("Could not prepare the agent sandbox: {e}"))?;
+    }
+    let problems = if staging {
+        Vec::new()
+    } else {
+        sandbox::audit(&dir)
+    };
     if !problems.is_empty() {
         return Err(format!(
             "{}\nRefusing to boot: an agent must never reach the real account. \
@@ -820,11 +1063,47 @@ fn boot(reset: bool) -> Result<(App, crate::single_instance::SingleInstanceGuard
     eprintln!("Agent sandbox: {}", dir.display());
     let mut guard = crate::single_instance::SingleInstanceGuard::new();
     if !guard.acquire() {
-        return Err(
-            "Freight Fate is already running; one game at a time, agent or human. \
-             Call again once it has quit."
-                .to_string(),
-        );
+        match holder::judge(holder::read(&holder::path()), pid_alive, std::process::id()) {
+            HolderVerdict::DeadRecord { .. } => {
+                holder::remove(&holder::path());
+                if !guard.acquire() {
+                    return Err(
+                        "Freight Fate is already running; one game at a time, agent or human. \
+                         Call again once it has quit."
+                            .to_string(),
+                    );
+                }
+            }
+            HolderVerdict::Stale { pid, .. } => {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    if guard.acquire() {
+                        break;
+                    }
+                }
+                if !guard.acquired() {
+                    return Err(format!(
+                        "A leftover agent server (process {pid}) still holds the game, but the \
+                         program that started it has exited. It should quit by itself within a few \
+                         seconds; if it does not, end process {pid} and call again."
+                    ));
+                }
+            }
+            HolderVerdict::Live { pid } => {
+                return Err(format!(
+                "Another agent server (process {pid}) is running a game for a live MCP client; \
+                 one game at a time. Call again once it has quit."
+            ))
+            }
+            HolderVerdict::NoRecord => {
+                return Err(
+                    "Freight Fate is already running; one game at a time, agent or human. \
+                     Call again once it has quit."
+                        .to_string(),
+                );
+            }
+        }
     }
     let log_path = ff_core::settings::game_root()
         .join("logs")
@@ -840,12 +1119,16 @@ fn boot(reset: bool) -> Result<(App, crate::single_instance::SingleInstanceGuard
         std::env::set_var("FREIGHT_FATE_LOG", "INFO");
     }
     crate::app::configure_logging();
+    if let Err(error) = holder::write(&holder::path(), &holder::current()) {
+        eprintln!("Could not record the agent server holder: {error}");
+    }
     sandbox::open_session(&dir, &log_path);
     match App::new() {
         Ok(app) => Ok((app, guard)),
         Err(e) => {
             guard.release();
             sandbox::close_session();
+            holder::remove_if_ours(&holder::path(), std::process::id());
             Err(format!("The game could not start: {e}"))
         }
     }

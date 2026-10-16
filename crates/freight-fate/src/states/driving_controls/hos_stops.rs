@@ -8,6 +8,96 @@ use ff_core::models::jobs::route_drive_hours;
 use ff_core::speech_pacing::{DeliveryStatus, EventPriority, SpeechCategory};
 
 impl DrivingState {
+    /// One opt-in suggestion before the normal 60-minute HOS warning. The
+    /// marker lives in the ELD's saved warned set and clears with the relevant
+    /// break, credited split, or full reset. Quiet rungs receive no tip or tone.
+    pub fn maybe_hos_planning_hint(&mut self, ctx: &mut GameContext) {
+        self.settle_hos_plan_hint(ctx, false);
+        if self.hos_plan_hint_pending.is_some() {
+            return;
+        }
+        if !ctx.settings.hos_planning_hints
+            || !ctx.settings.speaks(Some(SpeechCategory::Coaching))
+            || self.departure_chain
+            || self.surface_chain
+            || self.selected_stop_key.is_some()
+            || self.ramp_stop.is_some()
+            || self.exit_signal_on
+            || self.hos_stop_warning_pending.is_some()
+            || ctx.event_delivery_pending()
+        {
+            return;
+        }
+        let Some(limit) = hos_of(ctx).next_limit(&ctx.settings.hos_mode) else {
+            return;
+        };
+        if limit.remaining_min <= 60.0 || limit.remaining_min > 180.0 {
+            return;
+        }
+        let prefix = format!("{}:plan-hint:", limit.kind);
+        let stop_warning_prefix = format!("{}:hos-stop:", limit.kind);
+        if hos_of(ctx)
+            .warned
+            .iter()
+            .any(|key| key.starts_with(&prefix) || key.starts_with(&stop_warning_prefix))
+        {
+            return;
+        }
+        let check_key = format!(
+            "{}:{}",
+            limit.kind,
+            (limit.remaining_min * 4.0).floor() as i64
+        );
+        if self.hos_plan_hint_check_key.as_deref() == Some(&check_key) {
+            return;
+        }
+        self.hos_plan_hint_check_key = Some(check_key);
+        let Some(advice) = self.hos_stop_advice(ctx) else {
+            return;
+        };
+        // A destination within legal reach needs no intermediate rest.
+        // A new key after a rest lets the speech ladder speak this advice
+        // again, while the saved prefix prevents duplicates in this window.
+        let fallback_distance = ctx.settings.distance_text(advice.ahead_mi, false);
+        let suggested_distance = advice
+            .suggested
+            .as_ref()
+            .map(|option| ctx.settings.distance_text(option.ahead_mi, false))
+            .unwrap_or_else(|| fallback_distance.clone());
+        if let Some(message) = advice.planning_hint(&suggested_distance, &fallback_distance) {
+            let key = format!("{prefix}{:.0}", self.absolute_game_hour(ctx, None) * 60.0);
+            ctx.reset_event_condition(&key);
+            self.hos_plan_hint_pending = Some(key.clone());
+            ctx.say_event_with(
+                message,
+                SayEvent::queued()
+                    .key(&key)
+                    .priority(EventPriority::Route)
+                    .category(SpeechCategory::Coaching)
+                    .receipt(),
+            );
+        }
+    }
+
+    fn settle_hos_plan_hint(&mut self, ctx: &mut GameContext, interrupt_pending: bool) {
+        let Some(key) = self.hos_plan_hint_pending.clone() else {
+            return;
+        };
+        match ctx.event_delivery_status(&key) {
+            Some(DeliveryStatus::Pending) if !interrupt_pending => return,
+            Some(DeliveryStatus::Completed) => {
+                if !hos_of(ctx).warned.contains(&key) {
+                    hos_mut_of(ctx).warned.push(key);
+                }
+            }
+            Some(DeliveryStatus::Pending | DeliveryStatus::Interrupted) | None => {
+                ctx.reset_event_condition(&key);
+                self.hos_plan_hint_check_key = None;
+            }
+        }
+        self.hos_plan_hint_pending = None;
+    }
+
     pub(crate) fn settle_last_hos_stop_warning(
         &mut self,
         ctx: &mut GameContext,
@@ -29,6 +119,33 @@ impl DrivingState {
             }
         }
         self.hos_stop_warning_pending = None;
+    }
+
+    /// The player cut the warning off: that counts as having heard it.
+    ///
+    /// An interrupted warning is otherwise said again in full, which is
+    /// right when another line cut it and wrong when the player did --
+    /// every press of Control brought the whole line back, as many times
+    /// as it was pressed (Shane's log, 12 September).
+    pub(crate) fn acknowledge_last_hos_stop_warning(&mut self, ctx: &mut GameContext) {
+        let Some(key) = self.hos_stop_warning_pending.take() else {
+            return;
+        };
+        if !hos_of(ctx).warned.contains(&key) {
+            hos_mut_of(ctx).warned.push(key);
+        }
+    }
+
+    /// Everything a player's stop-speech key settles at once.
+    pub(crate) fn warnings_stopped_by_player(&mut self, ctx: &mut GameContext) {
+        self.note_critical_speech_stopped();
+        self.acknowledge_last_hos_stop_warning(ctx);
+        if let Some(key) = self.hos_plan_hint_pending.take() {
+            if !hos_of(ctx).warned.contains(&key) {
+                hos_mut_of(ctx).warned.push(key);
+            }
+        }
+        self.acknowledge_maintenance_warnings();
     }
 
     pub fn hos_stop_advice(&self, ctx: &GameContext) -> Option<HosStopAdvice> {

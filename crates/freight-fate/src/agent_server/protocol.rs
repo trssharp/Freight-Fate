@@ -5,16 +5,27 @@ use serde_json::{json, Map, Value};
 
 use crate::states::base::{Key, Mods};
 
-use super::{Command, CruiseTarget, Request};
+use super::{Command, CruiseTarget, KeySpec, Lifeline, Request};
+use crate::bindings::Action;
 
 const SERVER_NAME: &str = "freight-fate-agent";
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const REPLY_TIMEOUT_SECONDS: u64 = 330;
 // -- the MCP stdio thread -------------------------------------------------------------
 
-fn respond_raw(out: &mut dyn Write, value: &Value) {
-    let _ = writeln!(out, "{value}");
-    let _ = out.flush();
+fn respond_raw(out: &mut dyn Write, value: &Value) -> bool {
+    writeln!(out, "{value}").and_then(|_| out.flush()).is_ok()
+}
+
+/// The `lockstep` tool's reply.
+pub(super) fn lockstep_reply(on: bool) -> String {
+    if on {
+        "Lockstep is on: the world waits between tool calls. Time passes only inside \
+         wait, pedal, wait_for, and the frames a call scripts."
+    } else {
+        "Lockstep is off: the road runs on the wall clock again."
+    }
+    .to_string()
 }
 
 fn tool_text(text: String) -> Value {
@@ -74,7 +85,9 @@ fn tools_list() -> Value {
             "Tap a key, as a player would: letters a-z, digits, up, down, left, right, \
              enter, escape, space, tab, backspace, home, end, pageup, pagedown, f1, f2, \
              control, plus, minus, comma, period. Use modifiers for chords such as Alt+A, \
-             Shift+K, or Ctrl+Plus. The game \
+             Shift+K, or Ctrl+Plus. Or name a driving control by its shortcut id \
+             (engine, cruise, take_exit, rest, fuel, ...) to press whatever key this \
+             player has it on, chord included. The game \
              starts at its real title menu; menus use arrows and enter, and the drive \
              uses the game's own key bindings. After pressing, wait a beat and listen.",
             json!({
@@ -128,9 +141,12 @@ fn tools_list() -> Value {
             "Let the game run until something arrives: a spoken line or sound whose \
              text contains `text` (case-insensitive), or a menu on screen when `menu` \
              is true, or `seconds` of real time (max 300), whichever comes first. \
-             Anything heard since the last listen counts, so a line already spoken \
-             answers at once. Replies with everything heard, and says if the clock \
-             ran out. Use it to drive to the next event instead of waiting blind.",
+             It also stops early whenever the cab cuts in on the driving channel \
+             (an interrupting instruction or warning), so it can be answered: act \
+             on it, then wait again. Anything heard since the last listen counts, \
+             so a line already spoken answers at once. Replies with everything \
+             heard, and says if the cab or the clock ended it first. Use it to \
+             drive to the next event instead of waiting blind.",
             json!({
                 "text": {"type": "string", "description": "text to listen for"},
                 "menu": {"type": "boolean", "description": "return as soon as a menu is on screen"},
@@ -195,13 +211,17 @@ fn tools_list() -> Value {
              feature must be one of: downgrade, upgrade, zone, limit-drop, stop, \
              scale, curve, interchange, toll, chain-law, destination, departure. \
              Same seed, same road. pick chooses among multiple matches (1-based). \
-             Listen after staging for the truck's actual starting condition.",
+             unit plants a staffed enforcement unit unit_ahead_mi up the road (default \
+             3) so an encounter can be staged on purpose; the road's own seeded posts \
+             stay. Listen after staging for the truck's actual starting condition.",
             json!({
                 "feature": {"type": "string"},
                 "origin": {"type": "string", "description": "search one corridor from this city (fast and thorough)"},
                 "destination": {"type": "string", "description": "with origin: the corridor's far end"},
                 "seed": {"type": "integer", "description": "default 7"},
                 "pick": {"type": "integer", "description": "1-based match index, default 1"},
+                "unit": {"type": "string", "description": "plant a staffed enforcement unit ahead of the start: one of median_crossover, roving_patrol, work_zone_post, scale_apron_post, fixed_scale, urban_unit, cmv_unit, chain_control"},
+                "unit_ahead_mi": {"type": "number", "description": "how far up the road the planted unit sits, default 3"},
             }),
             &["feature"],
         ),
@@ -212,8 +232,12 @@ fn tools_list() -> Value {
              with no miles driven), level (1 to 30), deliveries, money, reputation, \
              business (company, leased or independent), endorsements (a list of \
              credential keys bought outright, replacing what was held), hour (local \
-             clock 0 to 24, moved forward to), fuel_pct and damage_pct (0 to 100), \
-             rested (true takes a full sleep), clear_load (true drops a load in \
+             clock 0 to 24, moved forward to), fuel_pct, damage_pct, tire_wear_pct and \
+             brake_wear_pct (0 to 100, what a roadside inspection reads), citations and \
+             out_of_service_events (counts on the record, dated now; with damage they set the \
+             safety band that decides who is pulled into the inspection lane), \
+             rested (true takes a full sleep), hos_driving_min, hos_duty_min and \
+             hos_since_break_min (sandbox HOS counters in game minutes), clear_load (true drops a load in \
              progress first), market_seed and board_seed (the dispatch board rolls \
              from them), settings (an object of setting name to value, for this \
              session), and name (the career created when none is loaded; default \
@@ -231,7 +255,14 @@ fn tools_list() -> Value {
                 "hour": {"type": "number"},
                 "fuel_pct": {"type": "number"},
                 "damage_pct": {"type": "number"},
+                "tire_wear_pct": {"type": "number"},
+                "brake_wear_pct": {"type": "number"},
+                "citations": {"type": "integer"},
+                "out_of_service_events": {"type": "integer"},
                 "rested": {"type": "boolean"},
+                "hos_driving_min": {"type": "number"},
+                "hos_duty_min": {"type": "number"},
+                "hos_since_break_min": {"type": "number"},
                 "clear_load": {"type": "boolean"},
                 "market_seed": {"type": "integer"},
                 "board_seed": {"type": "integer"},
@@ -253,6 +284,34 @@ fn tools_list() -> Value {
             &["live"],
         ),
         tool(
+            "key_probe",
+            "Measure what the operator's keyboard delivers to the game, screen reader and \
+             all -- for a JAWS machine, where held arrows arrive as instant press-and-\
+             release pairs. Needs operator_keys live true. Call with action start, ask \
+             the operator to hold each arrow key for several seconds, then call with \
+             action report: it says how the keys arrived, how long the game read each \
+             one held against how long the keyboard did, and how many re-sent pairs the \
+             held-key tracker missed and why (a slow frame, or a pair split across two \
+             frames).",
+            json!({
+                "action": {"type": "string", "enum": ["start", "report"]},
+            }),
+            &["action"],
+        ),
+        tool(
+            "lockstep",
+            "Freeze the world between tool calls (on true), so the road waits while you \
+             think: time passes only inside wait, pedal and wait_for, and for the few \
+             frames a press or cruise call scripts. Use it to answer a cue in time \
+             where a round trip would otherwise cost road -- steering with lane keeping \
+             off, braking for a hazard. Off (false) runs the road on the wall clock \
+             again, which is the default and what an owner driving alongside needs.",
+            json!({
+                "on": {"type": "boolean", "description": "true to freeze the world between calls, false for the live road"},
+            }),
+            &["on"],
+        ),
+        tool(
             "quit_game",
             "Quit the game and end the session (the sandboxed career saves on the way \
              out, as a real quit does).",
@@ -264,29 +323,54 @@ fn tools_list() -> Value {
 
 /// Serve MCP on stdin/stdout, forwarding tool calls into the game loop.
 /// Runs on its own thread; returns when stdin closes or the game quits.
-pub fn serve(requests: mpsc::Sender<Request>) {
+pub fn serve(requests: mpsc::Sender<Request>, lifeline: Lifeline) {
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
-    serve_lines(stdin.lock(), &mut stdout, &requests);
+    serve_lines_with_lifeline(stdin.lock(), &mut stdout, &requests, &lifeline);
 }
 
 /// The MCP loop over any reader and writer: the handshake (`initialize`,
 /// `tools/list`, `ping`) is answered right here; only a `tools/call` goes
 /// through `requests` to the game loop, and the first one is what boots it.
 pub fn serve_lines<R: BufRead, W: Write>(reader: R, out: &mut W, requests: &mpsc::Sender<Request>) {
+    serve_lines_inner(reader, out, requests, None);
+}
+
+/// The testable MCP loop with a lifeline that is cut when the transport ends.
+pub fn serve_lines_with_lifeline<R: BufRead, W: Write>(
+    reader: R,
+    out: &mut W,
+    requests: &mpsc::Sender<Request>,
+    lifeline: &Lifeline,
+) {
+    serve_lines_inner(reader, out, requests, Some(lifeline));
+}
+
+fn serve_lines_inner<R: BufRead, W: Write>(
+    reader: R,
+    out: &mut W,
+    requests: &mpsc::Sender<Request>,
+    lifeline: Option<&Lifeline>,
+) {
+    let mut quit = false;
     for line in reader.lines() {
         let Ok(line) = line else { break };
         if line.trim().is_empty() {
             continue;
         }
         let Ok(message) = serde_json::from_str::<Value>(&line) else {
-            respond_raw(
+            if !respond_raw(
                 out,
                 &json!({
                     "jsonrpc": "2.0", "id": null,
                     "error": {"code": -32700, "message": "parse error"}
                 }),
-            );
+            ) {
+                if let Some(lifeline) = lifeline {
+                    lifeline.cut("the MCP client stopped reading");
+                }
+                return;
+            }
             continue;
         };
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
@@ -348,25 +432,54 @@ pub fn serve_lines<R: BufRead, W: Write>(reader: R, out: &mut W, requests: &mpsc
                 }
             }
             _ => {
-                respond_raw(
+                if !respond_raw(
                     out,
                     &json!({
                         "jsonrpc": "2.0", "id": id,
                         "error": {"code": -32601, "message": format!("unknown method {method}")}
                     }),
-                );
+                ) {
+                    if let Some(lifeline) = lifeline {
+                        lifeline.cut("the MCP client stopped reading");
+                    }
+                    return;
+                }
                 continue;
             }
         };
-        respond_raw(out, &json!({"jsonrpc": "2.0", "id": id, "result": reply}));
+        if !respond_raw(out, &json!({"jsonrpc": "2.0", "id": id, "result": reply})) {
+            if let Some(lifeline) = lifeline {
+                lifeline.cut("the MCP client stopped reading");
+            }
+            return;
+        }
+        if method == "tools/call" && params.get("name").and_then(Value::as_str) == Some("quit_game")
+        {
+            // A quit ends the process; nothing after it is read.
+            quit = true;
+            break;
+        }
+    }
+    if let Some(lifeline) = lifeline {
+        lifeline.cut(if quit {
+            "the MCP client ended the session"
+        } else {
+            "the MCP client closed stdin"
+        });
     }
 }
 
 /// One tool call as the game loop will see it, or why it cannot be.
 pub fn build_command(name: &str, args: &Map<String, Value>) -> Result<Command, String> {
-    let key_arg = |args: &Map<String, Value>| -> Result<(Key, Option<char>), String> {
+    let key_arg = |args: &Map<String, Value>| -> Result<KeySpec, String> {
         let name = args.get("key").and_then(Value::as_str).unwrap_or("");
-        parse_key(name).ok_or_else(|| format!("{name:?} is not a key this server knows"))
+        if let Some((key, text)) = parse_key(name) {
+            return Ok(KeySpec::Key { key, text });
+        }
+        Action::from_id(&name.to_ascii_lowercase())
+            .filter(|action| action.on_keyboard())
+            .map(KeySpec::Action)
+            .ok_or_else(|| format!("{name:?} is not a key or a driving control this server knows"))
     };
     let modifiers = |args: &Map<String, Value>| -> Result<Mods, String> {
         let mut mods = Mods::NONE;
@@ -388,23 +501,17 @@ pub fn build_command(name: &str, args: &Map<String, Value>) -> Result<Command, S
         Ok(mods)
     };
     match name {
-        "press" => {
-            let (key, text) = key_arg(args)?;
-            Ok(Command::Press {
-                key,
-                text,
-                mods: modifiers(args)?,
-                times: args.get("times").and_then(Value::as_i64).unwrap_or(1),
-            })
-        }
-        "hold" => {
-            let (key, text) = key_arg(args)?;
-            Ok(Command::Hold { key, text })
-        }
-        "release" => {
-            let (key, _) = key_arg(args)?;
-            Ok(Command::Release { key })
-        }
+        "press" => Ok(Command::Press {
+            key: key_arg(args)?,
+            mods: modifiers(args)?,
+            times: args.get("times").and_then(Value::as_i64).unwrap_or(1),
+        }),
+        "hold" => Ok(Command::Hold {
+            key: key_arg(args)?,
+        }),
+        "release" => Ok(Command::Release {
+            key: key_arg(args)?,
+        }),
         "wait" => {
             let seconds = args.get("seconds").and_then(Value::as_f64).unwrap_or(0.0);
             if seconds <= 0.0 {
@@ -413,12 +520,12 @@ pub fn build_command(name: &str, args: &Map<String, Value>) -> Result<Command, S
             Ok(Command::Wait { seconds })
         }
         "pedal" => {
-            let (key, text) = key_arg(args)?;
+            let key = key_arg(args)?;
             let seconds = args.get("seconds").and_then(Value::as_f64).unwrap_or(0.0);
             if seconds <= 0.0 {
                 return Err("pedal needs a positive number of seconds".to_string());
             }
-            Ok(Command::Pedal { key, text, seconds })
+            Ok(Command::Pedal { key, seconds })
         }
         "wait_for" => {
             let seconds = args.get("seconds").and_then(Value::as_f64).unwrap_or(0.0);
@@ -496,7 +603,28 @@ pub fn build_command(name: &str, args: &Map<String, Value>) -> Result<Command, S
                 .get("destination")
                 .and_then(Value::as_str)
                 .map(str::to_string);
-            let (hit, opts, found, picked) = discover(&feature, origin, destination, seed, pick)?;
+            let unit = match args.get("unit").and_then(Value::as_str) {
+                None => None,
+                Some(kind) => {
+                    let kind = kind.trim().to_ascii_lowercase();
+                    if !ff_core::sim::enforcement_posts::POST_KINDS.contains(&kind.as_str()) {
+                        return Err(format!(
+                            "unit must be one of {}",
+                            ff_core::sim::enforcement_posts::POST_KINDS.join(", ")
+                        ));
+                    }
+                    let ahead = args
+                        .get("unit_ahead_mi")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(3.0);
+                    if ahead < 0.5 {
+                        return Err("unit_ahead_mi must be at least half a mile".to_string());
+                    }
+                    Some((kind, ahead))
+                }
+            };
+            let (hit, opts, found, picked) =
+                discover(&feature, origin, destination, seed, pick, unit)?;
             Ok(Command::StageHit {
                 hit: Box::new(hit),
                 found,
@@ -509,6 +637,15 @@ pub fn build_command(name: &str, args: &Map<String, Value>) -> Result<Command, S
         "operator_keys" => match args.get("live").and_then(Value::as_bool) {
             Some(live) => Ok(Command::OperatorKeys { live }),
             None => Err("operator_keys needs live: true or false".to_string()),
+        },
+        "key_probe" => match args.get("action").and_then(Value::as_str) {
+            Some("start") => Ok(Command::KeyProbe { start: true }),
+            Some("report") => Ok(Command::KeyProbe { start: false }),
+            _ => Err("key_probe needs action: \"start\" or \"report\"".to_string()),
+        },
+        "lockstep" => match args.get("on").and_then(Value::as_bool) {
+            Some(on) => Ok(Command::Lockstep { on }),
+            None => Err("lockstep needs on: true or false".to_string()),
         },
         "quit_game" => Ok(Command::Quit),
         other => Err(format!("unknown tool {other}")),
@@ -528,6 +665,7 @@ pub(super) fn discover(
     destination: Option<String>,
     seed: i64,
     pick: usize,
+    unit: Option<(String, f64)>,
 ) -> Result<
     (
         crate::playtest::road::Hit,
@@ -553,6 +691,7 @@ pub(super) fn discover(
         seed: Some(seed),
         trip_seed: Some(seed),
         pick,
+        unit,
         sandbox: false, // the whole server already runs sandboxed
         ..Default::default()
     };
@@ -642,17 +781,16 @@ mod tests {
 
         let command = build_command("press", &args).unwrap();
 
-        let Command::Press {
-            key,
-            text,
-            mods,
-            times,
-        } = command
-        else {
+        let Command::Press { key, mods, times } = command else {
             panic!("press tool did not build a press command");
         };
-        assert_eq!(key, Key::A);
-        assert_eq!(text, Some('a'));
+        assert_eq!(
+            key,
+            KeySpec::Key {
+                key: Key::A,
+                text: Some('a')
+            }
+        );
         assert_eq!(
             mods,
             Mods {
@@ -662,6 +800,22 @@ mod tests {
             }
         );
         assert_eq!(times, 1);
+    }
+
+    #[test]
+    fn press_command_takes_a_driving_control_by_id() {
+        let args = serde_json::from_value(json!({"key": "engine"})).unwrap();
+        let Command::Press { key, .. } = build_command("press", &args).unwrap() else {
+            panic!("press tool did not build a press command");
+        };
+        assert_eq!(key, KeySpec::Action(Action::Engine));
+        // A pad-only control has no key to press.
+        let args = serde_json::from_value(json!({"key": "cruise_up"})).unwrap();
+        let error = match build_command("press", &args) {
+            Ok(_) => panic!("a pad-only control was accepted as a key"),
+            Err(error) => error,
+        };
+        assert!(error.contains("not a key or a driving control"), "{error}");
     }
 
     #[test]
@@ -681,7 +835,8 @@ mod tests {
 
     #[test]
     fn scale_discovery_only_stages_scales_open_in_the_built_drive() {
-        let (hit, _opts, found, picked) = discover("scale", None, None, 83, usize::MAX).unwrap();
+        let (hit, _opts, found, picked) =
+            discover("scale", None, None, 83, usize::MAX, None).unwrap();
 
         assert!(found > 0);
         assert_eq!(picked, found);

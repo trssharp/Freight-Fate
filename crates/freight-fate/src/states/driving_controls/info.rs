@@ -4,12 +4,13 @@
 
 use ff_core::data::curves::RouteCurve;
 use ff_core::sim::trip::Trip;
+use ff_core::sim::trip_models::RoadStop;
 
 use crate::app::{GameContext, Say};
 use crate::states::driving::DrivingState;
 use crate::states::driving_core::*;
 
-use super::{SAFE_SPEED_CURVE_MI, SAFE_SPEED_EXIT_MI, UPCOMING_MAX_CLAUSES};
+use super::{SAFE_SPEED_CURVE_MI, UPCOMING_MAX_CLAUSES};
 
 impl DrivingState {
     /// `_keeper_holding_text()`: what the speed keeper is holding RIGHT NOW,
@@ -96,31 +97,107 @@ impl DrivingState {
     }
 
     /// `_speak_speed()`: Space.
+    ///
+    /// Three short sentences rather than one run-on: the gauges, then the
+    /// controller, then the air. The run-on named "automatic speed control"
+    /// ahead of the controller that already names itself, spoke the default
+    /// open-road target nobody set, and listed four normal air states every
+    /// time (bscross32, 2026-10: "why did I need all of that in one
+    /// message?"). What is normal goes unsaid; Tab still lists all of it.
     pub fn speak_speed(&mut self, ctx: &mut GameContext) {
         let gear = self.gear_text();
+        // The open-road target only when one was set, and not when it is the
+        // number the keeper was just said to be set at.
         let keeper_target = match self.speed_control_target_mph {
-            Some(mph) => format!(", open-road target {}", ctx.settings.speed_text(mph)),
-            None => ", open-road target will use the posted limit".to_string(),
+            Some(mph) if self.keeper_mph.is_none_or(|set| (set - mph).abs() >= 0.5) => {
+                format!(" Open-road target {}.", ctx.settings.speed_text(mph))
+            }
+            _ => String::new(),
         };
-        let cruise = if self.cruise_mph.is_some() {
-            format!(
-                ", automatic speed control, {}",
-                self.cruise_holding_text(ctx)
-            )
+        let control = if self.cruise_mph.is_some() {
+            format!(" {}.", capitalize_first(&self.cruise_holding_text(ctx)))
         } else if self.keeper_mph.is_some() {
             format!(
-                ", automatic speed control, {}{keeper_target}",
-                self.keeper_holding_text(ctx)
+                " {}.{keeper_target}",
+                capitalize_first(&self.keeper_holding_text(ctx))
             )
         } else if self.speed_control_armed {
-            format!(", automatic speed control paused{keeper_target}")
+            format!(" Automatic speed control paused.{keeper_target}")
         } else {
             String::new()
         };
         let speed = ctx.settings.speed_text(self.trip.truck.speed_mph());
-        let rpm = self.trip.truck.rpm;
-        let air = self.air_status_text(false);
-        ctx.say(&format!("{speed}, {gear}, {rpm:.0} RPM{cruise}, {air}."));
+        // The tachometer matters to a driver who shifts; an automatic
+        // shifts for them.
+        let rpm = if self.trip.truck.transmission.automatic {
+            String::new()
+        } else {
+            format!(", {:.0} RPM", self.trip.truck.rpm)
+        };
+        let air = match self.air_brief_text() {
+            air if air.is_empty() => air,
+            air => format!(" {}.", capitalize_first(&air)),
+        };
+        // With the signal on, how far to the exit is the number the driver is
+        // waiting on, and until now only the countdown anchors said it (owner,
+        // driving, 2026-09-24: "I should be able to see how far away from the
+        // exit I am"). Asked for, never volunteered.
+        // "set" until the blinker runs, "on" once it clicks, as the X line.
+        let armed = match self.armed_exit() {
+            Some(stop) => format!(
+                " Signal {} for {}, {}.",
+                self.signal_verb(),
+                self.armed_exit_name(ctx, &stop),
+                ctx.settings
+                    .distance_text(stop.at_mi - self.trip.position_mi, true)
+            ),
+            None => String::new(),
+        };
+        ctx.say(&format!("{speed}, {gear}{rpm}.{control}{air}{armed}"));
+    }
+
+    /// The exit the signal is on for, while the truck is still short of its
+    /// gore. `None` once on the ramp, where the ramp readouts take over.
+    fn armed_exit(&self) -> Option<RoadStop> {
+        if !self.exit_signal_on || self.exit_signal_canceled || self.ramp_mi.is_some() {
+            return None;
+        }
+        self.exit_stop
+            .clone()
+            .filter(|stop| stop.at_mi > self.trip.position_mi)
+    }
+
+    fn signal_verb(&self) -> &'static str {
+        if self.exit_blinker_on() {
+            "on"
+        } else {
+            "set"
+        }
+    }
+
+    /// The armed exit as Space and U name it, in the signal-on line's shapes:
+    /// "exit 263, Main Street" for the destination, "exit 42, Flying J" or
+    /// "the Flying J exit" for a stop. The signal-on line already gave the
+    /// stop's full name, so the plain one is enough here.
+    fn armed_exit_name(&mut self, ctx: &mut GameContext, stop: &RoadStop) -> String {
+        if stop.stop_type != "delivery_destination" {
+            return if stop.exit_label.is_empty() {
+                format!("the {} exit", stop.name)
+            } else {
+                format!("{}, {}", stop.exit_label, stop.name)
+            };
+        }
+        let phrase = self.exit_phrase_of(ctx, stop);
+        let labeled = if phrase.is_empty() {
+            stop.exit_label.clone()
+        } else {
+            phrase
+        };
+        if labeled.is_empty() {
+            format!("the destination exit for {}", stop.name)
+        } else {
+            labeled
+        }
     }
 
     /// `_speak_speed_limit()`: S -- the posted limit here, the zone if any,
@@ -146,9 +223,12 @@ impl DrivingState {
         }
         let position = self.trip.position_mi;
         let (limit, reason) = self.trip.speed_limit_at(position);
+        // A street is not a zone: its limit is its own (`spoken_zone`).
         let zone = match reason {
-            Some(reason) => format!(", in a {reason} zone"),
-            None => String::new(),
+            Some(reason) if !ff_core::sim::trip::is_street_zone_reason(&reason) => {
+                format!(", in a {reason} zone")
+            }
+            _ => String::new(),
         };
         let over = self.trip.truck.speed_mph() - limit;
         let comparison = if over >= 1.0 {
@@ -226,14 +306,24 @@ impl DrivingState {
     /// here, right now.
     ///
     /// Sits next to S on purpose: S answers "what is posted", D answers "what
-    /// should I actually be doing". Weather grip, an armed exit, and an
-    /// approaching curve are baked into the math, never into the sentence, so
+    /// should I actually be doing". Weather grip, a steep downgrade, an
+    /// approaching curve and, once on the ramp, the exit speed are baked into
+    /// the math, never into the sentence, so
     /// the answer survives being heard exactly once at speed. Repeatable free.
     pub fn speak_safe_speed(&mut self, ctx: &mut GameContext) {
         let position = self.trip.position_mi;
         let (limit, _) = self.trip.speed_limit_at(position);
         let mut safe = limit.min(self.trip.weather.effects().safe_speed_mph);
         let mut context = "";
+        // A steep downgrade has a safe speed of its own for this truck at this
+        // weight -- the one descent control holds. Without it D answered the
+        // posted 65 on a seven percent grade while descent control held 45.
+        if let Some(descent) = self.safe_descent_here_mph() {
+            if descent < safe {
+                safe = descent;
+                context = " for the grade";
+            }
+        }
         // The bend under the wheels, or the next one close ahead: whichever
         // binds, its advisory is the number that keeps the truck on the road.
         // Connector arcs count when the truck is inside one.
@@ -243,15 +333,12 @@ impl DrivingState {
                 context = " for the bend";
             }
         }
-        let ahead = self
-            .exit_stop
-            .as_ref()
-            .map(|stop| stop.at_mi - self.trip.position_mi);
-        let exit_armed = self.exit_signal_on
-            && ahead.is_some_and(|ahead| ahead > 0.0 && ahead <= SAFE_SPEED_EXIT_MI);
-        if self.ramp_mi.is_some() || exit_armed {
+        // On the ramp the exit speed governs. An armed exit still ahead does
+        // not: the gore takes road speed, and the exit speed is braked for
+        // past it (realistic exit, 2026-09-24).
+        if self.ramp_mi.is_some() {
             safe = safe.min(self.armed_ramp_mph(None));
-            context = " for the ramp";
+            context = ", the exit speed";
         }
         let spoken = ctx.settings.speed_text(safe);
         ctx.say(&format!("Safe speed {spoken}{context}."));
@@ -330,7 +417,7 @@ impl DrivingState {
     /// driver asked, and I again turns it off.
     pub fn toggle_lane_locator(&mut self, ctx: &mut GameContext) {
         if ctx.settings.lane_is_automated() {
-            ctx.say("Lane keeping assistance is on full; the truck holds the lane for you.");
+            ctx.say("Lane keeping on full.");
             return;
         }
         self.lane_locator_on = !self.lane_locator_on;
@@ -357,26 +444,19 @@ impl DrivingState {
         } else {
             let direction = if grade > 0.0 { "uphill" } else { "downhill" };
             let mut lead = format!("Grade {:.1} percent {direction}", grade.abs() * 100.0);
-            // How far the slope keeps its character, sampled the way the
-            // chain-law scan does; flat or reversed counts as the end.
-            let sign = if grade > 0.0 { 1.0 } else { -1.0 };
-            let mut run_mi: Option<f64> = None;
-            let mut probe = 0.25;
-            while probe <= 15.0 {
-                let at = self.trip.position_mi + probe;
-                if at >= self.trip.total_miles() {
-                    break;
-                }
-                if self.trip.grade_at(at) * sign <= 0.002 {
-                    run_mi = Some(probe);
-                    break;
-                }
-                probe += 0.25;
-            }
-            if let Some(run_mi) = run_mi {
-                if run_mi >= 1.0 {
-                    lead.push_str(&format!(" for another {}", self.trip.distance_text(run_mi)));
-                }
+            // How far the slope keeps its character: the same run the grade
+            // ahead is measured by ("running 2 miles"), so one pitch has one
+            // length whichever sentence names it. A grade gentler than the
+            // steep line runs until the road stops going its way at all.
+            let sign = if grade > 0.0 { 1 } else { -1 };
+            let floor_pct = if grade.abs() * 100.0 >= GRADE_WARN_CLEAR_PCT {
+                GRADE_WARN_CLEAR_PCT
+            } else {
+                GRADE_READOUT_LEVEL_PCT
+            };
+            let run_mi = self.grade_run_over_mi(self.trip.position_mi, sign, floor_pct);
+            if (1.0..GRADE_WARN_SCAN_MI).contains(&run_mi) {
+                lead.push_str(&format!(" for another {}", self.trip.distance_text(run_mi)));
             }
             parts.push(format!("{lead}."));
         }
@@ -389,9 +469,9 @@ impl DrivingState {
             let stage = truck.engine_brake_stage;
             if grade > 0.005 {
                 if accel_mph_s < -GRADE_HOLDING_MPH_PER_S {
-                    parts.push("The hill has the load; expect to lose speed.".to_string());
+                    parts.push("Losing speed.".to_string());
                 } else if accel_mph_s > GRADE_HOLDING_MPH_PER_S {
-                    parts.push("Pulling it with speed to spare.".to_string());
+                    parts.push("Gaining speed.".to_string());
                 } else {
                     parts.push("Holding speed.".to_string());
                 }
@@ -409,12 +489,12 @@ impl DrivingState {
                         };
                         parts.push(format!("Jake stage {stage} is not holding it; {losing}."));
                     } else if truck.throttle <= 0.05 {
-                        parts.push("Speed is building; set the jake before it runs.".to_string());
+                        parts.push("Speed building. Set the jake.".to_string());
                     }
-                } else if stage > 0 {
+                } else if stage > 0 && truck.jake_brake_force() > 0.0 {
                     parts.push(format!("Jake stage {stage} has it."));
                 } else {
-                    parts.push("Speed in hand.".to_string());
+                    parts.push("Holding speed.".to_string());
                 }
             }
         }
@@ -452,7 +532,11 @@ impl DrivingState {
                 // Same filter the advisory uses: a third-of-a-mile dip is not
                 // the next grade, it is a bump in this one.
                 if run_mi >= GRADE_WARN_MIN_RUN_MI {
-                    let direction = if sign > 0 { "upgrade" } else { "downgrade" };
+                    let direction = if sign > 0 {
+                        "uphill grade"
+                    } else {
+                        "downhill grade"
+                    };
                     let ahead = probe - position;
                     let distance = if ahead >= GRADE_WARN_MIN_RUN_MI {
                         format!("in {}", self.trip.distance_text(ahead))
@@ -490,6 +574,12 @@ impl DrivingState {
         if !upcoming.is_empty() {
             return upcoming;
         }
+        // Under a mile of road left to scan -- the streets to a gate -- whole
+        // miles said "Nothing steep in the next 0 miles" (live drive into
+        // Abilene, 2026-09-24): the rest of the route is all there is.
+        if scanned < 1.0 {
+            return format!("{nothing} ahead.");
+        }
         format!(
             "{nothing} in the next {}.",
             self.trip.distance_text(scanned)
@@ -513,7 +603,11 @@ impl DrivingState {
             return String::new();
         }
         let pct = grade.abs() * 100.0;
-        let direction = if grade > 0.0 { "upgrade" } else { "downgrade" };
+        let direction = if grade > 0.0 {
+            "uphill grade"
+        } else {
+            "downhill grade"
+        };
         let where_text = ctx.settings.short_distance_text(ahead_mi);
         format!("Next, a {pct:.1} percent {direction} starts in {where_text}.")
     }
@@ -542,6 +636,23 @@ impl DrivingState {
         if let Some(light) = self.ramp_light_query_text(ctx) {
             parts.push(light.trim_end_matches('.').to_lowercase());
         }
+        // The exit the signal is on for leads: it is the one thing on this
+        // road the driver has already committed to (owner, 2026-09-24).
+        let armed = self.armed_exit();
+        if let Some(stop) = armed.as_ref() {
+            let name = self.armed_exit_name(ctx, stop);
+            parts.push(format!(
+                "signal {} for {name}, in {}{}",
+                self.signal_verb(),
+                ctx.settings.distance_text(stop.at_mi - pos, true),
+                Self::ramp_ending_clause(&self.ramp_control_for(ctx, stop, None))
+            ));
+        }
+        let is_armed = |at_mi: f64| {
+            armed
+                .as_ref()
+                .is_some_and(|a| (a.at_mi - at_mi).abs() < 0.001)
+        };
         if let Some(zone) = self.trip.next_zone_within(within_mi) {
             let paired = if zone.reason == "construction merge" {
                 self.trip
@@ -565,18 +676,35 @@ impl DrivingState {
                     "all lanes open".to_string()
                 };
                 parts.push(format!(
-                    "construction taper in {}, {merge}, speed limit {}, then construction zone {}",
+                    "reduced speed for construction in {}, {merge}, speed limit {}, then construction zone {}",
                     ctx.settings.distance_text(zone.start_mi - pos, true),
                     ctx.settings.speed_text(zone.limit_mph),
                     ctx.settings.speed_text(paired.limit_mph)
                 ));
             } else {
-                parts.push(format!(
-                    "{} in {}, speed limit {}",
-                    zone.reason,
-                    ctx.settings.distance_text(zone.start_mi - pos, true),
-                    ctx.settings.speed_text(zone.limit_mph)
-                ));
+                // The gate zone runs up to the gate, so its start is not where
+                // the gate is: "facility gate in 0.3 miles" here and "three
+                // quarters of a mile to the gate" from R (agent drive A,
+                // 2026-09-24). The gate's clause reads the gate.
+                let ahead = match self.gate_distance_mi(ctx) {
+                    Some(gate) if zone.reason == "facility gate" => gate,
+                    _ => zone.start_mi - pos,
+                };
+                // The next street's number, not a zone by name.
+                if ff_core::sim::trip::is_street_zone_reason(&zone.reason) {
+                    parts.push(format!(
+                        "speed limit {} in {}",
+                        ctx.settings.speed_text(zone.limit_mph),
+                        ctx.settings.distance_text(ahead, true)
+                    ));
+                } else {
+                    parts.push(format!(
+                        "{} in {}, speed limit {}",
+                        zone.reason,
+                        ctx.settings.distance_text(ahead, true),
+                        ctx.settings.speed_text(zone.limit_mph)
+                    ));
+                }
             }
         }
         // Every distance here is PRECISE. Whole miles bottom out at "0
@@ -587,16 +715,52 @@ impl DrivingState {
         // gate in 0 miles", and before that watched it sit on "2 miles" for
         // three minutes while he closed on it (2026-08-23). The bend clause
         // below always asked for precise; the rest did not.
-        if let Some(stop) = self.trip.upcoming_stop(within_mi).cloned() {
+        //
+        // Off the highway there is no next highway stop: on an exit ramp or
+        // the streets, "Coming up: Flying J in 0.1 miles, where the ramp ends
+        // at a traffic light" named a stop the truck had already left the
+        // road for, and a ramp end that was a stop sign (agent drive, exit
+        // 286A, 2026-09-23).
+        let on_the_highway = self.ramp_mi.is_none() && !self.on_local_streets();
+        // The destination exit is the most notable thing on the road, and it
+        // is not one of the trip's stops: "Nothing notable in the next 15
+        // miles." 1.2 miles before it (agent drives A and B, 2026-09-24).
+        let destination = self
+            .destination_exit_stop(ctx)
+            .filter(|exit| on_the_highway && exit.at_mi - pos <= within_mi);
+        if let Some(exit) = destination.as_ref().filter(|exit| !is_armed(exit.at_mi)) {
+            let phrase = self.exit_phrase_of(ctx, exit);
+            let labeled = if phrase.is_empty() {
+                exit.exit_label.clone()
+            } else {
+                phrase
+            };
+            let named = if labeled.is_empty() {
+                format!("the destination exit for {}", exit.name)
+            } else {
+                format!("the destination exit, {labeled},")
+            };
+            parts.push(format!(
+                "{named} in {}{}",
+                ctx.settings.distance_text(exit.at_mi - pos, true),
+                Self::ramp_ending_clause(&self.ramp_control_for(ctx, exit, None))
+            ));
+        }
+        if let Some(stop) = self
+            .trip
+            .upcoming_stop(within_mi)
+            .cloned()
+            .filter(|stop| on_the_highway && !is_armed(stop.at_mi))
+            // Past the destination exit is road this truck is not driving.
+            .filter(|stop| {
+                destination
+                    .as_ref()
+                    .is_none_or(|exit| stop.at_mi < exit.at_mi)
+            })
+        {
             // The ramp's ending is part of the plan: a stop sign first heard
             // mid-ramp is too late to brake for.
-            let ending = match self.ramp_control_for(ctx, &stop, None).as_str() {
-                "signal" => ", where the ramp ends at a traffic light",
-                "stop" => ", where the ramp ends at a stop sign",
-                "yield" => ", where the ramp ends at a yield",
-                "roundabout" => ", where the ramp ends at a roundabout",
-                _ => "",
-            };
+            let ending = Self::ramp_ending_clause(&self.ramp_control_for(ctx, &stop, None));
             parts.push(format!(
                 "{}{} in {}{ending}",
                 self.trip.planned_prefix(&stop),
@@ -646,10 +810,21 @@ impl DrivingState {
         ctx.say(&format!("Coming up: {}.", parts.join(". ")));
     }
 
+    /// ", where the ramp ends at a traffic light", or "" for a free-flowing
+    /// ramp.
+    fn ramp_ending_clause(control: &str) -> &'static str {
+        match control {
+            "signal" => ", where the ramp ends at a traffic light",
+            "stop" => ", where the ramp ends at a stop sign",
+            "yield" => ", where the ramp ends at a yield",
+            "roundabout" => ", where the ramp ends at a roundabout",
+            _ => "",
+        }
+    }
+
     /// `_speak_fuel()`: F.
     pub fn speak_fuel(&mut self, ctx: &mut GameContext) {
-        let mpg = 6.0;
-        let range_mi = self.trip.truck.fuel_gal * mpg;
+        let range_mi = self.fuel_range_mi();
         let fraction = self.trip.truck.fuel_fraction() * 100.0;
         let gallons = self.trip.truck.fuel_gal;
         ctx.say(&format!(
@@ -680,5 +855,14 @@ impl DrivingState {
         }
         parts.push(format!("It is {tod}."));
         ctx.say(&parts.join(" "));
+    }
+}
+
+/// "speed keeper holding ..." as the start of its own sentence.
+fn capitalize_first(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
     }
 }

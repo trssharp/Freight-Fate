@@ -20,6 +20,25 @@ use crate::units::{
     distance_unit, hud_speed, spoken_distance, spoken_gap, to_distance, MILES_TO_KM,
 };
 
+/// How score readouts balance the descriptive band and the numeric score.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScoreDisplay {
+    #[default]
+    Both,
+    Percent,
+    Description,
+}
+
+impl From<ScoreDisplay> for Value {
+    fn from(value: ScoreDisplay) -> Self {
+        match value {
+            ScoreDisplay::Both => Self::String("Both".to_string()),
+            ScoreDisplay::Percent => Self::String("Percent".to_string()),
+            ScoreDisplay::Description => Self::String("Description".to_string()),
+        }
+    }
+}
+
 mod migrate;
 pub mod paths;
 #[cfg(test)]
@@ -40,7 +59,8 @@ pub use paths::{
 // Real time (1x) joined the row on 2026-08-22: the driving clock runs at the
 // speed of the wall clock, which with live weather is as true to life as the
 // game gets. It is last in the cycle so the two compressed pacings keep their
-// places, and like the others it can be changed mid-drive from the pause menu.
+// places, and like the others it can be changed mid-drive from the pause menu,
+// taking effect when the truck next stops (PACE_CHANGE_MAX_MPH).
 pub const TIME_SCALES: [f64; 3] = [10.0, 20.0, 1.0];
 pub const RETIRED_TIME_SCALE: f64 = 40.0;
 pub const TIME_SCALE_FALLBACK: f64 = 20.0;
@@ -181,11 +201,10 @@ pub enum AssistValue {
     Mode(&'static str),
 }
 
-pub const DRIVING_ASSIST_FIELDS: [&str; 10] = [
+pub const DRIVING_ASSIST_FIELDS: [&str; 9] = [
     "automatic_emergency_braking",
     "lane_departure_warning",
     "stop_and_go_assist",
-    "lane_centering_assist",
     "descent_speed_control",
     "exit_speed_assist",
     // Facility stopping assistance is a preset field again (owner, 2026-09-11).
@@ -205,14 +224,13 @@ pub const DRIVING_ASSIST_FIELDS: [&str; 10] = [
 
 use AssistValue::{Flag, Mode};
 
-pub const DRIVING_ASSIST_PRESETS: [(&str, [AssistValue; 10]); 3] = [
+pub const DRIVING_ASSIST_PRESETS: [(&str, [AssistValue; 9]); 3] = [
     (
         "realistic",
         [
             Flag(true),
             Flag(true),
             Flag(true),
-            Flag(false),
             Mode("realistic"),
             Flag(true),
             Flag(false),
@@ -224,7 +242,6 @@ pub const DRIVING_ASSIST_PRESETS: [(&str, [AssistValue; 10]); 3] = [
     (
         "balanced",
         [
-            Flag(true),
             Flag(true),
             Flag(true),
             Flag(true),
@@ -242,7 +259,6 @@ pub const DRIVING_ASSIST_PRESETS: [(&str, [AssistValue; 10]); 3] = [
             Flag(true),
             Flag(true),
             Flag(true),
-            Flag(true),
             Mode("interactive"),
             Flag(true),
             Flag(true),
@@ -254,14 +270,14 @@ pub const DRIVING_ASSIST_PRESETS: [(&str, [AssistValue; 10]); 3] = [
 ];
 
 /// `DRIVING_ASSIST_PRESETS[name]`.
-pub fn driving_assist_preset(name: &str) -> Option<&'static [AssistValue; 10]> {
+pub fn driving_assist_preset(name: &str) -> Option<&'static [AssistValue; 9]> {
     DRIVING_ASSIST_PRESETS
         .iter()
         .find(|(preset, _)| *preset == name)
         .map(|(_, values)| values)
 }
 
-/// The 76 persisted fields, in the Python dataclass's declaration order
+/// The persisted fields, in the Python dataclass's declaration order
 /// (which is the order `save` writes them in). Each row is
 /// `name: type = default => coercion`, the coercion naming how a raw JSON
 /// value lands on the typed field (see `migrate::coerce`).
@@ -319,9 +335,9 @@ macro_rules! settings_fields {
 
 settings_fields! {
     /// Master switch for the orinks.net and sharing services: the drivers
-    /// board, `online_presence`, `cloud_saves`, Mastodon sharing, and
-    /// Discord presence behave as disabled while it is off, without losing
-    /// their individual settings. Live-data simulation sources
+    /// board, `online_presence`, `cloud_saves`, and Discord presence behave
+    /// as disabled while it is off, without losing their individual
+    /// settings. Live-data simulation sources
     /// (`real_weather`, `real_traffic`, `real_parking`) are deliberately NOT
     /// gated here -- they follow their own Settings toggles (owner ruling,
     /// 2026-08-08: two testers lost real weather to this switch with no
@@ -351,6 +367,10 @@ settings_fields! {
     acc_following_gap: String = "normal" => str_checked,
     /// friendlier default for new players
     automatic_transmission: bool = true => bool_truthy,
+    /// Alt+J: whether J on an automatic box arms the retarder manager.
+    /// Kept between drives, so a driver who stages the jake by hand is not
+    /// handed back to the manager at every dispatch.
+    automatic_jake: bool = true => bool_truthy,
     /// Simple keeps the familiar hold-through-stop behavior. Deliberate
     /// requires a release and second press before an automatic changes
     /// direction.
@@ -387,6 +407,13 @@ settings_fields! {
     /// hours of service: realistic/relaxed (debug_off is an internal dev
     /// bypass)
     hos_mode: String = "realistic" => str_checked,
+    /// Whether score readouts speak both the band and number, only the
+    /// number, or only the descriptive band.
+    #[serde(default)]
+    score_display: ScoreDisplay = ScoreDisplay::Both => score_display,
+    /// Optional early advice from the legal-reach planner. The mandatory
+    /// hours warnings and requested readouts do not depend on this switch.
+    hos_planning_hints: bool = false => bool_strict,
     /// How much of the lane-holding work the truck does. "full" keeps the
     /// truck centred, takes your exits for you, and turns Left and Right
     /// into tap lane changes. "partial" drifts gently and gives you generous
@@ -403,7 +430,22 @@ settings_fields! {
     /// reading rather than renaming the label to match a setting nobody
     /// chose. Existing players are untouched: their saved value migrates to
     /// whatever they already had.
-    lane_keeping: String = "off" => str_checked,
+    ///
+    /// Ships on PARTIAL (owner, 2026-09-18), which makes a fresh install the
+    /// Balanced preset rather than Realistic. The lane model grew a heading
+    /// that day, so steering turns the truck instead of sliding it, and a
+    /// truck nobody steers genuinely leaves the road -- "off" stopped being
+    /// the mild drift it used to be and became a continuous driving task.
+    /// Partial steers for the error while leaving the driver something to
+    /// feel and to fight, where full holds the lane outright and hands over a
+    /// job a new driver never gets to learn.
+    ///
+    /// Ships on FULL (owner, 2026-09-30), making a fresh install the All
+    /// assists preset: too many first drives went wrong at the wheel, street
+    /// corners above all. The truck drives while the engine lean still plays,
+    /// so a new driver hears the cue before being asked to steer by it, and
+    /// steps down to Balanced when ready. Saved settings keep their value.
+    lane_keeping: String = "full" => str_checked,
     /// How many more times the Lane keeping row explains that it used to be
     /// called Lane drift. Zero by default: a fresh install has nothing to
     /// explain, and only a load that actually found the old key on disk
@@ -436,14 +478,21 @@ settings_fields! {
     /// The shipped defaults now match the realistic preset field for field
     /// -- lane keeping was the only one that did not, and it is the default
     /// the row has been claiming since before it could see that field.
-    driving_assistance_preset: String = "realistic" => str_checked,
+    /// Moved from "realistic" to "balanced" on 2026-09-18 with `lane_keeping`,
+    /// and to "all" on 2026-09-30, so the row a fresh install shows is still
+    /// the truth about the ruleset it is running -- the whole point of the
+    /// 2026-08-09 ruling.
+    driving_assistance_preset: String = "all" => str_checked,
     automatic_emergency_braking: bool = true => bool_strict,
     lane_departure_warning: bool = true => bool_strict,
     stop_and_go_assist: bool = true => bool_strict,
-    lane_centering_assist: bool = false => bool_strict,
-    descent_speed_control: String = "realistic" => str_checked,
+    /// All assists' value: a fresh install is the All assists preset from
+    /// 2026-09-30, and every field it names has to agree or the row reads
+    /// "custom".
+    descent_speed_control: String = "interactive" => str_checked,
     exit_speed_assist: bool = true => bool_strict,
-    destination_approach_assist: bool = false => bool_strict,
+    /// On in Balanced and All assists; see `descent_speed_control` above.
+    destination_approach_assist: bool = true => bool_strict,
     /// An explicit-plan accessibility aid, separate from the realism
     /// presets: T plans a sleep stop, X signals for it, and only then may
     /// this bring the truck to a complete stop at the entrance. Presets
@@ -480,6 +529,14 @@ settings_fields! {
     master_volume: f64 = 1.0 => level,
     sfx_volume: f64 = 0.8 => level,
     music_volume: f64 = 0.5 => level,
+    /// Music source: false plays the full soundtrack; true swaps menu music
+    /// and the Roadhouse for synthesized music -- pieces the game composes
+    /// from `music_seed`, the restored 1.5 tracks and hand-made modules --
+    /// for players who want no AI-made music (owner, 2026-09-21).
+    synth_music: bool = false => bool_truthy,
+    /// Seeds every synthesized piece. Global, not per career, so a seed a
+    /// player likes sounds the same on any career and can be shared.
+    music_seed: i64 = 48213 => int_lenient,
     radio_volume: f64 = 0.25 => level,
     radio_enabled: bool = true => bool_truthy,
     radio_station_id: String = "route_playlist" => str_checked,
@@ -489,6 +546,13 @@ settings_fields! {
     /// mode is the explicit choice a streamer makes. (The former separate
     /// real-streams opt-in folded into this switch, 2026-08-12.)
     radio_streamer_safe: bool = false => bool_truthy,
+    /// Personal playlists play in a random order: every track once before
+    /// any repeats, a fresh order each lap, and a lap never opens on the
+    /// track that just ended. Off plays the file top to bottom and resumes
+    /// where it left off. The Playlists folder was built for M3U stream
+    /// lists and is being used for MP3 collections (Hailey, drivers board,
+    /// 2026-09-18).
+    radio_shuffle_playlists: bool = false => bool_truthy,
     weather_volume: f64 = 0.65 => level,
     engine_volume: f64 = 0.55 => level,
     ui_volume: f64 = 0.9 => level,
@@ -579,18 +643,6 @@ settings_fields! {
     /// two only make sense together -- and the Online menu turns it off
     /// again on its own.
     cloud_saves: bool = false => bool_strict,
-    /// Post short public summaries of notable deliveries (new badges, level
-    /// ups, perfect streaks) to the player's own Mastodon account through
-    /// orinks.net. Off by default, separate from Profile sharing, and inert
-    /// until a Mastodon account is linked on the site.
-    mastodon_sharing: bool = false => bool_strict,
-    /// Last-known link state and handle, refreshed on every status check.
-    /// Two fields because a link can exist without a handle (the server
-    /// could not read the account name): linked gates the toggle, the handle
-    /// is only spoken. The server stays the authority; this cache only keeps
-    /// the settings menu from needing the network to read a label.
-    mastodon_linked: bool = false => bool_strict,
-    mastodon_linked_handle: String = "" => str_checked,
     /// accept game-controller input alongside the keyboard
     controller_enabled: bool = true => bool_strict,
     /// rumble/vibration feedback on the controller
@@ -616,6 +668,54 @@ settings_fields! {
     /// of its own -- and so a player two layouts behind hears both moves
     /// instead of only the newest.
     settings_layout_notice_from: i64 = -1 => int_strict,
+    /// Driving controls the player moved to other keys, as `action=chord`
+    /// pairs joined with semicolons (`engine=z;cruise_resume=shift+o`);
+    /// empty means every key is at its default. The game crate's
+    /// `bindings` module owns the vocabulary.
+    key_bindings: String = "" => str_plain,
+    /// The same for pad buttons (`engine=mod+a;horn=paddle_1`).
+    pad_bindings: String = "" => str_plain,
+    /// The same for the iPhone and iPad driving gestures
+    /// (`tap=fuel;magic_tap=none`).
+    touch_bindings: String = "" => str_plain,
+    /// Touch feedback on iPhone and iPad gesture recognition.
+    touch_haptics: bool = true => bool_strict,
+    /// Whether the one-time iOS gesture-practice offer was made.
+    touch_practice_offered: bool = false => bool_strict,
+    /// iOS gesture thresholds: how far (points) a stroke travels and how
+    /// soon (ms) after it must lift to be a flick rather than a hold, how
+    /// many flicks deep the brake swipe goes, how long a still finger waits
+    /// to straighten the wheel, how far two fingers turn the engine key,
+    /// and below what speed the deep swipe sets the parking brake.
+    touch_flick_points: f64 = 30.0 => float_plain,
+    touch_flick_ms: f64 = 150.0 => float_plain,
+    touch_deep_swipe_factor: f64 = 3.0 => float_plain,
+    touch_still_hold_ms: f64 = 500.0 => float_plain,
+    touch_rotate_degrees: f64 = 30.0 => float_plain,
+    touch_parking_brake_mph: f64 = 1.0 => float_plain,
+    /// Steer AWAY from the engine's lean instead of toward it, for
+    /// drivers who learned that habit in audio racing games.
+    steering_guide_inverted: bool = false => bool_strict,
+    /// Whether the player has answered the one-time Driving assistance
+    /// picker that opens a launch. False on a fresh install and on every
+    /// file written before it existed, so everyone answers it once
+    /// (owner, 2026-09-30).
+    assist_preset_chosen: bool = false => bool_strict,
+    /// Whether a drive takes the real streets between the highway and a
+    /// facility: the turn-by-turn from the ramp's end to the gate, out of the
+    /// origin's gate to the on-ramp, and into a shipper in town. Off is the
+    /// 1.8 arrival players asked to keep (2026-10-11): the destination ramp
+    /// ends at the gate, a loaded run leaves straight onto the highway, and
+    /// a pickup in town is one access road. A drive keeps the value it
+    /// started with (`DrivingState::facility_streets_on`).
+    facility_streets: bool = true => bool_strict,
+    /// The language the game speaks (`ff_core::l10n`): "auto" follows the
+    /// operating system when the game has a catalog for it, "en" is
+    /// English, and any other value is a catalog code such as "es" or
+    /// "pt_BR". A fresh install follows the system; a settings file written
+    /// before the setting existed loads as English, so an update never
+    /// changes the language a player already hears.
+    language: String = "auto" => str_plain,
 }
 
 impl Settings {
@@ -651,6 +751,17 @@ impl Settings {
         !self.lane_is_automated()
     }
 
+    /// Whether something supplies the wheel a bend asks for, so the truck
+    /// follows the road's curve without the driver steering it: curve
+    /// assistance, or partial lane keeping, which steers through the road's
+    /// curve the same way while lane changes and speed stay the driver's
+    /// (owner ruling, 2026-09-24). Lane keeping off adds nothing, so with
+    /// curve assistance off too the bend is the driver's own wheel; full
+    /// holds the lane outright.
+    pub fn road_steers_the_bend(&self) -> bool {
+        self.curve_speed_assist || self.lane_keeping == "partial"
+    }
+
     /// The spoken value with the clause that says what it costs you.
     pub fn lane_keeping_label(&self) -> &'static str {
         lane_keeping_label_for(&self.lane_keeping).unwrap_or_else(|| {
@@ -659,12 +770,11 @@ impl Settings {
     }
 
     /// The preset fields' current values, in DRIVING_ASSIST_FIELDS order.
-    pub fn assist_values(&self) -> [AssistValue; 10] {
+    pub fn assist_values(&self) -> [AssistValue; 9] {
         [
             Flag(self.automatic_emergency_braking),
             Flag(self.lane_departure_warning),
             Flag(self.stop_and_go_assist),
-            Flag(self.lane_centering_assist),
             Mode(static_mode(&self.descent_speed_control)),
             Flag(self.exit_speed_assist),
             Flag(self.destination_approach_assist),
@@ -689,7 +799,6 @@ impl Settings {
             ("automatic_emergency_braking", Flag(v)) => self.automatic_emergency_braking = v,
             ("lane_departure_warning", Flag(v)) => self.lane_departure_warning = v,
             ("stop_and_go_assist", Flag(v)) => self.stop_and_go_assist = v,
-            ("lane_centering_assist", Flag(v)) => self.lane_centering_assist = v,
             ("descent_speed_control", Mode(v)) => self.descent_speed_control = v.to_string(),
             ("exit_speed_assist", Flag(v)) => self.exit_speed_assist = v,
             ("destination_approach_assist", Flag(v)) => self.destination_approach_assist = v,
@@ -737,10 +846,7 @@ impl Settings {
 
     /// Whether this category reaches the voice at all on this rung.
     pub fn speaks(&self, category: Option<SpeechCategory>) -> bool {
-        !matches!(
-            self.speech_disposition(category),
-            Disposition::Earcon | Disposition::Silent
-        )
+        self.speech_disposition(category) != Disposition::Silent
     }
 
     /// Whether spoken lines take their terse rendering on this rung.

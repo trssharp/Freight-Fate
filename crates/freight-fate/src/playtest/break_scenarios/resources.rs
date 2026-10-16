@@ -37,7 +37,7 @@ pub fn fuel_rescue_farming() -> Outcome {
         rig.prepare(0.0, None);
         let (money_before, rep_before) = {
             let profile = rig.app.ctx.profile.as_ref().expect("a profile");
-            (profile.money, profile.career.reputation)
+            (profile.money(), profile.career.reputation)
         };
         for _ in 0..3 {
             rig.drive.truck_mut().fuel_gal = 0.001;
@@ -57,7 +57,7 @@ pub fn fuel_rescue_farming() -> Outcome {
         }
         let (money, reputation) = {
             let profile = rig.app.ctx.profile.as_ref().expect("a profile");
-            (profile.money, profile.career.reputation)
+            (profile.money(), profile.career.reputation)
         };
         if money != money_before {
             findings.push(format!(
@@ -92,7 +92,7 @@ pub fn fuel_rescue_farming() -> Outcome {
         ..RigOptions::default()
     });
     if let Some(profile) = rig2.app.ctx.profile.as_mut() {
-        profile.money = 100.0;
+        profile.set_money(100.0);
     }
     rig2.drive.trip.position_mi = 12.0;
     rig2.prepare(0.0, None);
@@ -106,7 +106,7 @@ pub fn fuel_rescue_farming() -> Outcome {
         );
         rig2.advance_clock(EventSpeechPacer::REPEAT_WINDOW_S + 1.0);
     }
-    let money = rig2.app.ctx.profile.as_ref().map_or(0.0, |p| p.money);
+    let money = rig2.app.ctx.profile.as_ref().map_or(0.0, |p| p.money());
     if (money - (100.0 - 1500.0)).abs() > 0.01 {
         findings.push(format!(
             "owner-op rescue billing off: expected -1,500 total, money is {money:.0}"
@@ -350,7 +350,7 @@ pub fn motel_rest_deadline_crunch() -> Outcome {
     let mut rig = Rig::new(RigOptions::default());
     let mut findings: Vec<String> = Vec::new();
     if let Some(profile) = rig.app.ctx.profile.as_mut() {
-        profile.money = 500.0;
+        profile.set_money(500.0);
         profile.fatigue = 90.0;
     }
     rig.drive.trip.position_mi = 12.0;
@@ -391,14 +391,26 @@ pub fn motel_rest_deadline_crunch() -> Outcome {
         }
         rig.app.ctx.push_state_with(state, false);
         rig.app.ctx.run_deferred();
-        rig.select_menu_containing("Motel room")
+        let selected = rig.select_menu_containing("Motel room");
+        if selected {
+            // The first press previews the cost and deadline; the second
+            // commits while the menu is still on the drive's state stack.
+            if rig.app.ctx.profile.as_ref().map_or(0.0, |p| p.money()) != 500.0
+                || !rig.transcript()[lines_before_sleep..]
+                    .iter()
+                    .any(|line| line.contains("Select again to sleep"))
+            {
+                findings.push("motel preview changed state or did not speak".to_string());
+            }
+            rig.key_screen(Key::Return);
+        }
+        selected
     });
     if !took_the_room {
         findings.push("no motel row on the rest-stop menu to take at all".to_string());
         return outcome("motel_rest_deadline_crunch", &rig, findings, "");
     }
-
-    let money = rig.app.ctx.profile.as_ref().map_or(0.0, |p| p.money);
+    let money = rig.app.ctx.profile.as_ref().map_or(0.0, |p| p.money());
     if money != 500.0 - MOTEL_COST {
         findings.push(format!(
             "motel did not charge {MOTEL_COST:.0} exactly: money is {money}"
@@ -424,7 +436,7 @@ pub fn motel_rest_deadline_crunch() -> Outcome {
     let sleep_lines = &transcript[lines_before_sleep.min(transcript.len())..];
     let confirmation = sleep_lines
         .iter()
-        .find(|line| line.contains("You took a motel room"))
+        .find(|line| line.contains("Motel, "))
         .cloned()
         .unwrap_or_default();
     if !confirmation.contains(&remaining_after) {

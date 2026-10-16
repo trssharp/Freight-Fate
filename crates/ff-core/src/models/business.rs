@@ -7,7 +7,10 @@
 //! reputation, cash, and miles behind it.
 
 use crate::models::career::CareerProfile;
-use crate::models::career_ladder::{next_rank_for_level, rank_for_level, STARTER_CARRIER_NAME};
+use crate::models::career_ladder::{
+    display_rank_for_level, next_company_rank_for_level, next_display_rank_for_level,
+    next_rank_for_level, rank_for_level, STARTER_CARRIER_NAME,
+};
 use crate::models::enforcement::StandingProfile;
 use crate::models::jobs::Job;
 use crate::models::solvency::debt_line;
@@ -84,6 +87,12 @@ pub trait BusinessProfile: CareerProfile {
     fn start_mode(&self) -> &str;
     /// `profile.active_trailer_programs()`.
     fn active_trailer_programs(&self) -> Vec<String>;
+    /// Whether the CDL is valid right now: no live suspension, no lifetime
+    /// disqualification. A lessor does not put a driver who cannot legally
+    /// drive into a truck, so the buy-in waits for it.
+    fn cdl_clear(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -244,7 +253,7 @@ pub fn authority_readiness_eligibility<P: BusinessProfile + ?Sized>(
     if career.deliveries < AUTHORITY_READY_DELIVERIES {
         reasons.push(format!("Complete {AUTHORITY_READY_DELIVERIES} deliveries."));
     }
-    if career.reputation < AUTHORITY_READY_REPUTATION {
+    if profile.career_reputation() < AUTHORITY_READY_REPUTATION {
         reasons.push(format!(
             "Build reputation to {}.",
             fmt_f(AUTHORITY_READY_REPUTATION, 0)
@@ -295,7 +304,7 @@ pub fn authority_activation_eligibility<P: BusinessProfile + ?Sized>(
             "Complete {AUTHORITY_ACTIVATION_DELIVERIES} deliveries."
         ));
     }
-    if career.reputation < AUTHORITY_ACTIVATION_REPUTATION {
+    if profile.career_reputation() < AUTHORITY_ACTIVATION_REPUTATION {
         reasons.push(format!(
             "Build reputation to {}.",
             fmt_f(AUTHORITY_ACTIVATION_REPUTATION, 0)
@@ -333,6 +342,12 @@ pub fn owner_operator_eligibility<P: BusinessProfile + ?Sized>(profile: &P) -> (
     }
     let career = profile.career();
     let mut reasons: Vec<String> = Vec::new();
+    if !profile.cdl_clear() {
+        reasons.push(
+            "Hold a clear CDL: no lessor puts a suspended or disqualified driver in a truck."
+                .to_string(),
+        );
+    }
     if career.level() < OWNER_OPERATOR_LEVEL {
         let rank = rank_for_level(OWNER_OPERATOR_LEVEL);
         reasons.push(format!(
@@ -343,7 +358,7 @@ pub fn owner_operator_eligibility<P: BusinessProfile + ?Sized>(profile: &P) -> (
     if career.deliveries < OWNER_OPERATOR_DELIVERIES {
         reasons.push(format!("Complete {OWNER_OPERATOR_DELIVERIES} deliveries."));
     }
-    if career.reputation < OWNER_OPERATOR_REPUTATION {
+    if profile.career_reputation() < OWNER_OPERATOR_REPUTATION {
         reasons.push(format!(
             "Build reputation to {}.",
             fmt_f(OWNER_OPERATOR_REPUTATION, 0)
@@ -365,7 +380,7 @@ pub fn owner_operator_eligibility<P: BusinessProfile + ?Sized>(profile: &P) -> (
 }
 
 pub fn business_path_label<P: BusinessProfile + ?Sized>(profile: &P) -> String {
-    let rank = rank_for_level(profile.career().level());
+    let rank = display_rank_for(profile);
     let option = option_for_profile(profile);
     format!(
         "{}. Level {}: {}. {}. {}",
@@ -416,7 +431,7 @@ pub fn next_business_unlock<P: BusinessProfile + ?Sized>(profile: &P) -> String 
         return format!("Company driver by choice. {}", company_ladder_next(level));
     }
     if ok {
-        return "Next: buy into a leased-on owner-operator tractor position from Business status."
+        return "Next: the owner-operator buy-in under Business status, where you buy the truck you drive."
             .to_string();
     }
     // The Business Prep Driver rank (14) starts reading the real checklist,
@@ -436,14 +451,44 @@ pub fn next_business_unlock<P: BusinessProfile + ?Sized>(profile: &P) -> String 
 /// The next rung of the ladder read as a company career: what a driver who
 /// turned the buy-in down hears in place of the offer.
 fn company_ladder_next(level: i64) -> String {
-    match next_rank_for_level(level) {
-        None => "You are at the top career rank. The owner-operator buy-in stays open under                  Business status if you ever want it."
+    match next_company_rank_for_level(level) {
+        None => "You are at the top career rank. The owner-operator buy-in stays open under \
+                 Business status if you ever want it."
             .to_string(),
         Some(next_rank) => format!(
             "Next: level {}, {}. {}",
             next_rank.level, next_rank.title, next_rank.unlock
         ),
     }
+}
+
+/// Rank title/stage for spoken Business status and path labels.
+pub fn display_rank_for<P: CareerProfile + ?Sized>(
+    profile: &P,
+) -> &'static crate::models::career_ladder::CareerRank {
+    display_rank_for_level(
+        profile.career().level(),
+        profile.business_status(),
+        profile.owner_operator_declined(),
+    )
+}
+
+pub fn next_display_rank_for<P: CareerProfile + ?Sized>(
+    profile: &P,
+) -> Option<&'static crate::models::career_ladder::CareerRank> {
+    next_display_rank_for_level(
+        profile.career().level(),
+        profile.business_status(),
+        profile.owner_operator_declined(),
+    )
+}
+
+pub fn uses_company_career_ranks_for<P: CareerProfile + ?Sized>(profile: &P) -> bool {
+    crate::models::career_ladder::uses_company_career_ranks(
+        profile.career().level(),
+        profile.business_status(),
+        profile.owner_operator_declined(),
+    )
 }
 
 pub fn business_status_summary<P: BusinessProfile + ?Sized>(profile: &P) -> String {
@@ -461,7 +506,7 @@ pub fn business_status_summary<P: BusinessProfile + ?Sized>(profile: &P) -> Stri
 
 fn business_status_summary_inner<P: BusinessProfile + ?Sized>(profile: &P) -> String {
     let status = profile.business_status();
-    let rank = rank_for_level(profile.career().level());
+    let rank = display_rank_for(profile);
     if is_owner_operator(status) {
         let transponder = if has_weigh_station_transponder(profile) {
             "Weigh station transponder subscription is active. "
@@ -506,7 +551,7 @@ fn business_status_summary_inner<P: BusinessProfile + ?Sized>(profile: &P) -> St
     }
     if ok {
         return format!(
-            "You are a company driver for {}, level {} {}. You qualify to buy your first leased-on tractor position. Owner-operator buy-in costs {} dollars and keeps {} dollars of working capital in the bank.",
+            "You are a company driver for {}, level {} {}. You qualify for the owner-operator buy-in: you buy the truck you drive and keep hauling for the carrier as a leased-on owner-operator. The buy-in costs {} dollars and keeps {} dollars of working capital in the bank.",
             carrier_name(profile),
             rank.level,
             rank.title,

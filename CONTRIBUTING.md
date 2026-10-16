@@ -30,13 +30,12 @@ each release.
   `cargo test -p freight-fate` for anything the player can hear or do. That
   local run is the full suite; the per-push CI skips the whole-map sweeps
   (`#[cfg_attr(ci_quick, ignore = ...)]`) and the nightly snapshot runs them.
-- `uv run pytest` covers only the Python that still ships -- the build, bake,
+- `uv run pytest` covers only the Python tooling -- the build, bake,
   indexing and release tooling under `tools/`, plus the workflow and
-  sound-pack guards. It takes a few seconds, so just run all of it. The
-  gameplay tests that used to live there were retired on 2026-08-29; a new
-  gameplay test belongs in `cargo test`.
-- Run `uv run ruff check src tests tools` and
-  `uv run python -m compileall src tests tools`.
+  sound-pack guards. It takes a few seconds, so just run all of it. There is
+  no Python game any more; a new gameplay test belongs in `cargo test`.
+- Run `uv run ruff check tests tools` and
+  `uv run python -m compileall tests tools`.
 - For user-facing changes, include how you checked the spoken text, keyboard
   flow, or other accessibility impact.
 - Include a sandboxed agent-server session when live gameplay testing is
@@ -54,6 +53,15 @@ each release.
 - Do not replace spoken information with visual-only cues.
 - If you add or change menu items, driving prompts, warnings, settings, or
   status text, test the spoken result.
+
+## Translations
+
+Every spoken line is translated where it leaves for the speech channels, from
+the PO files in `lang/`; [lang/README.md](lang/README.md) is the translator's
+guide. After changing spoken text, run `uv run python tools/l10n/extract.py`
+so the template and every language file pick up the new line; the Python
+tests fail while they are stale. A translation correction can arrive as a pull
+request against a `lang/*.po` file or as a Translation correction issue.
 
 ## World and route data
 
@@ -74,7 +82,7 @@ World data changes are welcome. Please keep them deterministic and offline:
   and the tooling that builds the data:
 
   ```powershell
-  uv run pytest tests/test_index_world.py tests/test_baked_data.py
+  uv run pytest tests/test_index_world.py
   ```
 
 ## Changelog entries
@@ -82,15 +90,19 @@ World data changes are welcome. Please keep them deterministic and offline:
 Nightly and stable release notes are built only from the curated entries in
 `CHANGELOG.md` -- never from commit subjects -- so a player-facing change
 without an entry ships silently. CI fails a pull request that changes
-user-facing paths (`src/`, `docs/`, `CHANGELOG.md`, `README.md`, and the
-release tooling) without adding one.
+user-facing paths without adding one: anything under `data/` (except
+`data/spider/`), `assets/`, `docs/` or `crates/` (except a crate's `tests/`
+and `benches/`), plus `CHANGELOG.md`, `README.md`, `pyproject.toml`,
+`tools/build_release.py` and `tools/release_notes.py`.
 
 - Add a bullet under `## Unreleased` in the fitting section (`Added`,
   `Changed`, `Fixed`, and so on).
-- Write for players, not maintainers: a bold lead sentence, then plain
-  language about what they will hear or notice in the game. Match the voice
-  of the existing entries; they are read aloud by screen readers, so avoid
-  jargon, tables, and decorative symbols.
+- Write for players, not maintainers: a bold lead sentence that says what
+  is different now, then at most one sentence about what they will hear or
+  notice. Under 25 words. Entries are read aloud by screen readers, so avoid
+  jargon, tables, and decorative symbols. The full recipe, and where the
+  rationale and sub-cases go instead, is in
+  `.claude/skills/writing-changelog-entries/SKILL.md`.
 - A change with nothing player-facing in it (internal refactors, CI, tests,
   tooling) can skip the entry by putting `[skip changelog]` or
   `changelog: none` in every commit message of the pull request.

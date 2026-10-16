@@ -9,8 +9,9 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ff_core::data::world_models::HomeTerminal;
-use ff_core::models::business::SettlementTerms;
+use ff_core::models::business::{display_rank_for, uses_company_career_ranks_for, SettlementTerms};
 use ff_core::models::career::{standing_xp_rate, xp_rate_settlement_clause};
+use ff_core::models::career_ladder::relabel_level_up_announcements;
 use ff_core::models::cargo_condition::{cargo_condition_text, settle_cargo, CargoSettlement};
 use ff_core::models::carrier_fleet::{
     assigned_truck_key, equipment_held_back, fleet_tier_for_level, fleet_upgrade_announcement,
@@ -23,21 +24,18 @@ use ff_core::models::solvency::{self, deductions_from_settlement};
 use ff_core::models::trucks::truck_model;
 use ff_core::pyfmt::{fmt_f, fmt_grouped, round_py_n};
 use ff_core::sim::timezones::to_local;
-use serde_json::{json, Value};
 
 use crate::app::{GameContext, Say};
 use crate::impl_state_for_menu;
 use crate::meaningful_play::MeaningfulPlayReason;
-use crate::online_journal::{
-    queue_career_milestones, queue_delivery, queue_mastodon_share, CareerFacts, DeliveryFacts,
-};
+use crate::online_journal::{queue_career_milestones, queue_delivery, CareerFacts, DeliveryFacts};
 use crate::states::base::{Menu, MenuCore, MenuItem};
 use crate::states::city::CityMenuState;
 use crate::states::driving::DrivingState;
 use crate::states::driving_core::{
     carrier_accessorial_charges, charge_summary, charge_total, clock_text,
     has_weigh_station_transponder, is_owner_operator, pay_label, profile_mut_of, profile_of,
-    reputation_pay_bonus, wallet_delta, xp_class_multiplier, xp_streak_bonus,
+    reputation_pay_bonus, unique_consecutive, wallet_delta, xp_class_multiplier, xp_streak_bonus,
 };
 use crate::states::driving_damage::{damage_summary_line, preventable_damage_charge};
 use crate::states::driving_menu_states::badges::award_arrival_achievements;
@@ -61,7 +59,6 @@ pub struct ArrivalState {
     pub summary_parts: Vec<String>,
     achievement_messages: Vec<String>,
     new_achievement_names: Vec<String>,
-    public_achievement_names: Vec<String>,
     announcements: Vec<String>,
     pub summary_lines: Vec<String>,
     pub terminal: HomeTerminal,
@@ -87,7 +84,6 @@ impl ArrivalState {
             summary_parts: Vec::new(),
             achievement_messages: Vec::new(),
             new_achievement_names: Vec::new(),
-            public_achievement_names: Vec::new(),
             announcements: Vec::new(),
             summary_lines: Vec::new(),
             terminal,
@@ -103,6 +99,11 @@ impl ArrivalState {
     /// `enter()`, run while the drive is still in hand -- see `drive_ref`.
     /// Nothing here reads the drive; the settlement already captured it.
     pub fn enter_over_drive(&mut self, ctx: &mut GameContext) {
+        // The settlement just moved the driver to a new city: start its
+        // dispatch board's route work now, while the summary is read, so
+        // the board opens without the wait (2026-09-28).
+        let city = profile_of(ctx).current_city.clone();
+        crate::states::city::warm_dispatch_board(ctx.world, &city);
         Menu::enter(self, ctx);
     }
 
@@ -130,7 +131,7 @@ impl ArrivalState {
             p.current_city = job.destination.clone();
             let driver_charges = p.fines_owed;
             if driver_charges != 0.0 {
-                p.money -= driver_charges;
+                p.spend(driver_charges);
                 p.fines_owed = 0.0;
                 self.summary_parts.push(format!(
                     "Fines carried over from earlier loads: {} dollars, settled.",
@@ -144,8 +145,8 @@ impl ArrivalState {
             let on_time = hours <= job.deadline_game_h;
             let (previous_level, money) = {
                 let p = profile_mut_of(ctx);
-                p.money += job.pay;
-                (p.career.level(), p.money)
+                p.earn(job.pay);
+                (p.career.level(), p.money())
             };
             let standing = enforcement::standing_band(profile_of(ctx));
             announcements = profile_mut_of(ctx).career.record_delivery(
@@ -156,6 +157,15 @@ impl ArrivalState {
                 1.0,
                 standing_xp_rate(standing),
             );
+            {
+                let p = profile_of(ctx);
+                relabel_level_up_announcements(
+                    &mut announcements,
+                    previous_level,
+                    p.career.level(),
+                    uses_company_career_ranks_for(p),
+                );
+            }
             let promotion = self.handle_fleet_promotion(ctx, previous_level, &mut announcements);
             announcements.extend(promotion);
             format!(
@@ -255,8 +265,8 @@ impl ArrivalState {
         }
         if cargo.rejected() {
             return format!(
-                "The receiver refused the load, {} at {} percent. No pay for the haul, {} \
-                 dollars gone, and a freight claim of about {} dollars. {claim_holder}.",
+                "Receiver refused the load, {} at {} percent. No pay, {} dollars gone, claim \
+                 about {}. {claim_holder}.",
                 cargo_condition_text(cargo.condition_pct, liquid),
                 fmt_f(cargo.condition_pct, 0),
                 fmt_grouped(cargo.pay_loss, 0),
@@ -265,8 +275,8 @@ impl ArrivalState {
         }
         if cargo.outcome == "claim" {
             return format!(
-                "The receiver took the load but wrote it up, {} at {} percent. Freight claim \
-                 about {} dollars. {} dollars comes off this settlement. {claim_holder}.",
+                "Receiver took the load with an exception, {} at {} percent. Claim about {} \
+                 dollars, {} off this settlement. {claim_holder}.",
                 cargo_condition_text(cargo.condition_pct, liquid),
                 fmt_f(cargo.condition_pct, 0),
                 fmt_grouped(cargo.claim_value, 0),
@@ -329,7 +339,7 @@ impl ArrivalState {
         let owned_trailers: Vec<String> = profile_of(ctx).owned_trailers.clone();
         let owned_refs: Vec<&str> = owned_trailers.iter().map(String::as_str).collect();
         let carrier_key = profile_of(ctx).carrier_key.clone();
-        let reputation_before = profile_of(ctx).career.reputation;
+        let reputation_before = profile_of(ctx).standing();
         let transponder = has_weigh_station_transponder(profile_of(ctx));
         let record_surcharge = enforcement::record_insurance_surcharge(profile_of(ctx));
         let business_status = profile_of(ctx).business_status.clone();
@@ -404,9 +414,8 @@ impl ArrivalState {
                 "preventable_equipment_damage",
             );
             self.summary_parts.push(format!(
-                "Driver-responsibility charges: damage ruled preventable, {damage_reason}. \
-                 Carrier covers the repair. Deductible {} dollars, safety bonus void. \
-                 Reputation down {}, on your record.",
+                "Preventable damage, {damage_reason}. Carrier covers the repair. Deductible {} \
+                 dollars, safety bonus void. Reputation down {}.",
                 fmt_grouped(damage_deductible, 0),
                 fmt_f(damage_reputation_hit, 0)
             ));
@@ -460,7 +469,8 @@ impl ArrivalState {
         // not a second settlement, so they never fold into career earnings.
         //
         // The manual-spec differential: trained out of the automatic-only
-        // restriction, and actually rowing the gears on this run. Added
+        // restriction, and actually rowing the gears on this run -- the
+        // whole run, not just the gate (`drove_automatic`). Added
         // before settled_pay is taken, so the cash and the career's booked
         // earnings agree -- unbooked cash reads as an edited save to cloud
         // upload screening.
@@ -469,6 +479,7 @@ impl ArrivalState {
             .endorsements()
             .contains("manual_transmission")
             && !d.trip.truck.transmission.automatic
+            && !d.drove_automatic
         {
             let manual_bonus = round_py_n(net_pay * MANUAL_SPEC_DIFFERENTIAL, 2).max(0.0);
             if manual_bonus >= 1.0 {
@@ -525,7 +536,7 @@ impl ArrivalState {
         {
             let p = profile_mut_of(ctx);
             p.fines_owed = round_py_n(p.fines_owed + (carried_balance - collected).max(0.0), 2);
-            p.money += net_pay;
+            p.earn(net_pay);
             p.current_city = job.destination.clone();
         }
         let lane = lane_key(ctx.world, &job);
@@ -553,6 +564,15 @@ impl ArrivalState {
             xp_class_multiplier(job.cargo),
             standing_xp_rate(standing),
         );
+        {
+            let p = profile_of(ctx);
+            relabel_level_up_announcements(
+                &mut announcements,
+                previous_level,
+                p.career.level(),
+                uses_company_career_ranks_for(p),
+            );
+        }
         let promotion = self.handle_fleet_promotion(ctx, previous_level, &mut announcements);
         announcements.extend(promotion);
         let mut xp_bonus_notes: Vec<String> = Vec::new();
@@ -590,9 +610,9 @@ impl ArrivalState {
         self.debt_settlement_lines(ctx, d);
         if trust_bonus >= 1.0 {
             self.summary_parts.push(format!(
-                "Dispatch trust bonus: {} dollars for your {} reputation.",
+                "Dispatch trust bonus: {} dollars for your reputation: {}",
                 fmt_grouped(trust_bonus, 0),
-                fmt_f(reputation_before, 0)
+                enforcement::reputation_text(reputation_before, ctx.settings.score_display)
             ));
         }
         let (game_hours, market_day) = {
@@ -667,7 +687,7 @@ impl ArrivalState {
         }
 
         let destination_timezone = d.trip.destination_timezone();
-        let money = profile_of(ctx).money;
+        let money = profile_of(ctx).money();
         let receiver_service_hours = (elapsed_hours - hours).max(0.0);
         let receiver_service_clause = if receiver_service_hours >= 0.05 {
             format!(
@@ -685,12 +705,9 @@ impl ArrivalState {
         self.summary_parts.insert(
             0,
             format!(
-                "Delivered {} tons of {} to {} in {} hours, {}.{receiver_service_clause} It is {}. {} {} dollars. \
-                 Carrier-paid or reimbursed charges {} dollars: tolls {}, accessorials {}. \
-                 {accessorial_clause} \
-                 Business status: {}. Business costs {} dollars. Fines carried over {} dollars. \
-                 Net driver pay {} dollars, you now have {}. Parked at {} for the {} service \
-                 area.",
+                "Delivered {} tons of {} to {} in {} hours, {}.{receiver_service_clause} {}. {} {} dollars. \
+                 Charges {}: tolls {}, accessorials {}. {accessorial_clause} Business status: {}. Costs {}. \
+                 Fines {}. Net {}, you have {}. Parked at {}.",
                 fmt_f(job.weight_tons, 0),
                 job.cargo.label,
                 job.spoken_destination(),
@@ -708,7 +725,6 @@ impl ArrivalState {
                 fmt_grouped(net_pay, 0),
                 fmt_grouped(money, 0),
                 self.terminal.name,
-                job.spoken_destination(),
             ),
         );
         if on_time_bonus_paid >= 1.0 {
@@ -774,7 +790,6 @@ impl ArrivalState {
         if let Some(line) = achievement_summary.clone() {
             self.summary_parts.push(line);
         }
-        self.queue_notable_share(ctx, &job, on_time, previous_level, occurred_at_ms);
         let timing = if on_time { "On time" } else { "Late" };
         let mut bonus_lines: Vec<String> = Vec::new();
         if on_time_bonus_paid >= 1.0 {
@@ -875,12 +890,13 @@ impl ArrivalState {
                 ),
             ]
         };
-        let cities: Vec<String> = d
-            .route
-            .cities
-            .iter()
-            .map(|c| ctx.world.spoken_city(c, None))
-            .collect();
+        let cities: Vec<String> = unique_consecutive(
+            &d.route
+                .cities
+                .iter()
+                .map(|c| ctx.world.spoken_city(c, None))
+                .collect::<Vec<_>>(),
+        );
         let mut lines = vec![
             format!(
                 "Delivered {} tons of {} to {}.",
@@ -898,9 +914,9 @@ impl ArrivalState {
                 clock_text(to_local(game_hours, destination_timezone))
             ),
             format!(
-                "Parked at {} for the {} service area.",
+                "Parked at {} for {} service area.",
                 self.terminal.name,
-                job.spoken_destination()
+                ff_core::speech_text::the_city(job.spoken_destination())
             ),
             format!(
                 "{}: {} dollars.",
@@ -934,7 +950,7 @@ impl ArrivalState {
         ));
         lines.push(format!(
             "Money after settlement: {} dollars.",
-            fmt_grouped(profile_of(ctx).money, 0)
+            fmt_grouped(profile_of(ctx).money(), 0)
         ));
         lines.extend(bonus_lines);
         lines.push(format!("Route: {}.", cities.join(" to ")));
@@ -989,7 +1005,7 @@ impl ArrivalState {
         if announcements.is_empty() {
             return;
         }
-        let unlock = profile_of(ctx).career.rank().unlock;
+        let unlock = display_rank_for(profile_of(ctx)).unlock;
         let target = format!("Unlock: {unlock}");
         for message in announcements.iter_mut() {
             if message.starts_with("Level up!") && message.contains(&target) {
@@ -1049,70 +1065,10 @@ impl ArrivalState {
                 self.record_badge(
                     result.award.message.normal.clone(),
                     result.award.achievement.name.to_string(),
-                    result.publicly_eligible,
                 );
             }
         }
         vec![fleet_upgrade_announcement(profile_of(ctx))]
-    }
-
-    /// Offer this delivery to the player's Mastodon account when it earned
-    /// something worth telling: a new achievement, a level, or a streak
-    /// milestone. Routine runs stay quiet, and the outbox itself is inert
-    /// unless the player turned Mastodon sharing on and linked an account.
-    fn queue_notable_share(
-        &mut self,
-        ctx: &mut GameContext,
-        job: &Job,
-        on_time: bool,
-        previous_level: i64,
-        occurred_at_ms: i64,
-    ) {
-        let mut reasons: Vec<Value> = Vec::new();
-        let level = profile_of(ctx).career.level();
-        if level > previous_level {
-            reasons.push(json!({"type": "level", "level": level}));
-        }
-        if !self.public_achievement_names.is_empty() {
-            let names: Vec<&str> = self
-                .public_achievement_names
-                .iter()
-                .take(10)
-                .map(String::as_str)
-                .collect();
-            reasons.push(json!({"type": "achievements", "names": names}));
-        }
-        let streak = profile_of(ctx)
-            .achievement_stats
-            .get("perfect_streak")
-            .and_then(Value::as_i64)
-            .unwrap_or(0);
-        if matches!(streak, 5 | 10 | 25 | 50 | 100) {
-            reasons.push(json!({"type": "streak", "count": streak}));
-        }
-        let facts = DeliveryFacts {
-            profile_name: profile_of(ctx).name.clone(),
-            deliveries: profile_of(ctx).career.deliveries,
-            cargo_key: job.cargo.key.to_string(),
-            cargo_label: job.cargo.label.to_string(),
-            job_origin: job.origin.clone(),
-            job_destination: job.destination.clone(),
-            distance_mi: job.distance_mi,
-            weight_tons: job.weight_tons,
-        };
-        let origin = ctx.world.spoken_city(&job.origin, None);
-        let destination = ctx.world.spoken_city(&job.destination, None);
-        if queue_mastodon_share(
-            &ctx.services.mastodon,
-            &facts,
-            &origin,
-            &destination,
-            on_time,
-            occurred_at_ms,
-            &reasons,
-        ) {
-            ctx.services.mastodon.flush_async();
-        }
     }
 
     /// One row naming the run's new achievements, not one paragraph each.
@@ -1132,11 +1088,8 @@ impl ArrivalState {
     }
 
     /// The badge sweep's two collectors, for `badges.rs`.
-    pub(crate) fn record_badge(&mut self, message: String, name: String, publicly_eligible: bool) {
+    pub(crate) fn record_badge(&mut self, message: String, name: String) {
         self.achievement_messages.push(message);
-        if publicly_eligible {
-            self.public_achievement_names.push(name.clone());
-        }
         self.new_achievement_names.push(name);
     }
 

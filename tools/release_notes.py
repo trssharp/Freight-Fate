@@ -18,16 +18,39 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CHANGELOG_PATH = Path("CHANGELOG.md")
 NIGHTLY_HEADER = (
-    "Preview snapshot for players who want the newest features before the next "
-    "stable release. Expect rough edges; your save files stay compatible "
-    "whenever possible, but back them up first."
+    "A preview of the next release, with the newest features and some rough "
+    "edges. Back up your saves before you install it."
 )
 GITHUB_RELEASE_NOTES_SAFE_CHARACTERS = 120_000
 FIRST_SNAPSHOT_COMPLETE_LIST = (
     "## Complete change list\n\n"
-    "This first snapshot contains more player-facing changes than fit on the "
-    "GitHub release page. Read `CHANGELOG.md` in the download for the complete "
-    "curated list."
+    "There are more changes than fit on this page. The full list is "
+    "CHANGELOG.md in your game folder."
+)
+# A later snapshot can overflow too: a busy stretch, or a rewrite of the
+# curated entries, which makes every bullet read as new to the previous tag.
+SNAPSHOT_COMPLETE_LIST = (
+    "## Complete change list\n\n"
+    "There are more changes than fit on this page. The full list is "
+    "CHANGELOG.md in your game folder."
+)
+STABLE_COMPLETE_LIST = (
+    "## Complete change list\n\n"
+    "There are more changes than fit on this page. The full list is "
+    "CHANGELOG.md in your game folder."
+)
+# A stable release can open with a hand-written summary of everything since
+# the last stable: these headings, under the version's own `## X.Y.Z - date`
+# block, with the full per-snapshot list kept in `## X.Y.Z complete change
+# list` below it. Nightlies never read them (they are not in
+# PLAYER_FACING_SECTIONS), so the summary cannot resurface as new entries.
+SUMMARY_SECTIONS = ("Highlights", "New features", "Fixes", "Changes")
+STABLE_FULL_CHANGELOG = (
+    "## Complete change list\n\n"
+    "Every change in this release is listed in the "
+    "[full Freight Fate {version} changelog]"
+    "(https://github.com/orinks-games/Freight-Fate/blob/v{version}/CHANGELOG.md), "
+    "on GitHub and as CHANGELOG.md in your game folder."
 )
 SECTION_ORDER = ("Added", "Changed", "Improved", "Fixed", "Removed", "Deprecated", "Security")
 PLAYER_FACING_SECTIONS = SECTION_ORDER + ("Compatibility",)
@@ -45,7 +68,18 @@ INTERNAL_SECTIONS = (
 )
 NIGHTLY_BUILD_MARKERS = ("nightly: build", "[nightly build]")
 SKIP_CHANGELOG_MARKERS = ("changelog: none", "[skip changelog]")
-USER_FACING_PATH_PREFIXES = ("src/", "docs/")
+# `crates/` was added 2026-09-20. The gate was written when `src/` WAS the
+# game; the Rust port moved every line of gameplay to `crates/` and the gate
+# was never widened, so for the whole port a change to the shipping runtime
+# could land with no entry and CI would not say a word. `data/` and `assets/`
+# are what `src/freight_fate/` held besides the Python game: the world data
+# and the shipped sounds.
+USER_FACING_PATH_PREFIXES = ("data/", "assets/", "docs/", "crates/")
+# ... but not a crate's test or bench binaries. Under the Python layout
+# `tests/` sat beside the game and was never gated; a Rust test is the same
+# kind of change, and the point is to restore the old rule, not tighten it.
+# `data/spider/` is the map crawl's tooling scripts and notes, never loaded.
+NOT_USER_FACING = re.compile(r"^(?:crates/[^/]+/(?:tests|benches)/|data/spider/)")
 USER_FACING_PATHS = {
     "CHANGELOG.md",
     "README.md",
@@ -214,6 +248,26 @@ def normalize_entry(entry: str) -> str:
     return entry.casefold().strip()
 
 
+def flatten_markdown(body: str) -> list[str]:
+    """Release-notes markdown as plain, speakable lines.
+
+    Mirrors ``flatten_markdown`` in crates/freight-fate/src/updater.rs, which
+    is how the game's updater reads these notes aloud.
+    """
+    lines: list[str] = []
+    for raw in (body or "").splitlines():
+        line = raw.strip()
+        if not line or set(line) <= {"-", "=", "*", "_"}:
+            continue
+        line = re.sub(r"^#{1,6}\s+", "", line)  # headings
+        line = re.sub(r"^[-*+]\s+", "", line)  # bullets
+        line = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", line)  # links
+        line = re.sub(r"(\*\*|__|\*|_|`)", "", line)  # emphasis/code
+        if line:
+            lines.append(line)
+    return lines
+
+
 def format_entry(entry: str) -> str:
     lines = [line.strip() for line in entry.splitlines() if line.strip()]
     if not lines:
@@ -224,14 +278,19 @@ def format_entry(entry: str) -> str:
     return marker + " ".join([first_text, *lines[1:]])
 
 
-def format_sections(sections: list[ChangelogSection], *, heading_level: int = 2) -> str:
+def format_sections(
+    sections: list[ChangelogSection],
+    *,
+    heading_level: int = 2,
+    order: tuple[str, ...] = SECTION_ORDER,
+) -> str:
     if not sections:
         return "- No user-facing changes"
 
     by_title: dict[str, list[str]] = {}
     for section in sections:
         by_title.setdefault(section.title, []).extend(section.entries)
-    ordered_titles = [title for title in SECTION_ORDER if title in by_title]
+    ordered_titles = [title for title in order if title in by_title]
     ordered_titles.extend(title for title in by_title if title not in ordered_titles)
 
     chunks: list[str] = []
@@ -258,6 +317,47 @@ def excluded_entries_from_notes(path: str) -> set[str]:
     )
 
 
+REPUBLISHED_FILE = Path("tools/release_notes_republished.txt")
+
+
+def republished_entries(released: set[str] | None = None) -> set[str]:
+    """Entries a rewrite republished rather than added.
+
+    A snapshot lists the bullets whose text is not in the changelog at the
+    previous tag, so a commit that rewords every entry makes the next snapshot
+    announce the whole block as new. ``tools/release_notes_republished.txt``
+    names that commit (``ref = <sha>``): everything in the changelog there
+    counts as already published, except the bullets whose bold lead the file
+    lists on ``new = ...`` lines, which were genuinely new when the rewrite
+    landed and still have to go out. Delete the file once a snapshot tag
+    carries the rewritten text; it is harmless but stale after that.
+    """
+    path = ROOT / REPUBLISHED_FILE
+    if not path.exists():
+        return set()
+    ref = ""
+    still_new: list[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if key == "ref":
+            ref = value
+        elif key == "new":
+            still_new.append(normalize_entry(value))
+    if not ref:
+        return set()
+    text = changelog_at(ref)
+    if not text:
+        raise SystemExit(f"{REPUBLISHED_FILE}: commit {ref} is not in this clone")
+    if released is None:
+        released = released_versions()
+    entries = entries_from_sections(nightly_candidate_sections(text, released))
+    return {entry for entry in entries if not any(entry.startswith(lead) for lead in still_new)}
+
+
 def sections_added_since(
     base_ref: str,
     head_text: str,
@@ -269,6 +369,7 @@ def sections_added_since(
     base_entries = entries_from_sections(
         nightly_candidate_sections(changelog_at(base_ref), released)
     )
+    base_entries.update(republished_entries(released))
     if extra_excluded_entries:
         base_entries.update(extra_excluded_entries)
 
@@ -282,10 +383,33 @@ def sections_added_since(
     return added
 
 
+def format_stable_notes(sections: list[ChangelogSection], footer: str = "") -> str:
+    # A stable release is read by players upgrading in place, so what decides
+    # whether their install or career comes across leads the page.
+    body = format_sections(sections, order=("Compatibility",) + SUMMARY_SECTIONS + SECTION_ORDER)
+    return f"{body}\n\n{footer}" if footer else body
+
+
 def stable_notes(version: str) -> str:
+    """The version's block, or Unreleased, bounded like a snapshot's notes.
+
+    A block with a curated summary (``SUMMARY_SECTIONS``) is published whole,
+    Compatibility first, ending with a link to the full changelog at the tag.
+    1.9's Unreleased block alone is past GitHub's limit, so an unbounded
+    stable would fail the tag build's size check after every platform built.
+    """
     changelog_text = changelog_file().read_text(encoding="utf-8")
     block = version_block(changelog_text, version) or unreleased_block(changelog_text)
-    return format_sections(parse_sections(block))
+    sections = parse_sections(block)
+    if any(section.title in SUMMARY_SECTIONS for section in sections):
+        # A curated summary is short by construction; it points at the full
+        # list instead of being bounded like one.
+        footer = STABLE_FULL_CHANGELOG.format(version=version.removeprefix("v"))
+        return format_stable_notes(sections, footer)
+    sections, was_bounded = bounded_sections(
+        sections, "", STABLE_COMPLETE_LIST, render=format_stable_notes
+    )
+    return format_stable_notes(sections, STABLE_COMPLETE_LIST if was_bounded else "")
 
 
 def format_nightly_notes(
@@ -309,9 +433,39 @@ def bounded_first_snapshot_sections(
     sections: list[ChangelogSection],
 ) -> tuple[list[ChangelogSection], bool]:
     """Keep complete recent entries from every section within GitHub's limit."""
-    if first_snapshot_fits(
-        format_nightly_notes(sections, "Changes in this snapshot", section_heading_level=3)
-    ):
+    return bounded_sections(
+        sections,
+        "Changes in this snapshot",
+        FIRST_SNAPSHOT_COMPLETE_LIST,
+        section_heading_level=3,
+    )
+
+
+def bounded_sections(
+    sections: list[ChangelogSection],
+    changes_heading: str,
+    footer: str,
+    *,
+    section_heading_level: int = 2,
+    render=None,
+) -> tuple[list[ChangelogSection], bool]:
+    """Keep complete recent entries from every section within GitHub's limit.
+
+    Returns the sections to publish and whether anything was left out; when
+    something was, the caller appends ``footer`` so the page says where the
+    rest is. Entries are taken in file order, round-robin across sections, so
+    the newest of every kind survives rather than all of one section.
+    ``render(sections, footer)`` is the page being measured; snapshot notes
+    by default.
+    """
+    if render is None:
+
+        def render(chosen: list[ChangelogSection], tail: str) -> str:
+            return format_nightly_notes(
+                chosen, changes_heading, tail, section_heading_level=section_heading_level
+            )
+
+    if first_snapshot_fits(render(sections, "")):
         return sections, False
 
     selected: list[list[str]] = [[] for _ in sections]
@@ -331,13 +485,7 @@ def bounded_first_snapshot_sections(
                 continue
             entry = section.entries[offsets[index]]
             selected[index].append(entry)
-            candidate = format_nightly_notes(
-                selected_sections(),
-                "Changes in this snapshot",
-                FIRST_SNAPSHOT_COMPLETE_LIST,
-                section_heading_level=3,
-            )
-            if first_snapshot_fits(candidate):
+            if first_snapshot_fits(render(selected_sections(), footer)):
                 offsets[index] += 1
                 added_this_round = True
             else:
@@ -366,16 +514,17 @@ def nightly_notes(
     changes_heading = (
         "Changes in this snapshot" if first_snapshot else "Changes since the previous snapshot"
     )
-    footer = ""
-    if first_snapshot:
-        sections, was_bounded = bounded_first_snapshot_sections(sections)
-        if was_bounded:
-            footer = FIRST_SNAPSHOT_COMPLETE_LIST
+    section_heading_level = 3 if first_snapshot else 2
+    complete_list = FIRST_SNAPSHOT_COMPLETE_LIST if first_snapshot else SNAPSHOT_COMPLETE_LIST
+    sections, was_bounded = bounded_sections(
+        sections, changes_heading, complete_list, section_heading_level=section_heading_level
+    )
+    footer = complete_list if was_bounded else ""
     return format_nightly_notes(
         sections,
         changes_heading,
         footer,
-        section_heading_level=3 if first_snapshot else 2,
+        section_heading_level=section_heading_level,
     )
 
 
@@ -469,6 +618,8 @@ def commits_opt_out_of_changelog(base: str, head: str) -> bool:
 
 def is_user_facing_path(path: str) -> bool:
     normalized = path.replace("\\", "/")
+    if NOT_USER_FACING.match(normalized):
+        return False
     return normalized in USER_FACING_PATHS or normalized.startswith(USER_FACING_PATH_PREFIXES)
 
 

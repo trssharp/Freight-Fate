@@ -10,7 +10,7 @@ use ff_core::sim::trip_route_helpers::zone_key;
 use ff_core::sim::weather::WeatherKind;
 use freight_fate::playtest::harness::PlaytestHarness;
 use freight_fate::states::base::Key;
-use freight_fate::states::driving_core::{ACC_LIMIT_OFFSET_MPH, LANE_TAP_CHANGE_S};
+use freight_fate::states::driving_core::{ACC_LIMIT_OFFSET_MPH, LANE_TAP_CHANGE_S, MPH_PER_MPS};
 
 use crate::transcript_cruise_support::*;
 
@@ -323,10 +323,7 @@ fn test_adaptive_cruise_follows_npc_traffic() {
     assert!(harness.read_drive(|d| d.acc_following));
     assert!(harness.read_drive(|d| d.truck().throttle) < 0.9);
     assert!(harness.read_drive(|d| d.truck().brake) > 0.0);
-    assert!(said_any(
-        &harness,
-        "Traffic ahead, adaptive cruise reducing speed."
-    ));
+    assert!(said_any(&harness, "Traffic ahead, slowing."));
 }
 
 #[test]
@@ -478,10 +475,7 @@ fn test_adaptive_cruise_follows_the_lane_being_entered_mid_change() {
 
     assert_eq!(harness.read_drive(|d| d.lane_change_target), Some(1)); // still underway
     assert!(harness.read_drive(|d| d.acc_following));
-    assert!(said_any(
-        &harness,
-        "Traffic ahead, adaptive cruise reducing speed."
-    ));
+    assert!(said_any(&harness, "Traffic ahead, slowing."));
 }
 
 #[test]
@@ -519,10 +513,7 @@ fn test_adaptive_cruise_reverts_to_origin_lane_when_a_change_is_aborted() {
 
     assert_eq!(harness.read_drive(|d| d.lane.lane), 0); // still in the origin lane
     assert!(harness.read_drive(|d| d.acc_following)); // following the origin lead again
-    assert!(said_any(
-        &harness,
-        "Traffic ahead, adaptive cruise reducing speed."
-    ));
+    assert!(said_any(&harness, "Traffic ahead, slowing."));
 }
 
 #[test]
@@ -550,10 +541,7 @@ fn test_adaptive_cruise_ignores_distant_slower_traffic() {
 
     assert!(!harness.read_drive(|d| d.acc_following));
     assert!(approx(harness.read_drive(|d| d.truck().brake), 0.0));
-    assert!(!said_any(
-        &harness,
-        "Traffic ahead, adaptive cruise reducing speed."
-    ));
+    assert!(!said_any(&harness, "Traffic ahead, slowing."));
 }
 
 #[test]
@@ -592,19 +580,17 @@ fn test_adaptive_cruise_follow_cue_does_not_repeat_within_the_cooldown() {
     let cue_count = |harness: &PlaytestHarness| {
         spoken(harness)
             .iter()
-            .filter(|e| *e == "Traffic ahead, adaptive cruise reducing speed.")
+            .filter(|e| *e == "Traffic ahead, slowing.")
             .count()
     };
 
     frame(&mut harness, DT);
     assert!(harness.read_drive(|d| d.acc_following));
-    // Raised once. The route-start line lands in the same frame and purges
-    // the channel, so the pacer hands this one back and submits it again --
-    // that pair is ONE occurrence reaching the player, and without the
-    // hand-back the flush would take the whole of it before the voice said a
-    // word of why the truck was slowing.
+    // Raised once. The route-start line lands in the same frame and queues
+    // behind it rather than purging it and handing it back, so the voice is
+    // sent it once.
     let raised_once = cue_count(&harness);
-    assert_eq!(raised_once, 2, "{:#?}", spoken(&harness));
+    assert_eq!(raised_once, 1, "{:#?}", spoken(&harness));
 
     harness.with_drive(|d, _| d.trip.set_npc_vehicles(Vec::new())); // drifts out
     frame(&mut harness, DT);
@@ -636,7 +622,7 @@ fn test_adaptive_cruise_caps_at_posted_limit() {
     assert!(harness.read_drive(|d| d.acc_limit_capped));
     assert!(harness.read_drive(|d| d.truck().throttle) < 0.8); // backed off the throttle
     assert!(harness.read_drive(|d| d.truck().brake) > 0.0); // braking down toward the limit
-    assert!(said_any(&harness, "adaptive cruise easing to"));
+    assert!(said_any(&harness, "ruise easing to"));
 }
 
 #[test]
@@ -656,7 +642,7 @@ fn test_adaptive_cruise_slows_before_large_limit_drop() {
     assert!(harness.read_drive(|d| d.acc_limit_capped));
     assert!(harness.read_drive(|d| d.truck().throttle) < 0.8);
     assert!(harness.read_drive(|d| d.truck().brake) > 0.0);
-    assert!(said_any(&harness, "adaptive cruise easing to"));
+    assert!(said_any(&harness, "ruise easing to"));
 }
 
 #[test]
@@ -681,7 +667,7 @@ fn test_adaptive_cruise_easing_preannounces_the_capped_target() {
 
     frame(&mut harness, DT);
 
-    assert!(said_any(&harness, "adaptive cruise easing to"));
+    assert!(said_any(&harness, "ruise easing to"));
     // 40 + ACC_LIMIT_OFFSET_MPH
     assert!(harness.read_drive(|d| d
         .trip
@@ -811,10 +797,7 @@ fn test_adaptive_cruise_increases_gap_for_bad_weather() {
 
     assert!(wet_gap > clear_gap, "{wet_gap} {clear_gap}");
     assert!(harness.read_drive(|d| d.acc_following));
-    assert!(said_any(
-        &harness,
-        "Wet roads, adaptive cruise increasing following gap."
-    ));
+    assert!(said_any(&harness, "Wet roads, longer gap."));
 }
 
 #[test]
@@ -968,6 +951,60 @@ fn test_cruise_pre_brakes_for_heavy_traffic_like_a_work_zone() {
 }
 
 #[test]
+fn test_cruise_eases_to_the_taper_speed_first_then_the_work_zone_at_the_barrels() {
+    // The warning promises two numbers: the taper's, then the work zone's.
+    // Cruise used to aim at the work zone's from the moment the warning
+    // landed, miles out, so a driver told "55 at the taper, then 45" was
+    // already at 45 long before the taper (owner, 2026-09-14).
+    let mut harness = bench_drive("Taper Stage", 70.0, 0.0);
+    press(&mut harness, Key::E, None);
+    harness.with_drive(|d, _| {
+        d.truck_mut().transmission.gear = 10;
+        d.truck_mut().velocity_mps = 31.3; // ~70 mph
+    });
+    press(&mut harness, Key::K, None);
+
+    let barrels = harness.read_drive(|d| d.trip.position_mi) + 1.5;
+    let taper = Zone::new(barrels - 1.0, barrels, 55.0, "construction merge");
+    let work = Zone::new(barrels, barrels + 3.0, 45.0, "construction");
+    let announced = work.clone();
+    harness.with_drive(move |d, _| {
+        d.trip.zones.push(taper.clone());
+        d.trip.zones.push(work.clone());
+        d.trip.announced_zone_warnings.insert(zone_key(&announced));
+    });
+
+    // A mile and a half out at 70: the taper's number, as the warning said.
+    assert_eq!(
+        harness.with_drive(|d, ctx| d.restricted_zone_limit_ahead(ctx)),
+        Some((55.0, "construction".to_string()))
+    );
+    assert_eq!(
+        harness.with_drive(|d, ctx| d.acc_posted_limit_ahead(ctx)),
+        (55.0, Some("construction".to_string()))
+    );
+    // Down to 55 and inside braking distance of the barrels: the zone's.
+    harness.with_drive(move |d, _| {
+        d.truck_mut().velocity_mps = 24.6; // ~55 mph
+        d.trip.position_mi = barrels - 0.2;
+    });
+    assert_eq!(
+        harness.with_drive(|d, ctx| d.restricted_zone_limit_ahead(ctx)),
+        Some((45.0, "construction".to_string()))
+    );
+    // Once the zone stage has begun it holds: slowing shrinks the braking
+    // window, and the target must not climb back to 55 over the last yards.
+    harness.with_drive(move |d, _| {
+        d.truck_mut().velocity_mps = 20.6; // ~46 mph
+        d.trip.position_mi = barrels - 0.6;
+    });
+    assert_eq!(
+        harness.with_drive(|d, ctx| d.restricted_zone_limit_ahead(ctx)),
+        Some((45.0, "construction".to_string()))
+    );
+}
+
+#[test]
 fn test_speed_control_restores_cruise_target_after_zone() {
     let mut harness = bench_drive("Restore Target", 65.0, 0.0);
     release_keys(&mut harness);
@@ -996,22 +1033,20 @@ fn test_speed_control_restores_cruise_target_after_zone() {
         original_target
     ));
     // Once for the zone. The work-zone warning lands in the same frame and
-    // purges the channel, so the keeper line is handed back and submitted
-    // again; the pair is one occurrence reaching the player, where the flush
-    // alone used to take all of it.
+    // queues behind the keeper line instead of purging it and handing it back.
     assert_eq!(
         spoken(&harness)
             .iter()
             .filter(|e| e.contains("Speed keeper holding"))
             .count(),
-        2,
+        1,
         "{:#?}",
         spoken(&harness)
     );
     assert_eq!(
         spoken(&harness)
             .iter()
-            .filter(|e| e.contains("Adaptive cruise resuming"))
+            .filter(|e| e.contains("Cruise resuming"))
             .count(),
         1
     );
@@ -1103,4 +1138,61 @@ fn test_cruise_keeps_aiming_at_a_limit_drop_once_it_has_eased_for_it() {
         (30.0, None)
     );
     assert!(harness.read_drive(|d| d.acc_limit_hold.is_none()));
+}
+
+#[test]
+fn test_a_hazard_that_leaves_the_truck_below_cruise_speed_still_resumes() {
+    // Owner, Willmar to Owatonna, 2026-09-16: "Brake! Slow car right ahead"
+    // matched a 17 mph car, "Well done", and then nothing. Adaptive cruise
+    // refuses below 20, so the session sat paused with the driver holding 17
+    // and nobody saying why. The keeper is the automation for the low-speed
+    // stretch (the acceleration-lane bridge, Brandon, 2026-08-21) and it
+    // takes this one too: builds behind whatever held the truck down, then
+    // hands to cruise at road speed.
+    let mut harness = bench_drive("Slow Car Resume", 55.0, 0.0);
+    press(&mut harness, Key::E, None);
+    harness.with_drive(|d, _| {
+        d.truck_mut().transmission.gear = 10;
+        d.truck_mut().velocity_mps = 26.8;
+    });
+    press(&mut harness, Key::K, None);
+    assert!(harness.read_drive(|d| d.cruise_mph).is_some());
+    harness.with_drive(|d, ctx| {
+        d.handle_trip_event(
+            ctx,
+            &hazard_event(
+                "Brake! Slow car right ahead.",
+                TripEventData {
+                    deadline_s: Some(4.0),
+                    ..Default::default()
+                },
+            ),
+        )
+    });
+    assert!(harness.read_drive(|d| d.speed_control_armed));
+    assert!(harness.read_drive(|d| d.cruise_mph).is_none());
+
+    // Braked down to the car's 17 and the hazard clears there.
+    harness.with_drive(|d, _| d.truck_mut().velocity_mps = 17.0 / MPH_PER_MPS);
+    harness.clear_speech();
+    harness.with_drive(|d, ctx| d.clear_hazard(ctx));
+    harness.with_drive(|d, ctx| d.resume_speed_control_if_ready(ctx, false));
+
+    assert!(harness.read_drive(|d| d.speed_control_armed));
+    assert!(
+        harness.read_drive(|d| d.keeper_mph).is_some(),
+        "the keeper bridges the crawl back to road speed: {:?}",
+        spoken(&harness)
+    );
+    assert!(
+        said_any(&harness, "Speed control resuming."),
+        "{:?}",
+        spoken(&harness)
+    );
+
+    // Back at road speed, the keeper hands to adaptive cruise on its own.
+    harness.with_drive(|d, _| d.truck_mut().velocity_mps = 24.0 / MPH_PER_MPS);
+    harness.with_drive(|d, ctx| d.update_keeper(ctx, 0.1, false, false, false));
+    assert!(harness.read_drive(|d| d.cruise_mph).is_some());
+    assert!(harness.read_drive(|d| d.keeper_mph).is_none());
 }

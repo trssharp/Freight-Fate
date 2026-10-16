@@ -11,6 +11,17 @@ use crate::states::driving_core::*;
 
 use crate::states::driving_stops::assist_full_decel_mps2;
 
+/// Seconds of road the corner brake leaves for the pedal to build and the
+/// truck to settle, taken off the distance it prices the rate on.
+const CORNER_BRAKE_LEAD_S: f64 = 0.5;
+
+/// The share of the snub's rate under which the corner brake lets go.
+const CORNER_BRAKE_RELEASE_FRACTION: f64 = 0.25;
+
+/// How far over a corner's own number a snub for it lets go, for the pedal's
+/// release to land the truck on the number rather than under it.
+const CORNER_SNUB_RELEASE_OVER_MPH: f64 = 0.3;
+
 use super::pending::{
     KEEPER_EASE_UNDERSHOOT_MPH, KEEPER_OVERRUN_MPH, KEEPER_OVERRUN_S, KEEPER_SNUB_DECEL_MPS2,
     KEEPER_SNUB_MAX_BRAKE, KEEPER_SNUB_MIN_BRAKE, KEEPER_SNUB_OVER_MPH, KEEPER_SNUB_UNDER_MPH,
@@ -19,6 +30,8 @@ use super::pending::{
 impl DrivingState {
     /// `_toggle_cruise()`: the cruise control, or the fast-idle switch.
     pub fn toggle_cruise(&mut self, ctx: &mut GameContext) {
+        // Any press teaches the key: retires the resume line's cancel hint.
+        self.note_instruction_demonstrated(ctx, "cruise_set");
         // Parked with the brake set, the cruise button is the fast-idle
         // switch, exactly like a real electronic truck: latch a high idle
         // (warm-up, faster air build), press again to drop it. It also
@@ -27,13 +40,7 @@ impl DrivingState {
             if self.trip.truck.high_idle_rpm.is_none() {
                 self.trip.truck.high_idle_rpm = Some(HIGH_IDLE_DEFAULT_RPM);
                 let rpm = HIGH_IDLE_DEFAULT_RPM;
-                self.say_plain(
-                    ctx,
-                    format!(
-                        "High idle, {rpm:.0} RPM. Plus and minus adjust it; releasing the parking \
-                         brake cancels."
-                    ),
-                );
+                self.say_plain(ctx, format!("High idle, {rpm:.0} RPM."));
             } else {
                 self.trip.truck.high_idle_rpm = None;
                 self.say_plain(ctx, "High idle off.");
@@ -84,6 +91,7 @@ impl DrivingState {
     ) {
         self.speed_control_armed = true;
         self.speed_control_paused_at_stop = false;
+        self.speed_control_floor_said = false;
         // Round to the whole mph the player actually hears (speed_text already
         // rounds the readout): a plain K-set otherwise captures the truck's
         // exact float speed (e.g. 59.95), and the first +/- tap would spend
@@ -104,7 +112,7 @@ impl DrivingState {
             if let Some(stop) = self.exit_stop.clone() {
                 let ahead = stop.at_mi - self.trip.position_mi;
                 if ahead > 0.0 && (self.exit_signal_on || ctx.settings.lane_is_automated()) {
-                    self.cruise_exit_mph = Some(set.min(self.armed_ramp_cruise_mph(None)));
+                    self.cruise_exit_mph = Some(set.min(self.exit_approach_floor_mph(None)));
                 }
             }
         }
@@ -125,13 +133,15 @@ impl DrivingState {
         self.acc_limit_cap_said = None;
         self.acc_limit_hold = None;
         self.acc_weather_cap_said = None;
-        let gap = self.acc_gap_seconds(ctx);
         let mut effective_mph = match self.cruise_exit_mph {
             Some(exit) => set.min(exit),
             None => set,
         };
+        // "for the exit", not "for the ramp": the cap is the mainline's exit
+        // floor, ten under road speed at most, and the ramp's own number is
+        // braked for past the gore (realistic exit, 2026-09-24).
         let mut exit_note = if self.cruise_exit_mph.is_some() {
-            " for the ramp".to_string()
+            " for the exit".to_string()
         } else {
             String::new()
         };
@@ -167,9 +177,15 @@ impl DrivingState {
             effective_mph = effects.safe_speed_mph;
             exit_note = format!(" in the {}", self.trip.weather.current.value());
         }
-        ctx.audio.play_with("ui/notify", 0.5, 0.0);
+        if transition_label.is_some() {
+            // Cruise retaking the pedals on its own speaks as a confirmation;
+            // its tone goes with the words.
+            ctx.play_event_cue(Some(SpeechCategory::Confirmation), "ui/notify", 0.5, 0.0);
+        } else {
+            ctx.audio.play_with("ui/notify", 0.5, 0.0);
+        }
         let message = format!(
-            "Adaptive cruise {} at {}{exit_note}. Following gap {gap:.0} seconds.",
+            "Adaptive cruise {} at {}{exit_note}.",
             if transition_label.is_some() {
                 "resuming"
             } else {
@@ -177,12 +193,18 @@ impl DrivingState {
             },
             ctx.settings.speed_text(effective_mph)
         );
-        if let Some(label) = transition_label {
+        if transition_label.is_some() {
             // ROUTE: automation retaking the pedals after a zone, the same
             // handoff as the keeper's resume line (driving_speed_control 291,
             // already ROUTE). The quiet rung still silences it by category;
             // ROUTE only stops a busy channel eating it at standard.
-            self.say_route_confirmation(ctx, &format!("{label}. {message}"));
+            self.say_route_confirmation(
+                ctx,
+                format!(
+                    "Cruise resuming, {}{exit_note}.",
+                    ctx.settings.speed_value(effective_mph)
+                ),
+            );
         } else {
             self.say_plain(ctx, message);
         }
@@ -209,8 +231,11 @@ impl DrivingState {
                 return;
             }
         }
-        if self.cruise_mph.is_none() && self.keeper_mph.is_none() {
-            self.say_plain(ctx, "Adaptive cruise off. Press K to set it.");
+        // A paused session is not off: the dial sets the speed it resumes at
+        // below. Telling a paused driver to press K sent them to the key that
+        // switches it off (2026-09-28).
+        if self.cruise_mph.is_none() && self.keeper_mph.is_none() && !self.speed_control_armed {
+            self.say_plain(ctx, "Adaptive cruise off.");
             return;
         }
         let base = match self.speed_control_target_mph {
@@ -292,17 +317,15 @@ impl DrivingState {
         announce: bool,
     ) {
         if !ctx.settings.speed_keeper {
-            // Naming the way out matters more than the refusal: the keeper is
-            // exactly the thing that holds speed here, and a driver who has
-            // never turned it on hears only that cruise "is not available"
-            // and concludes the ramp kills speed control (Shane, 2026-08-15).
-            self.say_plain(
-                ctx,
-                format!(
-                    "No adaptive cruise in a {zone_reason} zone. The speed keeper holds speed \
-                     here; turn it on in Settings, Controls."
-                ),
-            );
+            // Where the cruise is refused, not how to get the keeper: that
+            // lives in the settings help and the manual (owner rule,
+            // 2026-09-21: silence over redundant speech).
+            let place = if ff_core::sim::trip::is_street_zone_reason(zone_reason) {
+                "on city streets".to_string()
+            } else {
+                format!("in a {zone_reason} zone")
+            };
+            self.say_plain(ctx, format!("No cruise {place}."));
             return;
         }
         let speed = self.trip.truck.speed_mph();
@@ -326,10 +349,7 @@ impl DrivingState {
         if announce {
             ctx.audio.play_with("ui/notify", 0.5, 0.0);
             let held = ctx.settings.speed_text(self.keeper_mph.unwrap_or(0.0));
-            self.say_plain(
-                ctx,
-                format!("Speed keeper holding {held} through the {zone_reason} zone."),
-            );
+            self.say_plain(ctx, keeper_holding_line(&held, zone_reason));
         }
     }
 
@@ -352,18 +372,66 @@ impl DrivingState {
             // throttle, and a driver who assumed it still held speed needs to
             // hear that (automation-handoff sweep, 2026-08-20, the deferred
             // 2026-08-15 audit).
-            self.say_route_confirmation(ctx, "Speed keeper canceled; automatic speed control off.");
-            return;
-        }
-        if accelerating {
-            return; // manual override; the keeper resumes when the key lifts
-        }
-        if clutch_disengaged {
-            self.trip.truck.throttle = 0.0;
+            self.say_route_confirmation(ctx, "Speed keeper off.");
             return;
         }
         let position = self.trip.position_mi;
         let (limit, mut zone_reason) = self.trip.speed_limit_at(position);
+        if self.keeper_zone == KEEPER_OPEN_ROAD_BRIDGE
+            && zone_reason.is_none()
+            && self.trip.truck.speed_mph() >= CRUISE_MIN_MPH
+        {
+            // The bridge is spent at road speed whether the keeper or the
+            // driver's own foot got the truck there. The session's promise is
+            // that cruise comes back on its own, and a driver accelerating
+            // through the handoff is exactly how it came back before the
+            // keeper bridged the crawl -- so this runs ahead of the manual
+            // override below, which would otherwise hold the handoff until
+            // the key lifted.
+            let target_mph = self.speed_control_target_mph.unwrap_or(limit);
+            self.cancel_keeper(ctx, true);
+            self.engage_cruise(ctx, target_mph, true);
+            return;
+        }
+        if accelerating {
+            // Manual override; the keeper resumes when the key lifts -- and it
+            // lets its snub off on the way out. The keeper already refuses to
+            // brake against its OWN throttle (`apply_keeper_snub`); it had no
+            // such rule for the driver's, so a held snub stayed latched under
+            // the driver's foot and was re-made every frame they lifted. Every
+            // other exit from keeper control (`clear_keeper`, `cancel_keeper`)
+            // already releases it; this one is the odd man out.
+            self.keeper_snub = 0.0;
+            return;
+        }
+        if clutch_disengaged {
+            self.trip.truck.throttle = 0.0;
+            // A held snub still has to be let go under the number. The
+            // controller below is what releases it, and this return is above
+            // it, so on an automatic's shift the hold lasts the shift and on
+            // a MANUAL driver holding the clutch -- coasting, picking a gear,
+            // rolling up to a queue -- it lasted as long as their foot did,
+            // braking the truck to a stop with nothing said and no way to
+            // release it but letting the clutch out (review finding,
+            // 2026-09-19). The rule is the keeper's own, just applied on a
+            // frame it cannot run.
+            // Against the number the snub is HOLDING, not the number the
+            // keeper is set to. Read against the set speed, this released on
+            // every shift frame of any approach -- the truck eased to a 10 mph
+            // corner is a mile an hour under its 45 mph setting by a mile an
+            // hour of margin and thirty-four more besides -- and an automatic
+            // hunting gears at 10 mph shifts constantly. Press, shift,
+            // release, press: 392 applications and the tanks on the floor at
+            // Albany Company Yard's service road (approach sweep,
+            // 2026-09-20).
+            if self.keeper_snub > 0.0
+                && self.trip.truck.speed_mph()
+                    <= self.keeper_snub_target_mph - KEEPER_SNUB_UNDER_MPH
+            {
+                self.keeper_snub = 0.0;
+            }
+            return;
+        }
         if zone_reason.is_none() && self.departure_ramp_mi.is_some() {
             // The acceleration lane is a low-speed regime like a zone, and the
             // keeper is the tool for those -- it exists because holding an
@@ -375,6 +443,16 @@ impl DrivingState {
             // builds toward the road's own limit, then hands to cruise once
             // this truck reaches its capability-aware merge threshold.
             zone_reason = Some("acceleration lane".to_string());
+        } else if zone_reason.is_none()
+            && self.keeper_zone == KEEPER_OPEN_ROAD_BRIDGE
+            && self.trip.truck.speed_mph() < CRUISE_MIN_MPH
+        {
+            // The open-road bridge (`resume_speed_control_if_ready`): a hazard
+            // or a stop left the truck below cruise's holding speed with the
+            // session still armed, and the keeper builds it back up. Once the
+            // truck is at road speed the bridge is spent and the plain
+            // no-zone handoff below gives the road to adaptive cruise.
+            zone_reason = Some(KEEPER_OPEN_ROAD_BRIDGE.to_string());
         }
         let Some(zone_reason) = zone_reason else {
             let target_mph = self.speed_control_target_mph.unwrap_or(limit);
@@ -394,9 +472,17 @@ impl DrivingState {
         match ahead.as_ref() {
             Some((ahead_mph, ahead_reason)) if *ahead_mph < target_mph => {
                 target_mph = KEEPER_MIN_MPH.max(*ahead_mph - KEEPER_EASE_UNDERSHOOT_MPH);
-                let fresh = self
-                    .keeper_ease_said
-                    .is_none_or(|said| *ahead_mph < said - 0.5);
+                // "Easing" is a line about slowing down. A truck already
+                // under the number, building speed from a stop, is not being
+                // eased: it heard "speed keeper easing to 15" while climbing
+                // from 9 (agent drive A, 2026-09-24). Nor is one inside the
+                // keeper's own ripple over it, which the snub threshold
+                // polices. Left unmarked, so the line still comes if the
+                // truck does get well above it.
+                let fresh = self.trip.truck.speed_mph() > *ahead_mph + KEEPER_SNUB_OVER_MPH
+                    && self
+                        .keeper_ease_said
+                        .is_none_or(|said| *ahead_mph < said - 0.5);
                 // A mapped bend is the curve call's to name, like a corner
                 // is the approach call's: the pacenote already carried the
                 // number and the assist clause.
@@ -416,7 +502,13 @@ impl DrivingState {
                     let eased = ctx.settings.speed_text(*ahead_mph);
                     self.say_route_confirmation(
                         ctx,
-                        &format!("{reason}; speed keeper easing to {eased}."),
+                        SpokenMessage::with_terse(
+                            format!("{reason}; speed keeper easing to {eased}."),
+                            format!(
+                                "Speed keeper easing to {}.",
+                                ctx.settings.speed_value(*ahead_mph)
+                            ),
+                        ),
                     );
                     // This line already named the number for a plain posted-limit
                     // drop; the arrival "Speed limit reduced to X" would otherwise
@@ -537,8 +629,78 @@ impl DrivingState {
             }
         }
         self.trip.truck.throttle = applied;
-        self.say_keeper_out_of_truck(ctx, dt, error, applied, target_mph);
+        self.say_keeper_out_of_truck(ctx, dt, error, applied);
         self.keeper_snub_brakes(ctx, dt, -error, target_mph);
+        self.keeper_corner_brakes();
+    }
+
+    /// Make the next corner as routed when the keeper's own ease cannot.
+    ///
+    /// The keeper sheds for a corner on its comfort law and snubs at
+    /// `KEEPER_SNUB_DECEL_MPS2`, which is right whenever the corner came into
+    /// its window at street speed. It is not when the truck reaches the
+    /// corner's window already fast -- an arrival that had the pedals letting
+    /// go, a driver handing back late -- and then the snub's rate simply runs
+    /// out of road: 48 mph a sixth of a mile short of an 11 mph turn sails
+    /// past it and goes around the block (tester, Elkhart, 2026-10-14). The
+    /// owner's ruling is that the assists take the turn as routed, never a
+    /// loop.
+    ///
+    /// So every judged corner ahead is priced on the real braking left: the
+    /// rate that brings the truck from its speed now to that corner's own
+    /// turn speed (`turn_speed_mph`, the corner model's number, not a copy of
+    /// it) in the distance to the corner. Only when that rate is more than
+    /// the snub gives does this press, and only as hard as the rate plus any
+    /// downgrade asks, mapped onto the pedal by the truck's own brakes. Once
+    /// on, it is re-priced every tick and released at the corner's number.
+    pub fn keeper_corner_brakes(&mut self) {
+        let position = self.trip.position_mi;
+        let v = self.trip.truck.velocity_mps;
+        let mut needed = 0.0f64;
+        for (cue, target) in self.corner_targets_ahead() {
+            let ahead_m = (cue.at_mi - position) * 1609.344;
+            if ahead_m <= 0.0 {
+                continue;
+            }
+            let turn = target / 2.23694;
+            if v <= turn {
+                continue;
+            }
+            let room_m = (ahead_m - v * CORNER_BRAKE_LEAD_S).max(1.0);
+            needed = needed.max((v * v - turn * turn) / (2.0 * room_m));
+        }
+        // Starts only when the snub's own rate would not make the corner,
+        // and once started holds until the truck is down to the corner's
+        // number: letting go and re-pressing every frame the rate dipped
+        // under the snub's was a fresh application each time, and the air
+        // system charges every one.
+        // Released once nothing ahead asks for more than a fraction of the
+        // snub's own rate: a far corner's sliver of a rate kept the latch
+        // on, and the pedal with it, under the number of the corner just
+        // made.
+        let release = KEEPER_SNUB_DECEL_MPS2 * CORNER_BRAKE_RELEASE_FRACTION;
+        if needed <= release || (!self.keeper_corner_braking && needed <= KEEPER_SNUB_DECEL_MPS2) {
+            if self.keeper_corner_braking {
+                self.keeper_corner_braking = false;
+                self.keeper_snub = 0.0;
+            }
+            return;
+        }
+        self.keeper_corner_braking = true;
+        let gravity_mps2 = 0.0f64.max(-self.trip.truck.grade) * G;
+        // Re-priced every tick on the road actually left, so the pedal
+        // follows the rate that lands on the corner's number at the corner:
+        // a pedal that ran ahead of the profile eases, one that fell behind
+        // firms. A fixed margin over the first reading braked the truck well
+        // under the number a hundred feet out and then throttled it back up.
+        let pedal = ((needed + gravity_mps2) / assist_full_decel_mps2(&self.trip.truck)).min(1.0);
+        self.keeper_snub = pedal.max(0.0);
+        if pedal < 1.0 {
+            // Firmer than a snub on purpose and with the corner still made:
+            // not the keeper losing the truck, so no "can't hold" warning.
+            self.keeper_overrun_s = 0.0;
+        }
+        self.apply_keeper_snub();
     }
 
     /// Say plainly when the hill has beaten the speed keeper.
@@ -549,7 +711,7 @@ impl DrivingState {
     /// a blind driver has the engine note and the downshifts, which say the
     /// truck is working, not that it is losing -- and losing is the part that
     /// decides whether to take it over by hand. Adaptive cruise has said this
-    /// for a while ("Cruise is flat out and still losing the grade"); this is
+    /// for a while ("Cruise down to 38 on this grade"); this is
     /// the same sentence for the other controller.
     ///
     /// Only once the pedal is genuinely on the floor and the truck is still
@@ -561,7 +723,6 @@ impl DrivingState {
         dt: f64,
         error: f64,
         applied: f64,
-        target_mph: f64,
     ) {
         self.keeper_droop_cue_s = 0.0f64.max(self.keeper_droop_cue_s - dt);
         let beaten = applied >= CRUISE_FLOORED_THROTTLE
@@ -586,16 +747,10 @@ impl DrivingState {
         }
         self.keeper_droop_said = true;
         self.keeper_droop_cue_s = CLIMB_CUE_COOLDOWN_S;
-        let wanted = ctx.settings.speed_text(target_mph);
         let held = ctx.settings.speed_text(self.trip.truck.speed_mph());
         let mut opts = SayEvent::queued();
         opts.category = Some(SpeechCategory::Status);
-        ctx.say_event_with(
-            format!(
-                "Speed keeper is flat out and cannot make {wanted} on this grade. Holding {held}."
-            ),
-            opts,
-        );
+        ctx.say_event_with(format!("Speed keeper down to {held} on this grade."), opts);
     }
 
     /// Hand the keeper back up to street speed when the street changes.
@@ -641,8 +796,10 @@ impl DrivingState {
         let held = ctx.settings.speed_text(limit);
         let spoken = if zone_reason == "acceleration lane" {
             format!("Speed keeper building to {held} for the merge.")
+        } else if zone_reason == KEEPER_OPEN_ROAD_BRIDGE {
+            format!("Speed keeper building to {held}.")
         } else {
-            format!("Speed keeper holding {held} through the {zone_reason} zone.")
+            keeper_holding_line(&held, zone_reason)
         };
         self.say_route_confirmation(ctx, &spoken);
     }
@@ -674,8 +831,20 @@ impl DrivingState {
         let wanted = KEEPER_SNUB_MAX_BRAKE.min(KEEPER_SNUB_MIN_BRAKE.max(
             (KEEPER_SNUB_DECEL_MPS2 + gravity_mps2) / assist_full_decel_mps2(&self.trip.truck),
         ));
-        if self.keeper_snub > 0.0 {
-            if over <= -KEEPER_SNUB_UNDER_MPH {
+        if self.keeper_corner_braking {
+            // The corner brake owns the pedal and prices it every tick
+            // (`keeper_corner_brakes`); firming it to a snub's floor here is
+            // what braked the truck under the corner's number.
+        } else if self.keeper_snub > 0.0 {
+            // At a corner's own number the snub is done: the eased target
+            // below it is a profile toward the corner, and riding the snub
+            // on to a mile an hour under that profile landed the truck two
+            // under the corner and throttling back up into it.
+            let at_corner = self.keeper_ease_target.as_ref().is_some_and(|held| {
+                held.2 == "turn"
+                    && self.trip.truck.speed_mph() <= held.1 + CORNER_SNUB_RELEASE_OVER_MPH
+            });
+            if over <= -KEEPER_SNUB_UNDER_MPH || at_corner {
                 self.keeper_snub = 0.0; // under the number: let it go
             } else {
                 // Only ever firmer while the snub lasts. Easing and re-pressing
@@ -686,9 +855,9 @@ impl DrivingState {
             self.keeper_snub = wanted;
         }
         if self.keeper_snub > 0.0 {
-            self.trip.truck.throttle = 0.0; // never brake against our own throttle
-            self.trip.truck.brake = self.trip.truck.brake.max(self.keeper_snub);
+            self.keeper_snub_target_mph = target_mph;
         }
+        self.apply_keeper_snub();
         // Pressing everything it has and still riding well over the number:
         // say so. An assist that quietly holds the wrong speed is the one
         // thing a driver who cannot see the speedometer cannot catch.
@@ -714,8 +883,51 @@ impl DrivingState {
             let held = ctx.settings.speed_text(target_mph);
             self.say_safety_interrupt(
                 ctx,
-                &format!("Speed keeper cannot hold {held}{because}. Apply service brakes."),
+                &format!("Speed keeper can't hold {held}{because}. Brake."),
             );
         }
+    }
+
+    /// Put the keeper's held snub back on the pedal before physics.
+    ///
+    /// The same repair, for the same reason, that `apply_hazard_brake` and the
+    /// destination arrival's pedals already carry: the input pass ramps the
+    /// service brake down every frame nobody is on it, and it runs at the TOP
+    /// of `update_frame`, ahead of `update_keeper`. So on any frame the keeper
+    /// returns early -- a driver on the accelerator, an open driveline
+    /// mid-shift -- its held application is not paused, it is dropped, and the
+    /// next frame the keeper reaches its controller it is re-made from zero.
+    /// The air system charges a whole application every time the pedal RISES,
+    /// which is exactly what makes ONE held snub affordable and what makes a
+    /// re-made one ruinous.
+    ///
+    /// Measured on the Aberdeen Company Yard chain (2026-09-18): the keeper
+    /// latched a 0.20 snub, the automatic shifted and the driver rode the
+    /// accelerator against it, and the same application was re-made nine times
+    /// a second -- about eight psi a second against the four the compressor
+    /// makes at idle. A hundred and twenty-five psi to the spring-brake trip
+    /// in twenty seconds, the parking brakes on, and the truck stranded half a
+    /// mile short of the gate with the delivery unfinishable. FMCSA's CDL
+    /// manual names the same thing on a real truck -- fanning the brakes
+    /// spends reservoir air the compressor cannot replace, and the spring
+    /// brakes come on.
+    ///
+    /// Re-asserted here beside the other assists' floors, one held snub costs
+    /// one application however many frames the keeper spends overridden.
+    pub fn apply_keeper_snub(&mut self) {
+        if self.keeper_snub <= 0.0 {
+            return;
+        }
+        self.trip.truck.throttle = 0.0; // never brake against our own throttle
+        self.trip.truck.brake = self.trip.truck.brake.max(self.keeper_snub);
+    }
+}
+
+/// "Speed keeper holding 30 miles per hour through the work zone", or no
+/// zone at all on a street, which is just a street (`spoken_zone`).
+pub(crate) fn keeper_holding_line(held: &str, zone_reason: &str) -> String {
+    match ff_core::sim::trip::spoken_zone(zone_reason) {
+        Some(zone) => format!("Speed keeper holding {held} through {zone}."),
+        None => format!("Speed keeper holding {held}."),
     }
 }

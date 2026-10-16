@@ -67,6 +67,10 @@ impl AudioBackend for BassBackend {
         BassBackend::set_loop_pan(self, channel, pan);
     }
 
+    fn set_loop_rate(&mut self, channel: u32, rate: f64) {
+        BassBackend::set_loop_rate(self, channel, rate);
+    }
+
     fn stop_loop(&mut self, channel: u32, fade_ms: u32) {
         BassBackend::stop_loop(self, channel, fade_ms);
     }
@@ -163,6 +167,10 @@ impl AudioBackend for BassBackend {
 
     fn music_playing(&self) -> bool {
         BassBackend::music_playing(self)
+    }
+
+    fn music_length_s(&self) -> Option<f64> {
+        BassBackend::music_length_s(self)
     }
 
     fn stop_music(&mut self, fade_ms: u32) {

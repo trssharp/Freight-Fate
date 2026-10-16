@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use bass_sys::safe;
-use ff_core::ladder_earcons::{register_ladder_earcons, CONFIRMATION_NOTE_KEY};
+use ff_core::lane_guide_tone::{register_lane_guide_tone, LANE_GUIDE_TONE_KEY};
 use ff_core::music::ALL_MUSIC_TRACKS;
 use ff_core::pyrandom::PyRandom;
 use freight_fate::audio::*;
@@ -189,6 +189,16 @@ fn test_sound_lookup_prefers_ogg_when_available() {
 }
 
 #[test]
+fn test_main_menu_ambience_ships_in_the_pack() {
+    if !shipped_sounds() {
+        return;
+    }
+    for key in ff_core::music::MENU_AMBIENCE {
+        assert!(asset_bytes(key, SFX_EXTENSIONS).is_some(), "{key}");
+    }
+}
+
+#[test]
 fn test_engine_recordings_resolve_for_the_ring_and_one_shots() {
     // Looping beds may resolve to WAV (lossy edges break loop seams --
     // tools/fix_loop_seams.py); the licensed overlay's file wins where
@@ -246,6 +256,7 @@ fn test_asset_length_matches_a_real_decode_of_the_same_clip() {
         "driver/yawn",
         "events/spike_strip",
         "vehicle/signal_tone",
+        "vehicle/turn_signal_off",
         "vehicle/bar_solid",
     ] {
         let decoded = shipped_duration_s(key).unwrap();
@@ -259,11 +270,11 @@ fn test_asset_length_matches_a_real_decode_of_the_same_clip() {
 
 #[test]
 fn test_asset_length_covers_synthesized_cues_and_shrugs_at_unknown_keys() {
-    // The Python test registered the enforcement signature; the ladder
-    // earcons are the synthesized cues this build carries.
-    register_ladder_earcons();
+    // The Python test registered the enforcement signature; the lane guide
+    // tone is a synthesized cue this build carries.
+    register_lane_guide_tone();
     assert!(
-        asset_length_s(CONFIRMATION_NOTE_KEY) > 0.0,
+        asset_length_s(LANE_GUIDE_TONE_KEY) > 0.0,
         "a generated cue has a length too"
     );
     assert_eq!(asset_length_s("nothing/at_all"), 0.0);
@@ -710,6 +721,41 @@ fn test_horn_uses_reserved_loop_slot() {
     );
     r.engine.horn_stop();
     assert!(r.engine.backend().loop_entry(CH_HORN).is_none());
+}
+
+#[test]
+fn test_stop_world_drops_the_liquid_surge_wash() {
+    // A tank still sloshing when the pause menu opens must not be heard
+    // through it: stop_world is what the pause menu calls, and the surge
+    // wash is a gated world loop like the jake and the air, not music or a
+    // menu sound that should survive a pause.
+    let Some(mut r) = bass_rig_with_recordings() else {
+        return;
+    };
+    r.engine
+        .start_loop_with(CH_SURGE, "vehicle/liquid_wash", 0.5, 90);
+    assert!(r.engine.backend().loop_entry(CH_SURGE).is_some());
+    r.engine.stop_world();
+    assert!(r.engine.backend().loop_entry(CH_SURGE).is_none());
+}
+
+#[test]
+fn test_stop_world_drops_the_scale_bed_and_lane_guide_tone() {
+    // Both are plain per-frame loops with no dead-man's switch of their own
+    // (unlike the alert and siren): leaving the drive with either still
+    // running left it playing into the main menu until the game closed.
+    let Some(mut r) = bass_rig_with_recordings() else {
+        return;
+    };
+    r.engine
+        .start_loop_with(CH_SCALE, "poi/weigh_station_lane", 0.5, 90);
+    r.engine
+        .start_loop_with(CH_LANE_GUIDE, "ui/menu_select", 0.5, 90);
+    assert!(r.engine.backend().loop_entry(CH_SCALE).is_some());
+    assert!(r.engine.backend().loop_entry(CH_LANE_GUIDE).is_some());
+    r.engine.stop_world();
+    assert!(r.engine.backend().loop_entry(CH_SCALE).is_none());
+    assert!(r.engine.backend().loop_entry(CH_LANE_GUIDE).is_none());
 }
 
 #[test]

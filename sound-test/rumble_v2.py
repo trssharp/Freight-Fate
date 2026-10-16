@@ -40,7 +40,7 @@ from pulse_synth import (
 
 # Write beside this file rather than into an audition/ subdirectory.
 pulse_synth.OUT = Path(__file__).resolve().parent
-ASSETS = Path(__file__).resolve().parents[1] / "src" / "freight_fate" / "assets" / "sounds"
+ASSETS = Path(__file__).resolve().parents[1] / "assets" / "sounds"
 
 
 def tilt_noise(n: int, peak_hz: float = 115.0, width: float = 1.1) -> np.ndarray:
@@ -81,11 +81,19 @@ def groove_modulator(rate: np.ndarray, duty: float = 0.55) -> np.ndarray:
 def transient_layer(rate: np.ndarray) -> np.ndarray:
     """Per-groove impacts, deliberately heavily damped and densely moded."""
     n = len(rate)
-    modes = [(f, d, g) for f, d, g in (
-        (74.0, 0.009, 0.9), (118.0, 0.007, 1.0), (162.0, 0.006, 0.8),
-        (245.0, 0.005, 0.6), (330.0, 0.004, 0.5), (520.0, 0.003, 0.35),
-        (880.0, 0.0025, 0.22), (1500.0, 0.002, 0.13),
-    )]
+    modes = [
+        (f, d, g)
+        for f, d, g in (
+            (74.0, 0.009, 0.9),
+            (118.0, 0.007, 1.0),
+            (162.0, 0.006, 0.8),
+            (245.0, 0.005, 0.6),
+            (330.0, 0.004, 0.5),
+            (520.0, 0.003, 0.35),
+            (880.0, 0.0025, 0.22),
+            (1500.0, 0.002, 0.13),
+        )
+    ]
     ir = np.zeros(int(0.05 * SR))
     t = np.arange(len(ir)) / SR
     for freq, dec, gain in modes:

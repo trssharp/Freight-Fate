@@ -32,11 +32,9 @@ use freight_fate::controller::{fakes::FakePad, ControllerAxis};
 use freight_fate::playtest::breaker::force_grade;
 use freight_fate::states::base::{InputEvent, Key, Mods};
 use freight_fate::states::driving::DrivingState;
-use freight_fate::states::driving_core::PURSUIT_HOLD_S;
 use freight_fate::states::driving_core::{
-    hos_mut_of, profile_mut_of, HazardShape, DRIVE_PHASE_DELIVERY, EXIT_LANE_READY,
-    LANE_TAP_CHANGE_S, MICROSLEEP_BASE_GM, MICROSLEEP_MIN_GM, STEER_CUE_ARM_S, STEER_CUE_HOLD,
-    STEER_CUE_TOCK_S,
+    hos_mut_of, profile_mut_of, HazardShape, DRIVE_PHASE_DELIVERY, LANE_TAP_CHANGE_S,
+    MICROSLEEP_BASE_GM, MICROSLEEP_MIN_GM, STEER_CUE_ARM_S, STEER_CUE_HOLD, STEER_CUE_TOCK_S,
 };
 use freight_fate::states::driving_rest_states::{FelonyStopState, TrafficStopState};
 use freight_fate::states::driving_updates::limit_drop_speech_latency_s;
@@ -47,6 +45,7 @@ type LoopCall = (&'static str, u32, String);
 
 const LOCATOR: &str = "vehicle/lane_locator";
 const SIGNAL: &str = "vehicle/signal_tone";
+const BLINKER_OFF: &str = "vehicle/turn_signal_off";
 
 // -- rigging -------------------------------------------------------------------------
 //

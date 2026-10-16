@@ -7,8 +7,15 @@ struct StubSink {
     wedge: Arc<AtomicBool>,
     entered_say: Arc<AtomicBool>,
     slow: Arc<AtomicBool>,
+    /// Whether the stub's main voice reports a line still in flight.
+    speaking: Arc<AtomicBool>,
     polls: Arc<AtomicUsize>,
     available: Arc<AtomicBool>,
+    /// How many times the worker enumerated the event-voice options.
+    enumerations: Arc<AtomicUsize>,
+    /// Flipped by a test to make the main voice read as a different one.
+    renamed: Arc<AtomicBool>,
+    hold: Duration,
 }
 
 impl SpeechSink for StubSink {
@@ -43,7 +50,11 @@ impl SpeechSink for StubSink {
         self.available.load(Ordering::SeqCst)
     }
     fn backend_name(&self) -> String {
-        "stub".to_string()
+        if self.renamed.load(Ordering::SeqCst) {
+            "stub-two".to_string()
+        } else {
+            "stub".to_string()
+        }
     }
     fn has_separate_event_voice(&self) -> bool {
         true
@@ -64,6 +75,7 @@ impl SpeechSink for StubSink {
         false
     }
     fn event_backend_options(&self) -> Vec<String> {
+        self.enumerations.fetch_add(1, Ordering::SeqCst);
         vec!["stub-event".to_string()]
     }
     fn select_event_backend(&mut self, name: Option<&str>) {
@@ -103,11 +115,17 @@ impl SpeechSink for StubSink {
             .push(format!("preview {setting}"));
         true
     }
-    fn refresh(&mut self, _announce: bool) -> bool {
+    fn refresh(&mut self) -> bool {
         true
+    }
+    fn is_speaking(&self) -> bool {
+        self.speaking.load(Ordering::SeqCst)
     }
     fn shutdown(&mut self) {
         self.calls.lock().unwrap().push("shutdown".into());
+    }
+    fn startup_hold(&self) -> Duration {
+        self.hold
     }
 }
 
@@ -120,25 +138,37 @@ struct Rig {
     wedge: Arc<AtomicBool>,
     entered_say: Arc<AtomicBool>,
     slow: Arc<AtomicBool>,
+    speaking: Arc<AtomicBool>,
     polls: Arc<AtomicUsize>,
     available: Arc<AtomicBool>,
     /// How many sinks the factory has built: one, plus one per respawn.
     spawns: Arc<AtomicUsize>,
+    enumerations: Arc<AtomicUsize>,
+    renamed: Arc<AtomicBool>,
 }
 
 fn rig() -> Rig {
+    rig_with_hold(Duration::ZERO)
+}
+
+fn rig_with_hold(hold: Duration) -> Rig {
     let calls: Arc<Mutex<Vec<String>>> = Arc::default();
     let wedge = Arc::new(AtomicBool::new(false));
     let entered_say = Arc::new(AtomicBool::new(false));
     let slow = Arc::new(AtomicBool::new(false));
+    let speaking = Arc::new(AtomicBool::new(false));
     let polls = Arc::new(AtomicUsize::new(0));
     let available = Arc::new(AtomicBool::new(true));
     let spawns = Arc::new(AtomicUsize::new(0));
-    let (calls2, wedge2, entered_say2, slow2, polls2, available2, spawns2) = (
+    let enumerations = Arc::new(AtomicUsize::new(0));
+    let renamed = Arc::new(AtomicBool::new(false));
+    let (enumerations2, renamed2) = (enumerations.clone(), renamed.clone());
+    let (calls2, wedge2, entered_say2, slow2, speaking2, polls2, available2, spawns2) = (
         calls.clone(),
         wedge.clone(),
         entered_say.clone(),
         slow.clone(),
+        speaking.clone(),
         polls.clone(),
         available.clone(),
         spawns.clone(),
@@ -158,8 +188,12 @@ fn rig() -> Rig {
             wedge: wedge2.clone(),
             entered_say: entered_say2.clone(),
             slow: slow2.clone(),
+            speaking: speaking2.clone(),
             polls: polls2.clone(),
             available: available2.clone(),
+            enumerations: enumerations2.clone(),
+            renamed: renamed2.clone(),
+            hold,
         })
     });
     Rig {
@@ -168,10 +202,65 @@ fn rig() -> Rig {
         wedge,
         entered_say,
         slow,
+        speaking,
         polls,
         available,
         spawns,
+        enumerations,
+        renamed,
     }
+}
+
+fn wait_for_polls(polls: &Arc<AtomicUsize>, count: usize) {
+    for _ in 0..800 {
+        if polls.load(Ordering::SeqCst) >= count {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!(
+        "the health probe never reached {count} poll(s): {}",
+        polls.load(Ordering::SeqCst)
+    );
+}
+
+/// The three-second health probe must not enumerate the event-voice
+/// options unless the probe switched a voice. Enumerating acquires every
+/// Prism backend, and Prism's OneCore backend leaks a USER object, two
+/// handles and about 30 KiB per acquire (measured 2026-09-12), so a probe
+/// that enumerated every 3 s drained the desktop heap over a long session
+/// until NVDA could no longer restart beside the game.
+#[test]
+fn the_health_probe_enumerates_voices_only_when_one_changed() {
+    let Rig {
+        sink,
+        polls,
+        enumerations,
+        renamed,
+        ..
+    } = rig();
+    wait_for_polls(&polls, 2);
+    assert_eq!(
+        enumerations.load(Ordering::SeqCst),
+        1,
+        "two idle health probes re-enumerated the event voices"
+    );
+
+    renamed.store(true, Ordering::SeqCst);
+    let seen = polls.load(Ordering::SeqCst);
+    wait_for_polls(&polls, seen + 1);
+    for _ in 0..50 {
+        if enumerations.load(Ordering::SeqCst) == 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        enumerations.load(Ordering::SeqCst),
+        2,
+        "a probe that found a different main voice must refresh the options"
+    );
+    drop(sink);
 }
 
 fn wait_for(calls: &Arc<Mutex<Vec<String>>>, count: usize) {
@@ -222,6 +311,107 @@ fn shutdown_skips_the_queued_backlog_instead_of_speaking_it() {
     assert!(
         spoken.iter().any(|c| c == "shutdown"),
         "the backend was never released: {spoken:?}"
+    );
+}
+
+/// Quit keeps pumping events while an utterance is still in flight:
+/// the three-second wait for the backend to release is sliced, and the
+/// pump runs between slices, so macOS never reads the window as not
+/// responding (issue 266).
+#[test]
+fn shutdown_keeps_pumping_while_an_utterance_is_in_flight() {
+    let Rig {
+        mut sink,
+        calls,
+        entered_say,
+        slow,
+        ..
+    } = rig();
+    slow.store(true, Ordering::SeqCst);
+    sink.say("in flight", false);
+    for _ in 0..500 {
+        if entered_say.load(Ordering::SeqCst) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        entered_say.load(Ordering::SeqCst),
+        "say never reached the worker"
+    );
+    let mut pumps = 0u32;
+    sink.shutdown_pumping(&mut || pumps += 1);
+    assert!(
+        pumps >= 2,
+        "expected pumps between wait slices, got {pumps}"
+    );
+    assert!(
+        calls.lock().unwrap().iter().any(|c| c == "shutdown"),
+        "the backend was never released"
+    );
+}
+
+/// The pumped quit lets the utterance in flight finish (bounded) before
+/// the backend is released: without it, the now-prompt `stop()` would cut
+/// "Installing the update..." off mid-word the way the Mac runtime test
+/// caught it doing (issue 266).
+#[test]
+fn quit_lets_the_line_in_flight_finish_before_release() {
+    let Rig {
+        mut sink,
+        calls,
+        speaking,
+        ..
+    } = rig();
+    speaking.store(true, Ordering::SeqCst);
+    let clear = Arc::clone(&speaking);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        clear.store(false, Ordering::SeqCst);
+    });
+    let started = Instant::now();
+    let mut last_pump = Duration::ZERO;
+    sink.shutdown_pumping(&mut || last_pump = started.elapsed());
+    assert!(
+        started.elapsed() >= Duration::from_millis(250),
+        "the line in flight was cut off: {:?}",
+        started.elapsed()
+    );
+    // When the last pump landed, not how many: a loaded macOS runner
+    // oversleeps each 10 ms slice several times over, so a count only
+    // measures the scheduler.
+    assert!(
+        last_pump >= Duration::from_millis(150),
+        "events stopped being pumped during the finish-line wait: last pump at {last_pump:?}"
+    );
+    assert!(
+        calls.lock().unwrap().iter().any(|c| c == "shutdown"),
+        "the backend was never released"
+    );
+}
+
+/// Plain `shutdown` keeps the old semantics: it does not wait for the
+/// line in flight, so a voice that never reports quiet still releases
+/// inside the three-second bound.
+#[test]
+fn plain_shutdown_does_not_wait_for_the_line() {
+    let Rig {
+        mut sink,
+        calls,
+        speaking,
+        ..
+    } = rig();
+    speaking.store(true, Ordering::SeqCst);
+    let started = Instant::now();
+    sink.shutdown();
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "plain shutdown waited on the line: {:?}",
+        started.elapsed()
+    );
+    assert!(
+        calls.lock().unwrap().iter().any(|c| c == "shutdown"),
+        "the backend was never released"
     );
 }
 
@@ -285,6 +475,39 @@ fn queued_says_are_purged_by_a_later_interrupt_before_they_speak() {
         "the interrupting say itself was lost: {spoken:?}"
     );
     sink.shutdown();
+}
+
+/// VoiceOver reads the new game window aloud as the game opens and cuts off
+/// whatever was announced first, so the opening screen went unheard. The
+/// worker holds the first lines, then speaks the screen current at the end.
+#[test]
+fn a_startup_hold_delays_the_first_lines_and_keeps_the_current_screen() {
+    let hold = Duration::from_millis(400);
+    let Rig {
+        mut sink, calls, ..
+    } = rig_with_hold(hold);
+    let sent = Instant::now();
+    sink.say("loading", true);
+    sink.say("first screen", true);
+    sink.say("first option", false);
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|call| !call.starts_with("say ")),
+        "a line reached the voice during the start-up hold"
+    );
+    wait_for(&calls, 2);
+    assert!(sent.elapsed() >= hold);
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec![
+            "say first screen".to_string(),
+            "say first option".to_string()
+        ]
+    );
 }
 
 #[test]
@@ -521,7 +744,7 @@ fn bounded_replies_reach_the_backend_when_it_is_healthy() {
         mut sink, calls, ..
     } = rig();
     assert!(sink.say_adjustment_preview("speech_rate", "faster", false));
-    assert!(sink.refresh(false));
+    assert!(sink.refresh());
     wait_for(&calls, 1);
     assert!(calls.lock().unwrap()[0].starts_with("preview"));
     sink.shutdown();

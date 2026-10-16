@@ -23,17 +23,21 @@ use ff_core::models::profile::Profile;
 use ff_core::models::solvency;
 use ff_core::models::start_options::pay_plan_for_key;
 use freight_fate::app::testing::TestApp;
-use freight_fate::states::base::{Key, Menu};
+use freight_fate::states::base::{Key, Menu, SimpleMenuState};
 use freight_fate::states::career_setback::CareerSetbackNoticeState;
 use freight_fate::states::city::{
-    dispatch_cache_key, open_freight_market, relay_load_for_board, CityMenuState, JobBoardState,
-    JobDetailState, PayDebtState, RouteSelectState, TruckStatusState, JOB_BOARD_INTRO_HELP,
+    dispatch_cache_key, open_freight_market, relay_load_for_board, BobtailDestState, CityMenuState,
+    JobBoardState, JobDetailState, PayDebtState, RouteSelectState, TruckStatusState,
+    JOB_BOARD_INTRO_HELP,
 };
+use freight_fate::states::city_pickup::PickupFacilityState;
 use freight_fate::states::driving::DrivingState;
 use freight_fate::states::driving_pause_states::{
     AbandonJobConfirmationState, PauseMenuState, ASSIGNED_REPOSITION_ABANDON_REPUTATION_PENALTY,
 };
-use freight_fate::states::main_menu::{ConfirmQuitState, MainMenuState};
+use freight_fate::states::main_menu::{
+    ConfirmQuitState, MainMenuState, TouchPracticeOfferState, TouchPracticeState,
+};
 use serde_json::{json, Map, Value};
 
 fn job(miles: f64) -> Job {
@@ -56,9 +60,7 @@ fn job_with(miles: f64, pay: f64, deadline: f64) -> Job {
 /// `_new_hire`: a company driver past the first-dispatch badge.
 fn new_hire(app: &mut TestApp, name: &str) {
     career(app, name, "Chicago");
-    profile_mut(app)
-        .achievements
-        .push("first_dispatch".to_string());
+    profile_mut(app).achievements.push("first_day".to_string());
 }
 
 fn push_board(app: &mut TestApp, jobs: Vec<Job>) {
@@ -93,8 +95,15 @@ fn test_new_hire_board_offers_single_assignment_with_decline() {
     assert!(labels[1].contains(&format!("{NEW_HIRE_DECLINE_BUDGET} declines left")));
     assert_eq!(labels.last().unwrap(), "Back to terminal");
     let said = app.main_lines().last().cloned().unwrap();
-    assert!(said.contains("Dispatch assigns your load and route"));
-    assert!(said.contains(&format!("level {SENIOR_LOAD_CHOICE_LEVEL}")));
+    assert!(said.starts_with("Dispatch board. "));
+    assert!(said.contains(&format!(
+        "{NEW_HIRE_DECLINE_BUDGET} declines left before your next promotion."
+    )));
+    // How long assignment lasts is on the review row's help.
+    select::<JobBoardState>(&mut app, "Review the rest of today's board");
+    key(&mut app, Key::F1);
+    let help = app.main_lines().last().cloned().unwrap();
+    assert!(help.contains(&format!("level {SENIOR_LOAD_CHOICE_LEVEL}")));
 }
 
 #[test]
@@ -190,6 +199,29 @@ fn test_senior_company_driver_gets_browsable_board() {
         .any(|l| l.contains("Job 1 of 2")));
 }
 
+/// A senior driver dispatch has stopped trusting is on assigned loads because
+/// of standing, so the board must not promise "until level 8" at level 9.
+#[test]
+fn test_senior_driver_on_assigned_loads_hears_standing_not_a_level() {
+    let mut app = TestApp::new();
+    new_hire(&mut app, "Slipped Senior");
+    {
+        let p = profile_mut(&mut app);
+        p.career.xp = LEVEL_XP[SENIOR_LOAD_CHOICE_LEVEL as usize]; // level 9
+        p.career.deliveries = 20;
+        p.career.reputation = 5.0;
+    }
+
+    push_board(&mut app, vec![job(180.0), job(70.0)]);
+
+    assert!(with_state::<JobBoardState, _>(&app, |b, _| b.assigned_mode()));
+    select::<JobBoardState>(&mut app, "Review the rest of today's board");
+    key(&mut app, Key::F1);
+    let help = app.main_lines().last().cloned().unwrap();
+    assert!(help.contains("until your standing recovers"));
+    assert!(!help.contains("until level"));
+}
+
 #[test]
 fn test_owner_operator_board_stays_browsable() {
     let mut app = TestApp::new();
@@ -233,6 +265,66 @@ fn test_company_departure_runs_dispatch_assigned_route() {
         .main_lines()
         .iter()
         .any(|line| line.contains("Route planning to")));
+}
+
+#[test]
+fn touch_departure_offers_practice_once_and_marks_the_offer_seen() {
+    let mut app = TestApp::new();
+    new_hire(&mut app, "Touch Offer");
+    let pickup = loaded_pickup(&app, job(92.0));
+    app.ctx.controller.note_touch();
+    app.push_state(pickup);
+
+    app.dispatch_gesture(freight_fate::touch::Gesture::DoubleTap);
+
+    assert!(is::<TouchPracticeOfferState>(&app));
+    assert!(app.ctx.settings.touch_practice_offered);
+
+    app.pop_state();
+    assert!(is::<DrivingState>(&app));
+    app.pop_state();
+    assert!(is::<PickupFacilityState>(&app));
+    app.dispatch_gesture(freight_fate::touch::Gesture::DoubleTap);
+
+    assert!(is::<DrivingState>(&app));
+    assert!(!stack_has::<TouchPracticeOfferState>(&app));
+}
+
+#[test]
+fn touch_practice_offer_practice_and_skip_leave_the_driver_in_the_right_state() {
+    let mut app = TestApp::new();
+    new_hire(&mut app, "Touch Offer Choices");
+    let pickup = loaded_pickup(&app, job(92.0));
+    app.ctx.controller.note_touch();
+    app.push_state(pickup);
+    app.dispatch_gesture(freight_fate::touch::Gesture::DoubleTap);
+    assert!(is::<TouchPracticeOfferState>(&app));
+
+    app.dispatch_gesture(freight_fate::touch::Gesture::DoubleTap);
+    assert!(is::<TouchPracticeState>(&app));
+
+    app.pop_state();
+    assert!(is::<DrivingState>(&app));
+    app.push_state(TouchPracticeOfferState::new());
+
+    app.dispatch_gesture(freight_fate::touch::Gesture::SwipeDown);
+    app.dispatch_gesture(freight_fate::touch::Gesture::DoubleTap);
+    assert!(is::<DrivingState>(&app));
+}
+
+#[test]
+fn keyboard_departure_does_not_offer_touch_practice() {
+    let mut app = TestApp::new();
+    new_hire(&mut app, "Keyboard Offer");
+    let pickup = loaded_pickup(&app, job(92.0));
+    app.ctx.controller.note_touch();
+    app.ctx.controller.note_keyboard();
+    app.push_state(pickup);
+
+    key(&mut app, Key::Return);
+
+    assert!(is::<DrivingState>(&app));
+    assert!(!app.ctx.settings.touch_practice_offered);
 }
 
 #[test]
@@ -314,10 +406,10 @@ fn test_assigned_board_help_describes_accept_and_decline() {
     push_board(&mut app, vec![job(70.0)]);
 
     let help = with_state::<JobBoardState, _>(&app, |b, _| b.intro_help().to_string());
-    assert!(help.contains("Dispatch assigned this load"));
-    assert!(help.contains("refusals cost reputation"));
+    assert!(help.contains("Assigned load"));
+    assert!(help.contains("Decline costs dispatch trust"));
     // the browsable class-level help is untouched for senior boards
-    assert!(JOB_BOARD_INTRO_HELP.contains("Enter accepts a dispatch"));
+    assert!(JOB_BOARD_INTRO_HELP.contains("Tab is the market"));
 }
 
 #[test]
@@ -333,9 +425,8 @@ fn test_assignment_board_offers_a_review_of_the_locked_pool() {
     assert!(with_state::<JobBoardState, _>(&app, |b, _| b.assigned_mode()));
     activate::<JobBoardState>(&mut app, "Review the rest of today's board");
     let said = app.main_lines().last().cloned().unwrap();
-    assert!(said.starts_with("Dispatch also posted today:"));
+    assert!(said.starts_with("Also posted today:"));
     assert!(said.contains("180 miles"));
-    assert!(said.contains(&format!("level {SENIOR_LOAD_CHOICE_LEVEL}")));
 
     // A one-job day has nothing to review: the option stays off the menu.
     app.pop_state();
@@ -386,7 +477,7 @@ fn test_f1_on_dispatch_job_opens_structured_detail_view() {
     assert!(joined.contains("Distance:"));
     assert!(joined.contains("Carrier gross:"));
     assert!(joined.contains("Dollars per mile:"));
-    assert!(joined.contains("Route details happen after pickup"));
+    assert!(!joined.contains("Route details happen after pickup"));
     assert_eq!(rows[rows.len() - 2], "Accept this dispatch");
     assert_eq!(rows[rows.len() - 1], "Back to dispatch board");
 }
@@ -436,7 +527,8 @@ fn test_job_detail_exposes_review_instructions() {
     key(&mut app, Key::F1);
     let help = app.main_lines().last().cloned().unwrap();
 
-    assert!(entry_speech.contains("Up and down review the lines"));
+    // The review instructions are on F1, not the entry line.
+    assert!(!entry_speech.contains("Up and down review the lines"));
     assert!(help.contains("Home and End jump"));
     assert!(help.contains("Enter repeats this line"));
 }
@@ -615,7 +707,7 @@ fn test_accepting_a_retired_pickup_says_so_instead_of_crashing() {
 
 #[test]
 fn test_job_board_help_names_drivable_pickup_before_route_planning() {
-    assert!(JOB_BOARD_INTRO_HELP.contains("deadhead from your terminal"));
+    assert!(JOB_BOARD_INTRO_HELP.starts_with("Enter accepts."));
     assert!(!JOB_BOARD_INTRO_HELP.contains("route planning"));
 }
 
@@ -720,8 +812,8 @@ fn test_company_driver_bulk_job_uses_carrier_trailer_support() {
     // New company hires get the load as a dispatch assignment.
     let row = labels::<JobBoardState>(&app)[0].clone();
     assert!(row.starts_with("Accept assigned dispatch:"));
-    assert!(row.contains("Carrier trailer provided"));
-    assert!(row.contains("Estimated driver pay before advances"));
+    assert!(!row.contains("Carrier trailer provided"));
+    assert!(row.contains("Your pay about"));
     assert!(!row.contains("Locked job"));
 }
 
@@ -740,8 +832,8 @@ fn test_owner_operator_hears_missing_trailer_gate_and_preview() {
     assert!(row.starts_with("Locked job 1 of 1"));
     assert!(row.contains("Needs Bulk trailer program"));
     assert!(row.contains("Gross revenue"));
-    assert!(row.contains("Estimated take-home before advances"));
-    assert!(row.contains("business costs"));
+    assert!(row.contains("Take-home about"));
+    assert!(row.contains("dollars costs"));
 }
 
 #[test]
@@ -760,7 +852,7 @@ fn test_own_authority_owned_trailer_row_shows_direct_market_fit() {
     assert!(row.starts_with("Job 1 of 1"));
     assert!(row.contains("Owned trailer: Bulk"));
     assert!(row.contains("Direct gross"));
-    assert!(row.contains("owned-trailer reserve"));
+    assert!(!row.contains("owned-trailer reserve"));
     assert!(!row.contains("Locked job"));
 }
 
@@ -854,6 +946,9 @@ fn test_a_relayed_load_replaces_a_board_slot_and_leads_the_assignment() {
     let mut p = Profile::named_in("Relay Tonopah", "Tonopah");
     p.market.seed = 11;
     p.career.deliveries = 1;
+    // Level 5: Reno and Las Vegas are past a newer driver's relay range
+    // (ff_core::models::jobs::relay::relay_range_mi).
+    p.career.xp = ff_core::models::career::LEVEL_XP[4];
     app.ctx.profile = Some(p.clone());
     open_freight_market(&mut app.ctx);
     app.ctx.run_deferred();
@@ -864,9 +959,9 @@ fn test_a_relayed_load_replaces_a_board_slot_and_leads_the_assignment() {
             .any(|j| !j.bobtail && ctx.world.resolve_city_key(&j.origin) != here)
     });
     assert!(relayed, "Tonopah's board carries a relayed load");
-    let expected = enforcement::board_offers_for_reputation(
+    let expected = enforcement::board_offers_for_band(
         board_offer_count(p.career.level()) as i64,
-        p.career.reputation,
+        enforcement::standing_band(&p),
     ) as usize;
     assert_eq!(
         with_state::<JobBoardState, _>(&app, |b, _| b.jobs.len()),
@@ -879,6 +974,42 @@ fn test_a_relayed_load_replaces_a_board_slot_and_leads_the_assignment() {
         app.ctx.world.resolve_city_key(&assigned_origin),
         here,
         "the relayed load leads the assignment queue"
+    );
+}
+
+#[test]
+fn test_a_level_1_board_in_tonopah_gets_no_relay_and_stays_full() {
+    // Reno and Las Vegas are past the level 1 relay range, so the same
+    // thin board a level 5 driver gets a relay on stays all local, and the
+    // missing relay leaves no gap: the board still shows every slot.
+    let mut app = TestApp::new();
+    let mut p = Profile::named_in("Relay Tonopah L1", "Tonopah");
+    p.market.seed = 11;
+    p.career.deliveries = 1;
+    assert_eq!(p.career.level(), 1);
+    app.ctx.profile = Some(p.clone());
+    open_freight_market(&mut app.ctx);
+    app.ctx.run_deferred();
+    let here = app.ctx.world.resolve_city_key(&p.current_city);
+    let origins = with_state::<JobBoardState, _>(&app, |b, ctx| {
+        b.jobs
+            .iter()
+            .filter(|j| !j.bobtail)
+            .map(|j| ctx.world.resolve_city_key(&j.origin))
+            .collect::<Vec<_>>()
+    });
+    assert!(
+        origins.iter().all(|origin| *origin == here),
+        "no relay at level 1: {origins:?}"
+    );
+    let expected = enforcement::board_offers_for_band(
+        board_offer_count(p.career.level()) as i64,
+        enforcement::standing_band(&p),
+    ) as usize;
+    assert_eq!(
+        with_state::<JobBoardState, _>(&app, |b, _| b.jobs.len()),
+        expected,
+        "the local board stays full"
     );
 }
 
@@ -936,7 +1067,7 @@ fn test_abandoning_assigned_reposition_costs_reputation_only() {
         freight_fate::states::driving_core::DRIVE_PHASE_DELIVERY,
         None,
     );
-    let money_before = profile(&app).money;
+    let money_before = profile(&app).money();
     let reputation_before = profile(&app).career.reputation;
 
     app.push_state(driving);
@@ -957,7 +1088,7 @@ fn test_abandoning_assigned_reposition_costs_reputation_only() {
     key(&mut app, Key::Return);
 
     assert!(is::<CityMenuState>(&app));
-    assert_eq!(profile(&app).money, money_before); // no dollar penalty
+    assert_eq!(profile(&app).money(), money_before); // no dollar penalty
     assert_eq!(
         profile(&app).career.reputation,
         reputation_before - ASSIGNED_REPOSITION_ABANDON_REPUTATION_PENALTY
@@ -1000,12 +1131,12 @@ fn test_terminal_pay_advance_option_only_appears_when_available() {
     career(&mut app, "Advance Test", "New York");
     let mut state = CityMenuState::new(&app.ctx, false);
 
-    profile_mut(&mut app).money = PAY_ADVANCE_ELIGIBLE_BELOW;
+    profile_mut(&mut app).set_money(PAY_ADVANCE_ELIGIBLE_BELOW);
     assert!(!built_labels(&mut app, &mut state)
         .iter()
         .any(|t| t.starts_with("Request pay advance")));
 
-    profile_mut(&mut app).money = PAY_ADVANCE_ELIGIBLE_BELOW - 1.0;
+    profile_mut(&mut app).set_money(PAY_ADVANCE_ELIGIBLE_BELOW - 1.0);
     assert!(built_labels(&mut app, &mut state)
         .iter()
         .any(|t| t.starts_with("Request pay advance")));
@@ -1031,7 +1162,7 @@ fn test_terminal_pay_advance_option_only_appears_when_available() {
 fn payer(app: &mut TestApp, money: f64, owed: f64) {
     career(app, "Dale", "Buffalo");
     let p = profile_mut(app);
-    p.money = money;
+    p.set_money(money);
     p.fines_owed = owed;
 }
 
@@ -1039,7 +1170,7 @@ fn payer(app: &mut TestApp, money: f64, owed: f64) {
 fn test_the_terminal_stops_offering_an_advance_under_collection() {
     let mut app = TestApp::new();
     career(&mut app, "Dale", "Buffalo");
-    profile_mut(&mut app).money = 2.0;
+    profile_mut(&mut app).set_money(2.0);
     let mut state = CityMenuState::new(&app.ctx, false);
     assert!(CityMenuState::pay_advance_available(&app.ctx));
     profile_mut(&mut app).fines_owed = 3_000.0;
@@ -1057,7 +1188,7 @@ fn test_a_setback_only_ever_fires_at_the_terminal() {
     {
         let p = profile_mut(&mut app);
         p.career.xp = 152_000.0;
-        p.money = -solvency::company_debt_ceiling(p) - 1.0;
+        p.set_money(-solvency::company_debt_ceiling(p) - 1.0);
     }
     // Walking into the terminal is what fires it, and the notice takes the
     // screen ahead of everything else the terminal had to say.
@@ -1097,11 +1228,11 @@ fn test_paying_it_all_off_clears_the_balance_and_says_so() {
 
     assert_eq!(profile(&app).fines_owed, 0.0);
     assert_eq!(solvency::debt_owed(profile(&app)), 0.0);
-    assert_eq!(profile(&app).money, 4_000.0);
+    assert_eq!(profile(&app).money(), 4_000.0);
     assert!(app
         .main_lines()
         .iter()
-        .any(|line| line.contains("your account is clear")));
+        .any(|line| line.contains("Account clear.")));
 }
 
 #[test]
@@ -1120,7 +1251,7 @@ fn test_paying_it_all_off_speaks_the_clear_confirmation_last() {
     let calls = app.main_calls();
     assert!(!calls.is_empty(), "expected the clear confirmation spoken");
     let (last_text, last_interrupt) = calls.last().cloned().unwrap();
-    assert!(last_text.contains("your account is clear"));
+    assert!(last_text.contains("Account clear."));
     assert!(last_interrupt);
 }
 
@@ -1133,7 +1264,7 @@ fn test_paying_half_leaves_the_rest_owed_and_says_the_remainder() {
 
     assert_eq!(profile(&app).fines_owed, 500.0);
     assert_eq!(solvency::debt_owed(profile(&app)), 500.0);
-    assert_eq!(profile(&app).money, 4_500.0);
+    assert_eq!(profile(&app).money(), 4_500.0);
     assert!(app
         .main_lines()
         .iter()
@@ -1211,7 +1342,59 @@ fn test_waiting_out_the_suspension_gives_the_licence_back() {
     assert!(app
         .main_lines()
         .iter()
-        .any(|line| line.contains("Your CDL is clear and the dispatch board is open again")));
+        .any(|line| line.starts_with("Suspension served, CDL clear.")));
+}
+
+#[test]
+fn test_a_disqualified_owner_operator_cannot_bobtail() {
+    let mut app = TestApp::new();
+    career(&mut app, "Empty", "Chicago");
+    {
+        let p = profile_mut(&mut app);
+        p.business_status = LEASED_OWNER_OPERATOR.to_string();
+        let now = p.game_hours;
+        p.driving_record.record_major_offense(now);
+    }
+    let city = CityMenuState::new(&app.ctx, false);
+    app.push_state(city);
+    app.clear_speech();
+    select::<CityMenuState>(&mut app, "Bobtail to a nearby city");
+    assert!(is::<CityMenuState>(&app), "the bobtail menu opened");
+    let expected = enforcement::suspension_drive_refusal_line(profile(&app));
+    let ends = enforcement::clears_text(profile(&app));
+    assert_eq!(
+        expected,
+        format!(
+            "You cannot drive, not even bobtail, while your CDL is disqualified. The \
+             disqualification ends {ends}."
+        )
+    );
+    assert!(
+        app.main_lines().iter().any(|l| l == &expected),
+        "{:?}",
+        app.main_lines()
+    );
+
+    // A bobtail menu already open refuses too.
+    app.push_state(BobtailDestState::new(vec!["Milwaukee".to_string()]));
+    key(&mut app, Key::Return);
+    assert!(!is::<DrivingState>(&app));
+    assert!(profile(&app).active_trip.is_none());
+}
+
+#[test]
+fn test_a_lifetime_disqualification_refuses_bobtail_without_an_end_date() {
+    let mut app = TestApp::new();
+    career(&mut app, "Empty", "Chicago");
+    {
+        let p = profile_mut(&mut app);
+        p.business_status = LEASED_OWNER_OPERATOR.to_string();
+        p.driving_record.lifetime_disqualified = true;
+    }
+    assert_eq!(
+        enforcement::suspension_drive_refusal_line(profile(&app)),
+        "You cannot drive with a lifetime CDL disqualification, not even bobtail."
+    );
 }
 
 #[test]
@@ -1232,7 +1415,7 @@ fn test_a_floor_reputation_company_driver_loses_the_carrier() {
         .iter()
         .any(|line| line.contains(&former) && line.contains("ended your employment")));
     // Nothing is taken away but the seat.
-    assert!(profile(&app).money > 0.0 || profile(&app).career.level() >= 1);
+    assert!(profile(&app).money() > 0.0 || profile(&app).career.level() >= 1);
 }
 
 // -- tests/test_career_objectives.py (terminal and board) -----------------------------
@@ -1243,12 +1426,13 @@ fn test_terminal_career_plan_is_keyboard_reachable_and_spoken() {
     career(&mut app, "Keyboard Plan", "Chicago");
     profile_mut(&mut app)
         .achievements
-        .push("first_dispatch".to_string());
+        .push("first_day".to_string());
 
     let city = CityMenuState::new(&app.ctx, false);
     app.push_state(city);
 
-    assert!(app
+    // The objective lives in Career plan, not the entry line.
+    assert!(!app
         .main_lines()
         .iter()
         .any(|line| line.contains("Career objective:")));
@@ -1259,9 +1443,11 @@ fn test_terminal_career_plan_is_keyboard_reachable_and_spoken() {
     key(&mut app, Key::Down);
     key(&mut app, Key::Return);
 
-    let said = app.main_lines().last().cloned().unwrap();
-    assert!(said.starts_with("First dispatch."));
-    assert!(said.contains("short standard load"));
+    // The plan opens as a screen of lines, the step first.
+    assert!(is::<SimpleMenuState>(&app));
+    let rows = labels::<SimpleMenuState>(&app);
+    assert_eq!(rows[0], "First dispatch.");
+    assert!(rows.join(" ").contains("short standard load"), "{rows:?}");
 }
 
 #[test]
@@ -1270,7 +1456,7 @@ fn test_terminal_career_plan_speaks_senior_company_level_guidance() {
     career(&mut app, "Senior Driver", "Chicago");
     {
         let p = profile_mut(&mut app);
-        p.achievements.push("first_dispatch".to_string());
+        p.achievements.push("first_day".to_string());
         p.career.xp = LEVEL_XP[9];
         p.career.deliveries = 20;
         p.career.reputation = 86.0;
@@ -1280,11 +1466,17 @@ fn test_terminal_career_plan_speaks_senior_company_level_guidance() {
     app.push_state(city);
     select::<CityMenuState>(&mut app, "Career plan");
 
-    let said = app.main_lines().last().cloned().unwrap();
-    assert!(said.starts_with("Run like a senior company driver."));
-    assert!(said.contains("premium lanes"));
-    assert!(said.contains("premium freight"));
-    assert!(said.contains("Senior company status is about consistency"));
+    // The plan is a screen of lines now, read one at a time.
+    assert!(is::<SimpleMenuState>(&app));
+    let rows = labels::<SimpleMenuState>(&app);
+    let said = rows.join(" ");
+    assert_eq!(rows[0], "Run like a senior company driver.");
+    assert!(said.contains("Premium lanes"), "{said}");
+    assert!(said.contains("doubles endorsement"), "{said}");
+    assert!(
+        !said.contains("Senior company status is about consistency"),
+        "{said}"
+    );
 }
 
 #[test]
@@ -1295,7 +1487,7 @@ fn test_dispatch_board_speaks_objective_and_marks_recommended_job() {
     career(&mut app, "Board Plan", "Chicago");
     {
         let p = profile_mut(&mut app);
-        p.achievements.push("first_dispatch".to_string());
+        p.achievements.push("first_day".to_string());
         p.career.xp = LEVEL_XP[9];
         p.career.deliveries = 12;
         p.career.reputation = 86.0;
@@ -1307,9 +1499,8 @@ fn test_dispatch_board_speaks_objective_and_marks_recommended_job() {
     );
 
     let entry = entry_announcement(&app);
-    assert!(entry.contains("Career objective: Run like a senior company driver"));
-    assert!(entry.contains("pick your own loads"));
-    assert!(entry.contains("routing is still assigned"));
+    assert!(!entry.contains("Career objective:"));
+    assert!(!entry.contains("Listed amounts"));
     let rows = labels::<JobBoardState>(&app);
     let recommended = rows
         .iter()
@@ -1328,7 +1519,7 @@ fn test_dispatch_board_speaks_authority_level_recommendation() {
         p.achievements.push("first_dispatch".to_string());
         p.business_status = INDEPENDENT_AUTHORITY.to_string();
         p.owned_trucks = vec!["rig".to_string()];
-        p.money = 90_000.0;
+        p.set_money(90_000.0);
         p.career.xp = LEVEL_XP[24];
         p.career.deliveries = 80;
         p.career.reputation = 94.0;
@@ -1337,9 +1528,12 @@ fn test_dispatch_board_speaks_authority_level_recommendation() {
     push_board(&mut app, vec![job_with(120.0, 1800.0, 8.0)]);
 
     let entry = entry_announcement(&app);
-    assert!(entry.contains("Career objective: Grow a freight business"));
-    assert!(entry.contains("direct freight"));
-    assert!(entry.contains("direct freight with margin"));
+    // The objective is Career plan's now; the board names only the load.
+    assert!(!entry.contains("Career objective:"));
+    assert_eq!(
+        ff_core::models::career_objectives::career_objective(profile(&app)).recommendation,
+        "direct freight with margin"
+    );
 }
 
 #[test]
@@ -1350,10 +1544,26 @@ fn test_first_day_terminal_entry_speaks_training_arc_without_tutorial_language()
     let city = CityMenuState::new(&app.ctx, false);
     app.push_state(city);
 
+    // Where you are and what you have; the objective is the briefing's.
     let entry = entry_announcement(&app);
-    assert!(entry.contains("First-day objective"));
-    assert!(entry.contains("trainer-recommended"));
+    assert!(!entry.contains("First-day objective"));
     assert!(!entry.to_lowercase().contains("probation"));
+    assert!(labels::<CityMenuState>(&app)
+        .iter()
+        .any(|t| t == "First-day briefing"));
+}
+
+#[test]
+fn test_the_terminal_does_not_double_the_dalles_article() {
+    let mut app = TestApp::new();
+    career(&mut app, "Gorge", "the_dalles_or_us");
+
+    let city = CityMenuState::new(&app.ctx, false);
+    app.push_state(city);
+
+    let entry = entry_announcement(&app);
+    assert!(entry.contains(" in The Dalles. "), "{entry}");
+    assert!(!entry.contains("the The"), "{entry}");
 }
 
 #[test]
@@ -1367,10 +1577,7 @@ fn test_out_of_sync_company_terminal_entry_uses_first_week_guidance() {
 
     let entry = entry_announcement(&app);
     assert!(!entry.contains("First-day objective"));
-    assert!(entry.contains("Career objective:"));
-    assert!(entry.contains("steady service, not perfection"));
-    assert!(entry.contains("good first-week run"));
-    assert!(entry.contains("trainer notes still close by"));
+    assert!(!entry.contains("Career objective:"));
     let rows = labels::<CityMenuState>(&app);
     assert!(!rows.iter().any(|t| t == "First-day briefing"));
     assert!(rows.iter().any(|t| t == "Career plan"));
@@ -1394,9 +1601,8 @@ fn test_dispatch_board_recommendation_label_is_spoken_and_visible() {
     );
 
     let entry = entry_announcement(&app);
-    assert!(entry.contains("Career objective: Run like a senior company driver"));
+    assert!(!entry.contains("Career objective:"));
     assert!(!entry.contains("First-day objective"));
-    assert!(entry.contains("senior company lane"));
     assert!(!entry.contains("Recommended dispatch: senior company lane"));
     assert!(entry.contains("Recommended dispatch, senior company lane: Job 1 of 2:"));
     assert!(!entry.contains("Recommended dispatch is Recommended dispatch"));
@@ -1419,16 +1625,18 @@ fn test_owner_operator_first_day_terminal_keeps_cash_cushion_guidance() {
         let p = profile_mut(&mut app);
         p.business_status = LEASED_OWNER_OPERATOR.to_string();
         p.owned_trucks = vec!["rig".to_string()];
-        p.money = 12_000.0;
+        p.set_money(12_000.0);
     }
 
     let city = CityMenuState::new(&app.ctx, false);
     app.push_state(city);
 
     let entry = entry_announcement(&app);
-    assert!(entry.contains("First-day objective"));
-    assert!(entry.contains("cash cushion"));
+    assert!(!entry.contains("First-day objective"));
     assert!(!entry.contains("trainer-recommended"));
+    assert!(labels::<CityMenuState>(&app)
+        .iter()
+        .any(|t| t == "First-day briefing"));
 }
 
 #[test]
@@ -1439,7 +1647,7 @@ fn test_owner_operator_first_day_dispatch_board_keeps_business_cost_guidance() {
         let p = profile_mut(&mut app);
         p.business_status = LEASED_OWNER_OPERATOR.to_string();
         p.owned_trucks = vec!["rig".to_string()];
-        p.money = 12_000.0;
+        p.set_money(12_000.0);
     }
 
     push_board(
@@ -1448,8 +1656,7 @@ fn test_owner_operator_first_day_dispatch_board_keeps_business_cost_guidance() {
     );
 
     let entry = entry_announcement(&app);
-    assert!(entry.contains("owner-operator gross revenue"));
-    assert!(entry.contains("cash cushion"));
+    assert!(!entry.contains("owner-operator gross revenue"));
     assert!(!entry.contains("trainer-recommended"));
     assert_eq!(index::<JobBoardState>(&app), 0);
     assert!(current_text::<JobBoardState>(&app).starts_with("Job 1 of 2:"));
@@ -1655,7 +1862,7 @@ fn test_own_authority_job_board_labels_owned_trailer_and_program_charge() {
     let row = labels::<JobBoardState>(&app)[0].clone();
     assert!(row.contains("Direct gross"));
     assert!(row.contains("Owned trailer: Reefer"));
-    assert!(row.contains("owned-trailer reserve"));
+    assert!(!row.contains("owned-trailer reserve"));
     app.pop_state();
 
     career(&mut app, "Direct Program Trailer", "Chicago");
@@ -1668,7 +1875,7 @@ fn test_own_authority_job_board_labels_owned_trailer_and_program_charge() {
     push_board(&mut app, vec![job()]);
     let row = labels::<JobBoardState>(&app)[0].clone();
     assert!(row.contains("Trailer program: Reefer"));
-    assert!(row.contains("program charge"));
+    assert!(!row.contains("program charge"));
 }
 
 #[test]

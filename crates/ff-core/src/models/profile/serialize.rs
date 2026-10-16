@@ -13,6 +13,7 @@ use crate::models::enforcement::{seed_record_from_save, DrivingRecord};
 use crate::models::jobs::{py_str, py_truthy};
 use crate::models::loyalty::LoyaltyAccount;
 use crate::models::market::Market;
+use crate::models::money_guard::MoneyGuard;
 use crate::models::save_migration::{json_f64, json_i64, migrate_save_data};
 use crate::sim::hos::{DutyLog, HosClock};
 
@@ -67,13 +68,19 @@ impl Profile {
             "migration_notice_pending".into(),
             Value::from(self.migration_notice_pending),
         );
+        // A balance rewritten in memory between transactions is caught here
+        // too: the money guard's shadow disagrees with the field, and the
+        // save goes to disk already carrying the modified mark.
+        let memory_diverged = !self.money_guard.matches(self.money);
         d.insert(
             "integrity_modified".into(),
-            Value::from(self.integrity_modified),
+            Value::from(self.integrity_modified || memory_diverged),
         );
         d.insert(
             "integrity_notice_pending".into(),
-            Value::from(self.integrity_notice_pending),
+            Value::from(
+                self.integrity_notice_pending || (memory_diverged && !self.integrity_modified),
+            ),
         );
         d.insert(
             "hos_key_notice_left".into(),
@@ -85,7 +92,12 @@ impl Profile {
             Value::from(self.calendar_offset_days),
         );
         d.insert("tutorial_done".into(), Value::from(self.tutorial_done));
-        d.insert("truck".into(), Value::from(self.truck.as_str()));
+        // The tractor the driver is actually in, not the raw field: a company
+        // driver's assignment follows their level and the field only changes
+        // when dispatch writes a slip seat, a spare or a status change into
+        // it, so a promoted driver kept an old yard's truck in the save for
+        // good. Reading it back yields the same key, so this is idempotent.
+        d.insert("truck".into(), Value::from(self.active_truck_key()));
         d.insert("owned_trucks".into(), strings(&self.owned_trucks));
         let conditions: Map<String, Value> = self
             .truck_conditions
@@ -142,10 +154,14 @@ impl Profile {
             "owner_operator_declined".into(),
             Value::from(self.owner_operator_declined),
         );
-        d.insert(
-            "career".into(),
-            serde_json::to_value(&self.career).expect("a career serialises"),
-        );
+        d.insert("career".into(), {
+            let mut career = serde_json::to_value(&self.career).expect("a career serialises");
+            // The number the public profile shows, computed here rather
+            // than kept current in memory: the record and the clock both
+            // move it, and the save is the only reader.
+            career["standing"] = Value::from(self.standing());
+            career
+        });
         d.insert(
             "driving_record".into(),
             serde_json::to_value(&self.driving_record).expect("a driving record serialises"),
@@ -211,13 +227,24 @@ impl Profile {
         // A career from before the enforcement record existed is seeded from
         // whatever offenses the save still holds -- no amnesty -- and hears a
         // one-time explanation of where it stands.
-        let driving_record: DrivingRecord = match d.get("driving_record") {
+        let mut driving_record: DrivingRecord = match d.get("driving_record") {
             Some(Value::Object(_)) => {
                 serde_json::from_value(d["driving_record"].clone()).unwrap_or_default()
             }
             Some(_) => DrivingRecord::new(),
             None => seed_record_from_save(&d),
         };
+        // A save from before the carrier's record review existed: the review
+        // starts counting from this load, so an old serious violation cannot
+        // hold the equipment or end the employment on the first boot of the
+        // build that introduced it. A record that carries the field keeps it.
+        let review_known = d
+            .get("driving_record")
+            .and_then(Value::as_object)
+            .is_some_and(|record| record.contains_key("review_started_h"));
+        if !review_known {
+            driving_record.review_started_h = json_f64(d.get("game_hours"), 0.0);
+        }
         let market: Market = match d.get("market") {
             Some(Value::Object(_)) => {
                 serde_json::from_value(d["market"].clone()).unwrap_or_else(|_| Market::new())
@@ -259,9 +286,14 @@ impl Profile {
             _ => Map::new(),
         };
 
+        // Read once so the money guard is seeded with the balance the load
+        // gate already vouched for.
+        let money = f("money", defaults.money);
+
         Profile {
             name: s("name", &defaults.name),
-            money: f("money", defaults.money),
+            money,
+            money_guard: MoneyGuard::seeded(money),
             current_city: s("current_city", &defaults.current_city),
             created_line: s("created_line", &defaults.created_line),
             migration_notice_pending: b("migration_notice_pending", false),
@@ -271,6 +303,7 @@ impl Profile {
             game_hours: f("game_hours", defaults.game_hours),
             calendar_offset_days: i("calendar_offset_days", 0),
             calendar_offset_hours: 0.0,
+            live_calendar: false,
             tutorial_done: b("tutorial_done", false),
             truck: s("truck", &defaults.truck),
             owned_trucks: list("owned_trucks"),

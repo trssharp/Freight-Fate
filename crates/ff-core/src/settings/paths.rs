@@ -14,6 +14,8 @@
 //! macOS apps live in `/Applications` and must not write beside themselves
 //! (that folder is admin-owned and often read-only), so on macOS saves go in
 //! the standard per-user `~/Library/Application Support/FreightFate` folder.
+//! iOS is the same, with the app's sandbox as home: its bundle is signed and
+//! read-only, and `Library/Application Support` is backed up with the app.
 //!
 //! The same reasoning covers Windows and Linux when the game itself sits in
 //! a read-only location (for example Windows `Program Files`): if the
@@ -188,7 +190,7 @@ fn home_dir() -> PathBuf {
     std::env::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// The standard per-user save location on macOS.
+/// The standard per-user save location on macOS (and in the iOS sandbox).
 fn macos_data_dir() -> PathBuf {
     home_dir()
         .join("Library")
@@ -201,7 +203,7 @@ fn macos_data_dir() -> PathBuf {
 /// On macOS this is also the *current* save location, since app bundles
 /// cannot store saves beside themselves.
 pub fn legacy_data_dir() -> PathBuf {
-    if cfg!(target_os = "macos") {
+    if cfg!(any(target_os = "macos", target_os = "ios")) {
         return macos_data_dir();
     }
     let base = if cfg!(windows) {
@@ -257,7 +259,7 @@ fn probe_writable(path: &Path) -> bool {
 /// such as `Program Files`, Windows and Linux fall back to that same
 /// per-user folder rather than crashing on the first save.
 pub fn save_root() -> PathBuf {
-    if cfg!(target_os = "macos") {
+    if cfg!(any(target_os = "macos", target_os = "ios")) {
         return macos_data_dir();
     }
     let root = game_root();
@@ -322,11 +324,13 @@ fn macos_app_bundle(exe_dir: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Walk up from `start` looking for the project root (`src/freight_fate`).
+/// Walk up from `start` looking for the project root: the workspace
+/// `Cargo.toml` with `crates/ff-core` beside it. A crate's own `Cargo.toml`
+/// does not qualify, so the walk from `crates/ff-core` goes past it.
 fn find_project_root(start: &Path) -> Option<PathBuf> {
     let mut cursor = Some(start);
     while let Some(dir) = cursor {
-        if dir.join("src").join("freight_fate").is_dir() {
+        if dir.join("Cargo.toml").is_file() && dir.join("crates").join("ff-core").is_dir() {
             return Some(dir.to_path_buf());
         }
         cursor = dir.parent();
@@ -344,8 +348,7 @@ pub fn game_root() -> PathBuf {
         }
         return exe_dir;
     }
-    // Running from source: this crate sits at `crates/ff-core` in the repo,
-    // as `settings.py` sat at `src/freight_fate/settings.py`.
+    // Running from source: this crate sits at `crates/ff-core` in the repo.
     if let Some(root) = find_project_root(Path::new(env!("CARGO_MANIFEST_DIR"))) {
         return root;
     }
@@ -424,11 +427,12 @@ mod tests {
     #[test]
     fn the_source_checkout_keeps_saves_beside_the_project() {
         let root = game_root();
-        assert!(
-            root.join("src").join("freight_fate").is_dir(),
-            "{}",
-            root.display()
-        );
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("ff-core sits two levels under the repo root");
+        assert_eq!(root, repo);
+        assert!(root.join("Cargo.toml").is_file(), "{}", root.display());
         if !cfg!(target_os = "macos") {
             assert_eq!(save_root(), root.join("saves"));
         }

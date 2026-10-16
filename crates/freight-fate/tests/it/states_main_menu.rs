@@ -78,10 +78,7 @@ fn the_main_menu_welcomes_and_walks_a_new_career_to_the_home_city() {
     assert!(is::<MainMenuState>(&app));
     let lines = app.visible_lines();
     assert_eq!(lines[0], "Freight Fate");
-    let welcome = format!(
-        "Welcome to Freight Fate, version {}.",
-        updater::spoken_version(version())
-    );
+    let welcome = format!("Freight Fate {}.", updater::spoken_version(version()));
     assert!(app.main_lines().iter().any(|line| line.contains(&welcome)));
 
     select::<MainMenuState>(&mut app, "New career");
@@ -108,6 +105,17 @@ fn the_main_menu_welcomes_and_walks_a_new_career_to_the_home_city() {
         .main_lines()
         .iter()
         .any(|line| line.starts_with("First-day briefing")));
+    // The briefing just said where the truck is parked: the terminal behind
+    // it gives the cash a company briefing leaves out, not the location again.
+    let lines = app.main_lines();
+    assert!(
+        lines.iter().any(|line| line.ends_with(" dollars.")),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains(", Chicago. ")),
+        "{lines:?}"
+    );
     assert_eq!(app.ctx.stack_len(), 2);
     assert!(is::<CityMenuState>(&app));
 }
@@ -394,6 +402,45 @@ fn test_modified_notice_shows_once_then_enters_world() {
     assert!(is::<CityMenuState>(&app));
 }
 
+/// The two edits the signature alone never caught: a balance rewritten while
+/// the game ran (the game signs it), and a career written out as plain
+/// unsigned JSON (the game used to sign that for you).
+#[test]
+fn test_a_typed_in_fortune_is_heard_about_however_it_got_into_the_save() {
+    let mut app = TestApp::new();
+
+    let mut memory_edit = Profile::named("Memory Edit");
+    memory_edit.career.total_earnings = 338.36;
+    memory_edit.set_money(999_999_999.0);
+    let signed_by_the_game = memory_edit.save().unwrap();
+
+    let by_hand = Profile::named("By Hand");
+    let mut data = by_hand.to_dict();
+    data.remove("_signature");
+    data.insert("money".into(), serde_json::json!(250_000.0));
+    let plain_json = by_hand.path().with_extension("json");
+    std::fs::write(
+        &plain_json,
+        serde_json::to_string(&serde_json::Value::Object(data)).unwrap(),
+    )
+    .unwrap();
+
+    for path in [signed_by_the_game, plain_json] {
+        app.ctx.profile = Some(Profile::load(&path).unwrap());
+        assert!(app.ctx.profile.as_ref().unwrap().integrity_modified);
+        enter_world(&mut app.ctx, false);
+        app.ctx.run_deferred();
+        assert!(is::<SaveModifiedNoticeState>(&app), "{}", path.display());
+        assert!(app
+            .main_lines()
+            .iter()
+            .any(|text| text.contains("marked as modified")));
+        // The career is marked, never locked: Enter goes on to the city.
+        key(&mut app, Key::Return);
+        assert!(is::<CityMenuState>(&app));
+    }
+}
+
 // -- manage careers -----------------------------------------------------------------
 
 #[test]
@@ -438,7 +485,7 @@ fn continue_latest_career_welcomes_the_driver_back() {
     assert!(app
         .main_lines()
         .iter()
-        .any(|line| line.starts_with("Welcome back, Road Star. You are parked at")));
+        .any(|line| line == "Welcome back, Road Star."));
     assert!(is::<CityMenuState>(&app));
 }
 

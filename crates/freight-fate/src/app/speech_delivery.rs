@@ -11,13 +11,10 @@
 //! [`IntoSpoken`].
 
 use ff_core::message_log::MessageCategory;
-use ff_core::sound_catalog::entry_by_name;
-use ff_core::speech_pacing::{
-    ladder_earcon, monotonic_seconds, Cut, Disposition, EventPriority, SpeechCategory, Valid,
-};
+use ff_core::speech_pacing::{Cut, Disposition, EventPriority, SpeechCategory, Valid};
 use ff_core::speech_text::SpokenMessage;
 
-use crate::audio::{EARCON_DUCK_S, SPEECH_DUCK_LEVEL};
+use crate::audio::SPEECH_DUCK_LEVEL;
 
 use super::GameContext;
 
@@ -31,6 +28,10 @@ macro_rules! transcript {
         log::info!(target: TRANSCRIPT_TARGET, $($arg)*)
     };
 }
+
+/// How many hand-backs `GameContext::handed_back` keeps. An audit trail for a
+/// bench run, not a history: a long session must not grow it without end.
+const HANDED_BACK_KEPT: usize = 512;
 
 /// The keyword arguments of `GameContext.say`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -230,35 +231,41 @@ impl GameContext {
             .is_none_or(|profile| profile.tutorial_done)
     }
 
-    /// Sound the cue standing in for a category the rung just cut.
-    ///
-    /// Spec invariant 3: what drops out of speech lands on the earcon layer
-    /// or the message log, so cutting is legitimate rather than
-    /// exclusionary. Only called where `speech_disposition` is already
-    /// EARCON -- SILENT never reaches here, which is the entire difference
-    /// at the voice between the `quiet` and `urgent_only` rungs.
-    /// `LADDER_EARCONS` names the cue by the catalog entry's canonical noun;
-    /// the entry itself is the one place its key, volume, and pan are
-    /// written down, so this resolves through it rather than keeping a
-    /// second copy that could drift.
-    ///
-    /// A category missing from the table, or a name the catalog does not
-    /// carry, is a data bug in that table -- not something to raise
-    /// mid-drive over, so it is skipped rather than crashing the game.
-    fn play_ladder_earcon(&mut self, category: Option<SpeechCategory>) {
-        let Some(category) = category else {
-            return;
-        };
-        let Some(name) = ladder_earcon(category) else {
-            return;
-        };
-        let Some(entry) = entry_by_name(name) else {
-            return;
-        };
-        let Some(cue) = entry.plays.first() else {
-            return;
-        };
-        self.audio.play_with(cue.key, cue.volume, cue.pan);
+    /// Whether a driving line of this category reaches the voice on the
+    /// player's rung.
+    pub fn event_speaks(&self, category: Option<SpeechCategory>) -> bool {
+        !self.ladder_applies() || self.settings.speaks(category)
+    }
+
+    /// Play the notification sound that announces a driving line, only if
+    /// the line itself will be spoken. The tone belongs to the words: a
+    /// rung that drops the words drops their tone too, so quiet and urgent
+    /// only are not a run of bloops announcing nothing (owner, 2026-10-03).
+    /// The road's own sounds -- traffic going by, the engine, a siren --
+    /// never go through here.
+    pub fn play_event_cue(
+        &mut self,
+        category: Option<SpeechCategory>,
+        key: &str,
+        volume: f64,
+        pan: f64,
+    ) {
+        if self.event_speaks(category) {
+            self.audio.play_with(key, volume, pan);
+        }
+    }
+
+    /// An achievement earned at the wheel. It is flavor: urgent only keeps
+    /// the drive silent for it, chime and name both, and the full record
+    /// waits in message review and the achievements menu (speech mode
+    /// audit, 2026-10-03). Quiet still hears the bare name.
+    pub fn award_driving_achievement(&mut self, achievement_id: &str) {
+        let announce = self.event_speaks(Some(SpeechCategory::Status));
+        let awarded = self.award_achievement_with(achievement_id, false, announce);
+        if let (false, Some(awarded)) = (announce, awarded) {
+            let line = self.tr(&awarded.award.message.normal);
+            self.message_log.add(&line, MessageCategory::General);
+        }
     }
 
     /// `say(text)`: interrupt, review, no category.
@@ -275,13 +282,7 @@ impl GameContext {
             category,
         } = say;
         if !self.settings.speaks(category) && self.ladder_applies() && !self.speech_requested {
-            // The player's rung silences this category. The line still
-            // reaches the review log, so the information is cut from the
-            // drive, not from the game -- the review key that exists to
-            // answer for it still can. Where the rung's disposition is
-            // EARCON rather than SILENT, the sound layer marks the moment
-            // instead of the words -- the two rungs that share this branch
-            // are otherwise identical at the voice.
+            // Suppressed categories stay out of message review.
             //
             // A line the player ASKED for is exempt (`speech_requested`, set
             // by `player_asked()` around key and button handling) -- the
@@ -310,18 +311,12 @@ impl GameContext {
                 // promises.
                 return;
             }
-            if self.settings.speech_disposition(category) == Disposition::Earcon {
-                self.play_ladder_earcon(category);
-            }
             self.event_pacer.note_silenced(&text, None);
             transcript!(
                 "[ladder] {} silenced: {}",
                 self.settings.driving_speech,
                 text
             );
-            if review {
-                self.message_log.add(&text, MessageCategory::General);
-            }
             return;
         }
         // A normal/terse pair resolves here, in the delivery layer, so
@@ -371,6 +366,10 @@ impl GameContext {
     /// The silenced branch's rendering: the rung's rendering, falling back
     /// to the normal text when terse drops the line whole.
     fn render_silenced(&self, spoken: &Spoken) -> String {
+        self.tr(&self.render_silenced_english(spoken))
+    }
+
+    fn render_silenced_english(&self, spoken: &Spoken) -> String {
         if spoken.is_pair {
             let rendered = spoken.message.render(self.settings.renders_terse());
             if rendered.is_empty() {
@@ -384,7 +383,15 @@ impl GameContext {
     }
 
     /// The speaking branch's rendering; `None` for a pair terse drops whole.
+    /// The line is translated here, after the speech mode picked it, so
+    /// the pacer, message review and the transcript all hold what the
+    /// player actually heard.
     fn render_spoken(&self, spoken: &Spoken) -> Option<String> {
+        self.render_spoken_english(spoken)
+            .map(|text| self.tr(&text))
+    }
+
+    fn render_spoken_english(&self, spoken: &Spoken) -> Option<String> {
         if spoken.is_pair {
             let rendered = spoken.message.render(self.settings.renders_terse());
             if rendered.is_empty() {
@@ -418,6 +425,13 @@ impl GameContext {
     /// is never interrupting and an identical interrupting line is never
     /// handed back behind itself.
     fn requeue_cut_event(&mut self, cut: Cut) {
+        self.deliver_cut_event(cut, false);
+    }
+
+    /// Deliver a handed-back line: queued behind whatever cut it, or, for a
+    /// flush, interrupting in front of the line that flushed (see the flush
+    /// in `say_event_with`).
+    fn deliver_cut_event(&mut self, cut: Cut, interrupt: bool) {
         let (text, priority) = cut;
         // Name the line. A bare "cut line requeued" says a hand-back
         // happened and not what came back, which is the one thing an audit
@@ -428,13 +442,30 @@ impl GameContext {
         // the text here, a playtest log answers the question by itself --
         // grep the requeues, read each one, ask whether it was still true.
         transcript!("[pacer] cut line requeued: {}", text);
-        self.event_pacer.note_queued(&text, priority, None, None);
+        if self.handed_back.len() == HANDED_BACK_KEPT {
+            self.handed_back.pop_front();
+        }
+        self.handed_back.push_back(text.clone());
+        if interrupt {
+            self.event_pacer.note_ahead(&text);
+        } else {
+            self.event_pacer.note_queued(&text, priority, None, None);
+        }
         self.event_pacer.resume_delivery(&text);
         if self.settings.sapi_events {
-            self.speech.say_event(&text, false);
+            self.speech.say_event(&text, interrupt);
         } else {
             self.speech.say(&text, false);
         }
+    }
+
+    /// How many of the voice's deliveries containing `phrase` were the pacer
+    /// finishing a cut line rather than the game announcing something.
+    pub fn handed_back_count(&self, phrase: &str) -> usize {
+        self.handed_back
+            .iter()
+            .filter(|line| line.contains(phrase))
+            .count()
     }
 
     /// Name the ROUTE or CRITICAL line the latest cut destroyed because the
@@ -575,12 +606,10 @@ impl GameContext {
         } = opts;
         let key = key.as_deref();
         if !self.settings.speaks(category) && !force && self.ladder_applies() {
-            // The player's rung silences this category. The line still
-            // reaches the review log and the status keys, so the
-            // information is cut from the drive, not from the game. `force`
-            // is a line the player asked for and must hear. Where the rung's
-            // disposition is EARCON rather than SILENT, the sound layer marks
-            // the moment instead of the words.
+            // Suppressed categories stay out of message review. Status keys
+            // still answer on demand. `force`
+            // is a line the player asked for and must hear. Nothing sounds
+            // in place of the words (owner, 2026-10-03).
             let text = self.render_silenced(&spoken);
             if self.event_pacer.is_silenced_repeat(&text, key, None) {
                 // A keyed standing condition (an engine held at redline, a
@@ -602,12 +631,6 @@ impl GameContext {
                 // quiet instead.
                 return;
             }
-            if self.settings.speech_disposition(category) == Disposition::Earcon {
-                self.play_ladder_earcon(category);
-                // The cue is standing in for the words, so it gets the room
-                // the words would have had (see engage_earcon_duck).
-                self.engage_earcon_duck();
-            }
             self.event_pacer.note_silenced(&text, key);
             if receipt {
                 if let Some(key) = key {
@@ -619,25 +642,18 @@ impl GameContext {
                 self.settings.driving_speech,
                 text
             );
-            if review {
-                self.message_log.add(&text, MessageCategory::Event);
-            }
             return;
         }
         let Some(text) = self.render_spoken(&spoken) else {
             return;
         };
         if !force && self.ladder_applies() && self.ladder_repeats(&text, category, key) {
-            // Said once already, and this rung only promised once. Logged,
-            // so the review keys still answer for it.
+            // Said once already; keep the original review entry without duplicates.
             transcript!(
                 "[ladder] {} already said: {}",
                 self.settings.driving_speech,
                 text
             );
-            if review {
-                self.message_log.add(&text, MessageCategory::Event);
-            }
             return;
         }
         if self.event_pacer.is_repeat(&text, key, force, None) {
@@ -660,10 +676,9 @@ impl GameContext {
             // described is dropped, not promoted to an interrupt: losing it
             // costs the player nothing (the enum's own words), and the old
             // stale-flush made the least important class the only one
-            // guaranteed to preempt. The review log still keeps the line --
-            // recovery is exactly what the log is for. Not marked heard: the
-            // player never heard it, so an identical later moment speaks
-            // fresh.
+            // guaranteed to preempt. Keep these eligible but delayed events in
+            // review for recovery; preference-suppressed categories are omitted.
+            // Not marked heard: an identical later moment speaks fresh.
             transcript!("[pacer] stale ambient dropped: {}", text);
             if review {
                 self.message_log.add(&text, MessageCategory::Event);
@@ -678,7 +693,10 @@ impl GameContext {
                 cut = self
                     .event_pacer
                     .note_interrupt(&text, priority, category, valid);
-            } else if self.event_pacer.should_flush(&text, priority, valid) {
+            } else if self
+                .event_pacer
+                .should_flush(&text, priority, category, valid)
+            {
                 // The channel is backed up past the point of truth: purging
                 // and speaking fresh IS the queued line's honest delivery.
                 // The purge can still have cut a line that was genuinely
@@ -687,6 +705,15 @@ impl GameContext {
                 transcript!("[pacer] stale event backlog flushed");
                 cut = self.event_pacer.take_flush_cut();
                 interrupt = true;
+                // What a flush hands back came BEFORE this line and is still
+                // true, so it is spoken first and this line queues behind
+                // it. Requeued behind instead, the road played backwards:
+                // "assistance is taking you onto the streets" after
+                // "assistance released" (agent drive, 2026-09-23).
+                if let Some(first) = cut.take() {
+                    self.deliver_cut_event(first, true);
+                    interrupt = false;
+                }
             }
             self.speech.say_event(&text, interrupt);
         } else {
@@ -716,36 +743,6 @@ impl GameContext {
         }
     }
 
-    /// Step the mix back for an earcon, the way it steps back for words.
-    ///
-    /// Tester Shane, 2026-08-17: "some of the sounds when you put speech in
-    /// quiet mode have been significantly lowered." Measured absolutely they
-    /// were not -- the confirmation note came out about 4 dB LOUDER than the
-    /// chime it replaced, and a trooper pass never drops below its old
-    /// level. Both measurements missed the point, because a listener hears
-    /// a level RELATIVE to what is under it.
-    ///
-    /// A spoken line ducks engine, weather and radio to SPEECH_DUCK_LEVEL
-    /// while it talks. A silenced line returns from `say_event` before
-    /// reaching that duck, so its earcon played against the full road bed --
-    /// roughly 6 dB worse off than the words it stands in for, and quiet is
-    /// precisely the rung where confirmation, status and coaching ALL become
-    /// earcons. So the sound that carries the information was the one
-    /// competing hardest to be heard.
-    ///
-    /// The window is real seconds and short, because the cues are short: the
-    /// longest (the two-note coaching chime) runs 0.18 s. It is not the
-    /// pacer's projection, which describes a voice that in this case is
-    /// never going to speak.
-    fn engage_earcon_duck(&mut self) {
-        if !self.settings.duck_audio_for_speech {
-            return;
-        }
-        self.speech_ducked = true;
-        self.earcon_duck_until = monotonic_seconds() + EARCON_DUCK_S;
-        self.audio.set_speech_duck(SPEECH_DUCK_LEVEL);
-    }
-
     /// Step the game mix back while the event voice speaks (R13).
     ///
     /// XAG 105's guideline made a setting: engine, weather, and the radio
@@ -763,32 +760,20 @@ impl GameContext {
     }
 
     /// Per-frame: bring the mix back once the event voice falls silent.
-    ///
-    /// An earcon duck holds for its own short window instead, since the
-    /// pacer has nothing to project for a line that was never spoken.
     pub fn update_speech_duck(&mut self) {
         if !self.speech_ducked {
-            return;
-        }
-        if self.earcon_duck_until != 0.0 && monotonic_seconds() < self.earcon_duck_until {
             return;
         }
         if self.event_pacer.busy() {
             return;
         }
         self.speech_ducked = false;
-        self.earcon_duck_until = 0.0;
         self.audio.set_speech_duck(1.0);
     }
 
     /// Whether the mix is currently stepped back under speech.
     pub fn speech_ducked(&self) -> bool {
         self.speech_ducked
-    }
-
-    /// Test seam: move the earcon duck's deadline (real seconds).
-    pub fn set_earcon_duck_until(&mut self, until: f64) {
-        self.earcon_duck_until = until;
     }
 
     /// A standing condition has cleared; let it announce itself afresh.
@@ -874,6 +859,11 @@ impl GameContext {
     /// the mix already trusts rather than inventing a second one.
     pub fn event_voice_busy(&mut self) -> bool {
         self.event_pacer.busy()
+    }
+
+    /// Whether the event voice is mid-way through a warning to act on now.
+    pub fn event_voice_critical(&mut self) -> bool {
+        self.event_pacer.speaking_critical()
     }
 
     pub fn event_delivery_status(

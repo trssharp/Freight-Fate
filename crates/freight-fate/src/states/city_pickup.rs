@@ -100,7 +100,8 @@ pub fn pickup_snapshot(job: &Job, opts: &PickupSnapshotOptions) -> Map<String, V
 }
 
 pub fn route_planning_summary(route: &Route) -> String {
-    let hos_summary = plan_hos(route.miles(), Some(route), None, None).summary();
+    let plan = plan_hos(route.miles(), Some(route), None, None);
+    let hos_summary = plan.summary();
     let usable = route.accessible_stop_details(false);
     let fuel_stops = usable
         .iter()
@@ -110,18 +111,23 @@ pub fn route_planning_summary(route: &Route) -> String {
         .iter()
         .filter(|stop| stop.actions.iter().any(|a| a == "sleep"))
         .count();
+    // The HOS line already names the sleep stops when it names any.
+    let sleep_text = if plan.has_stop_coverage() || sleep_stops == 0 {
+        String::new()
+    } else {
+        format!(" Sleep stops: {sleep_stops}.")
+    };
     let tolls = route.estimated_tolls();
     let toll_text = if tolls > 0.0 {
         format!(
-            "Estimated tolls, carrier-paid, {} dollars.",
+            " Estimated tolls, carrier-paid, {} dollars.",
             fmt_grouped(tolls, 0)
         )
     } else {
-        "No known tolls on this route.".to_string()
+        String::new()
     };
     format!(
-        "{hos_summary} Fuel-capable stops: {fuel_stops}. Sleep-capable stops: {sleep_stops}. \
-         {toll_text} Terrain: {}. Parking notes are not a guaranteed open space.",
+        "{hos_summary} Fuel stops: {fuel_stops}.{sleep_text}{toll_text} Terrain: {}.",
         route.terrain_summary()
     )
 }
@@ -247,6 +253,20 @@ pub fn set_engine_running(ctx: &mut GameContext, truck: &mut TruckState, running
         ctx.audio.engine_stop();
     }
     true
+}
+
+/// Bring a running engine's idle back under a facility menu.
+///
+/// Arriving at a shipper or receiver replaces the drive, and leaving the
+/// drive silences the world, engine loop included. A running engine then
+/// idled in silence, and "Shut down the engine" had no loop to stop, so it
+/// made no sound at all (tester report, 2026-09-28). No ignition crank: the
+/// engine never stopped.
+pub fn sync_facility_engine_audio(ctx: &mut GameContext, truck: &TruckState) {
+    if truck.engine_on && !ctx.audio.engine_running() {
+        ctx.audio.engine_start_with(false);
+        ctx.audio.set_engine_rpm_with(truck.specs.idle_rpm, 0.0);
+    }
 }
 
 /// The engine kill switch, offered where a facility menu has taken over.
@@ -436,10 +456,7 @@ impl PickupFacilityState {
             Some(mph) => ctx.settings.speed_text(mph),
             None => "the posted limit when the open road begins".to_string(),
         };
-        format!(
-            " Automatic speed control is paused; open-road target \
-             {target}. It will resume after departure once the truck is rolling."
-        )
+        format!(" Speed control paused, target {target}.")
     }
 
     /// The pre-trip on the trailer, done on purpose rather than to you.
@@ -475,22 +492,24 @@ impl PickupFacilityState {
         let Some(defect) = trailer.defect() else {
             ctx.audio.play("ui/notify");
             ctx.say(&format!(
-                "Walking {}: lamps lit, brakes in adjustment, tires with tread. It checks out.{}",
-                trailer.spoken_name(),
+                "{} checks out.{}",
+                crate::states::city::py_capitalize(&trailer.spoken_name()),
                 self.tank_walk_around_clause()
             ));
             return;
         };
         ctx.audio.play("ui/warning");
+        let name = crate::states::city::py_capitalize(&trailer.spoken_name());
         ctx.say(&format!(
-            "Walking {}, you find a {defect}. The trailer is {}. Pull out with it and the \
-             write-up is yours at the first scale. Refuse this trailer has the yard swap it, \
-             about {} minutes.{}",
-            trailer.spoken_name(),
+            "{name}: {defect}, {}. Take it and the write-up is yours at the first scale. \
+             Refuse for a swap, about {} minutes.{}",
             trailer.condition_text(),
             fmt_f(TRAILER_SWAP_MIN, 0),
             self.tank_walk_around_clause()
         ));
+        // The badge is for finding it: awarded at the hook, it announced the
+        // write-up before the driver had looked, and to drivers who never did.
+        ctx.award_achievement("hooked_a_bad_one");
         self.offer_refusal = true;
         self.refresh(ctx, false);
     }
@@ -604,17 +623,14 @@ impl PickupFacilityState {
         let plan = self.pickup_plan(ctx);
         if plan.is_drop_hook() {
             ctx.say(&format!(
-                "Checked in at {facility}. Your load is on {} in the drop yard. Stop, then \
-                 drop and hook.",
+                "Checked in. Load on {} in the drop yard.",
                 plan.trailer
                     .as_ref()
                     .map(|t| t.spoken_name())
                     .unwrap_or_default()
             ));
         } else {
-            ctx.say(&format!(
-                "Checked in at {facility}. Dock assigned. Stop, then load cargo."
-            ));
+            ctx.say("Checked in. Dock assigned.");
         }
     }
 
@@ -716,9 +732,6 @@ impl PickupFacilityState {
         ctx.award_achievement("first_day");
         if plan.is_drop_hook() {
             ctx.award_achievement("first_drop_hook");
-            if plan.trailer.as_ref().is_some_and(|t| t.defect().is_some()) {
-                ctx.award_achievement("hooked_a_bad_one");
-            }
         } else if plan.detention_minutes > 0.0 && is_owner_operator(&profile(ctx).business_status) {
             ctx.award_achievement("detention_paid");
         }
@@ -771,12 +784,6 @@ impl PickupFacilityState {
             );
             return;
         }
-        ctx.say(&format!(
-            "Route planning to {}. {} route option{}.",
-            self.job.destination_facility_text(),
-            routes.len(),
-            if routes.len() != 1 { "s" } else { "" }
-        ));
         // Dispatch's pick reads as route 1; each option says what 511 has on it.
         let dispatch_note = route_planning_note(&routes, &routing, ctx.world);
         let notes: Vec<String> = routing
@@ -839,8 +846,8 @@ impl PickupFacilityState {
             "Engine off"
         };
         let text = format!(
-            "Pickup at {}: {state}. {} tons of {}. Destination {}. Speed {}. {engine}. Air \
-             pressure {} psi, {brake}.{}",
+            "Pickup {}: {state}. {} tons of {} for {}. {}. {engine}. Air {} psi, \
+             {brake}.{}",
             self.facility(),
             fmt_f(self.job.weight_tons, 0),
             self.job.cargo.label,
@@ -864,6 +871,8 @@ impl PickupFacilityState {
             let p = profile_mut(ctx);
             p.active_trip = None;
             p.dispatch_board_cache = None;
+            // Every other way a run ends frees the advance for the next load.
+            p.pay_advance_used_for_load = false;
         }
         ctx.save_profile();
         let terminal = crate::states::city::home_terminal(ctx);
@@ -921,6 +930,7 @@ impl Menu for PickupFacilityState {
             select_menu_music_sequence(ctx.profile.as_ref().map(|p| p as &dyn MenuMusicProfile));
         let refs: Vec<&str> = sequence.iter().map(String::as_str).collect();
         ctx.play_music_sequence("menu", &refs);
+        sync_facility_engine_audio(ctx, &self.truck);
         base_menu_enter(self, ctx);
     }
 
@@ -932,11 +942,7 @@ impl Menu for PickupFacilityState {
         let plan = self.pickup_plan(ctx);
         let facility = self.facility();
         let lead = if self.loaded {
-            let mut lead = format!(
-                "Loaded at {facility}. The trailer is sealed for \
-                 {}.",
-                self.job.spoken_destination()
-            );
+            let mut lead = format!("Loaded and sealed for {}.", self.job.spoken_destination());
             if self.just_loaded {
                 let verb = if plan.is_drop_hook() {
                     "Dropping and hooking"
@@ -964,9 +970,17 @@ impl Menu for PickupFacilityState {
                 }
                 // Rounded to a tenth, so the smallest number that can be
                 // spoken is one worth hearing rather than "0.0 gallons".
+                // Off now means every idle gallon came before the shutdown;
+                // a bare "burned idling" after the load read as the engine
+                // having run through it (tester report, 2026-09-28).
                 if round_py_n(self.idle_gallons, 1) > 0.0 {
+                    let when = if self.truck.engine_on {
+                        ""
+                    } else {
+                        " before you shut down"
+                    };
                     lead.push_str(&format!(
-                        " {} gallons burned idling.",
+                        " {} gallons burned idling{when}.",
                         fmt_f(self.idle_gallons, 1)
                     ));
                 }
@@ -977,7 +991,7 @@ impl Menu for PickupFacilityState {
         } else if self.checked_in {
             if plan.is_drop_hook() {
                 format!(
-                    "Checked in at {facility}. Your load is on {} in the drop yard.",
+                    "Checked in at {facility}. Load on {} in the drop yard.",
                     plan.trailer
                         .as_ref()
                         .map(|t| t.spoken_name())
@@ -987,7 +1001,7 @@ impl Menu for PickupFacilityState {
                 format!("Checked in at {facility}. Dock assigned.")
             }
         } else {
-            format!("Arrived at pickup: {facility}. Check in with the shipping office.")
+            format!("Arrived at {facility}.")
         };
         let speed_control = if self.announce_speed_control_status {
             self.speed_control_pause_text(ctx)
@@ -1001,6 +1015,9 @@ impl Menu for PickupFacilityState {
 
     fn exit(&mut self, ctx: &mut GameContext) {
         ctx.audio.set_ambient(None);
+        // Save and quit, or cancel: the idle must not follow the driver to
+        // the title or the terminal. A departing drive brings its own back.
+        ctx.audio.engine_stop_with(false);
     }
 
     fn build_items(&mut self, ctx: &mut GameContext) -> Vec<MenuItem<Self>> {
@@ -1255,7 +1272,7 @@ impl RouteSelectState {
                 let spoken_city = world.spoken_city(name, Some(true));
                 let Some(kind) = kind else {
                     let status = if provider.unavailable(&city.key) {
-                        "live weather unavailable; simulated fallback may apply"
+                        "no live weather"
                     } else {
                         "live weather still loading"
                     };
@@ -1317,10 +1334,8 @@ impl RouteSelectState {
                 speed_control_armed: self.opts.speed_control_armed,
                 speed_control_target_mph: self.opts.speed_control_target_mph,
                 trailer_refused: self.opts.trailer_refused,
-                lead: format!(
-                    "Navigation set for {}. ",
-                    self.job.destination_facility_text()
-                ),
+                // The route screen just named the destination.
+                lead: String::new(),
             },
         );
     }

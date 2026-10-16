@@ -14,7 +14,7 @@ use crate::models::career::{Career, CareerProfile};
 use crate::models::carrier_fleet::{assigned_truck_key, equipment_hold_clause};
 use crate::models::enforcement::{DrivingRecord, StandingProfile};
 use crate::models::jobs::Job;
-use crate::models::safety_record::SafetyRecordProfile;
+use crate::models::safety_record::{SafetyRecordProfile, SAFETY_RECORD_WINDOW_DAYS};
 use crate::models::save_migration::json_i64;
 use crate::models::solvency::SolvencyProfile;
 use crate::models::start_options::StartProfile;
@@ -23,8 +23,10 @@ use crate::models::trucks::truck_model;
 use crate::music::MenuMusicProfile;
 
 impl StandingProfile for Profile {
+    /// Dispatch trust, the termination floor and the business gates all read
+    /// the record-adjusted number, never the raw ledger.
     fn career_reputation(&self) -> f64 {
-        self.career.reputation
+        self.standing()
     }
     fn career_deliveries(&self) -> i64 {
         self.career.deliveries
@@ -35,8 +37,11 @@ impl StandingProfile for Profile {
     fn game_hours(&self) -> f64 {
         self.game_hours
     }
-    fn calendar_offset_days(&self) -> f64 {
-        self.calendar_offset_days as f64
+    fn calendar_now_hours(&self) -> f64 {
+        self.player_calendar_hours()
+    }
+    fn calendar_is_live(&self) -> bool {
+        self.live_calendar
     }
     fn driving_record(&self) -> Option<&DrivingRecord> {
         Some(&self.driving_record)
@@ -72,6 +77,7 @@ impl StandingProfile for Profile {
 impl SolvencyProfile for Profile {
     fn set_money(&mut self, money: f64) {
         self.money = money;
+        self.money_guard.resync(money);
     }
     fn set_fines_owed(&mut self, fines_owed: f64) {
         self.fines_owed = fines_owed;
@@ -132,20 +138,34 @@ impl SolvencyProfile for Profile {
 }
 
 impl SafetyRecordProfile for Profile {
+    /// The raw ledger on purpose: the selection score already weighs the
+    /// citations and violations themselves, so feeding it the record-adjusted
+    /// number would count every one of them twice.
     fn career_reputation(&self) -> f64 {
         self.career.reputation
     }
+    // Counted inside the screening window, so an old record fades off the
+    // scale the way it fades off reputation. Mid-drive `game_hours` is the
+    // trip's start, which only ever keeps an event a trip longer.
     fn record_citations(&self) -> i64 {
-        self.driving_record.citations
+        self.driving_record
+            .citations_within(self.game_hours, SAFETY_RECORD_WINDOW_DAYS)
     }
     fn record_serious_violation_count(&self) -> i64 {
-        self.driving_record.serious_violations.len() as i64
+        self.driving_record
+            .serious_within(self.game_hours, SAFETY_RECORD_WINDOW_DAYS)
     }
     fn out_of_service_events(&self) -> i64 {
-        self.out_of_service_events
+        self.driving_record
+            .out_of_service_within(self.game_hours, SAFETY_RECORD_WINDOW_DAYS)
     }
     fn record_fatigue_events(&self) -> i64 {
-        self.driving_record.fatigue_events
+        self.driving_record
+            .fatigue_within(self.game_hours, SAFETY_RECORD_WINDOW_DAYS)
+    }
+    fn record_crashes(&self) -> i64 {
+        self.driving_record
+            .crashes_within(self.game_hours, SAFETY_RECORD_WINDOW_DAYS)
     }
     fn inspections_passed(&self) -> i64 {
         json_i64(self.achievement_stats.get("inspections_passed"), 0)
@@ -195,6 +215,9 @@ impl BusinessProfile for Profile {
     fn active_trailer_programs(&self) -> Vec<String> {
         Profile::active_trailer_programs(self)
     }
+    fn cdl_clear(&self) -> bool {
+        !self.driving_record.suspended(self.game_hours)
+    }
 }
 
 impl TrailerOwner for Profile {
@@ -218,6 +241,7 @@ impl StartProfile for Profile {
     }
     fn set_money(&mut self, money: f64) {
         self.money = money;
+        self.money_guard.resync(money);
     }
     fn set_business_status(&mut self, status: &str) {
         self.business_status = status.to_string();
@@ -311,6 +335,9 @@ impl MenuMusicProfile for Profile {
     }
     fn current_city(&self) -> String {
         self.current_city.clone()
+    }
+    fn business_status(&self) -> String {
+        self.business_status.clone()
     }
 }
 

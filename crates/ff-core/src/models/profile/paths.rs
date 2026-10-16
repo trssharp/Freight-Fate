@@ -70,7 +70,7 @@ impl SaveRoots {
             game_root: game_root(),
             legacy_data_dir: legacy_data_dir(),
             macos_data_dir: macos_data_dir(),
-            macos: cfg!(target_os = "macos"),
+            macos: cfg!(any(target_os = "macos", target_os = "ios")),
             frozen_exe_dir: if super::is_frozen() {
                 std::env::current_exe()
                     .ok()
@@ -386,6 +386,16 @@ pub fn data_dir() -> PathBuf {
         crate::settings::paths::refuse_real_save_dir(&save_root_in(&roots));
     }
     data_dir_in(&roots, &LEGACY_CHECKED)
+}
+
+/// [`data_dir`] for best-effort bookkeeping: `None` where `data_dir` would
+/// refuse, instead of panicking.
+pub fn data_dir_if_allowed() -> Option<PathBuf> {
+    let roots = SaveRoots::current();
+    if roots.override_dir.is_none() && !crate::settings::paths::real_save_dir_allowed() {
+        return None;
+    }
+    Some(data_dir_in(&roots, &LEGACY_CHECKED))
 }
 
 /// `data_dir()/profiles`, created.

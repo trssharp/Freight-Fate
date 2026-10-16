@@ -25,6 +25,7 @@ fn test_shift_modified_manual_downshift_uses_clutch_before_next_update() {
             key: Key::Q,
             mods: Mods::SHIFT,
             text: Some('q'),
+            repeat: false,
         },
     );
 
@@ -74,6 +75,73 @@ fn test_the_dial_also_answers_the_typed_plus_and_minus() {
     assert_eq!(d.cruise_mph, Some(40.0));
     d.handle_key_event(&mut app.ctx, &InputEvent::key_text(Key::Other(0x2d), '-'));
     assert_eq!(d.cruise_mph, Some(35.0));
+}
+
+#[test]
+fn test_os_key_repeat_does_not_race_the_cruise_target_up() {
+    // Holding Plus used to fire OS auto-repeat KeyDowns every ~30 ms and walk
+    // the live adaptive-cruise set speed to the ceiling in about a second.
+    // Repeats are ignored; only a fresh press steps.
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    d.trip.truck.set_air_ready(false);
+    cruise_at(&mut d, &mut app, 25.0);
+
+    d.handle_key_event(&mut app.ctx, &InputEvent::key_text(Key::Equals, '='));
+    assert_eq!(d.cruise_mph, Some(30.0));
+    for _ in 0..20 {
+        d.handle_key_event(
+            &mut app.ctx,
+            &InputEvent::KeyDown {
+                key: Key::Equals,
+                mods: Mods::NONE,
+                text: Some('='),
+                repeat: true,
+            },
+        );
+    }
+    assert_eq!(
+        d.cruise_mph,
+        Some(30.0),
+        "OS key-repeat must not advance the cruise target"
+    );
+    assert_eq!(d.speed_control_target_mph, Some(30.0));
+}
+
+#[test]
+fn test_os_key_repeat_does_not_race_the_cruise_target_down() {
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    d.trip.truck.set_air_ready(false);
+    cruise_at(&mut d, &mut app, 55.0);
+
+    d.handle_key_event(&mut app.ctx, &InputEvent::key_text(Key::Minus, '-'));
+    assert_eq!(d.cruise_mph, Some(50.0));
+    for _ in 0..20 {
+        d.handle_key_event(
+            &mut app.ctx,
+            &InputEvent::KeyDown {
+                key: Key::Minus,
+                mods: Mods::NONE,
+                text: Some('-'),
+                repeat: true,
+            },
+        );
+    }
+    assert_eq!(d.cruise_mph, Some(50.0));
+}
+
+#[test]
+fn test_discrete_plus_presses_still_step_five_each() {
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    d.trip.truck.set_air_ready(false);
+    cruise_at(&mut d, &mut app, 25.0);
+
+    for expected in [30.0, 35.0, 40.0] {
+        d.handle_key_event(&mut app.ctx, &InputEvent::key_text(Key::Equals, '='));
+        assert_eq!(d.cruise_mph, Some(expected));
+    }
 }
 
 #[test]
@@ -203,6 +271,17 @@ fn test_resume_refuses_without_a_remembered_speed_or_an_engine() {
 }
 
 #[test]
+fn resume_refusal_names_a_moved_cruise_key() {
+    let mut app = TestApp::new();
+    app.ctx.settings.key_bindings = "cruise=f7".into();
+    app.ctx.apply_bindings();
+    let mut d = a_drive(&mut app);
+    app.clear_speech();
+    d.handle_key_event(&mut app.ctx, &InputEvent::key_mods(Key::K, Mods::SHIFT));
+    assert_eq!(last(&app), "No remembered cruise speed yet. F7 sets one.");
+}
+
+#[test]
 fn test_a_transit_pause_lifts_itself_once_the_bar_is_honored() {
     let mut app = TestApp::new();
     let mut d = a_drive(&mut app);
@@ -289,6 +368,36 @@ fn test_speed_keeper_ease_window_follows_the_driving_mode() {
     assert!((d.keeper_turn_ease_scale() - 1.0).abs() < 1e-9);
     d.trip.controlled_turn = true;
     assert!((d.keeper_turn_ease_scale() - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn test_the_keeper_sheds_for_the_barrels_from_the_start_of_a_merge_taper() {
+    // A merge taper is a mile of road that exists for one shed. The keeper
+    // used to take it over from cruise and hold the taper's number until its
+    // ordinary ease window opened, then meet the barrels two over (owner,
+    // 2026-09-14). On a taper the work zone's number is in demand at once.
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    app.ctx.settings.speed_keeper = true;
+    d.speed_control_armed = true;
+    d.keeper_mph = Some(55.0);
+    d.trip.zones = vec![
+        Zone::new(5.0, 6.0, 55.0, "construction merge"),
+        Zone::new(6.0, 8.0, 45.0, "construction"),
+    ];
+    d.trip.truck.velocity_mps = 52.0 / freight_fate::states::driving_core::MPH_PER_MPS;
+    // Just inside the taper, a whole mile from the barrels: further than the
+    // keeper's own ease window reaches, and still the answer.
+    d.trip.position_mi = 5.02;
+    assert_eq!(
+        d.keeper_speed_ahead(&mut app.ctx),
+        Some((45.0, "construction".to_string()))
+    );
+    // Ahead of the taper the ordinary window still governs: a mile and a
+    // half from the barrels on the open corridor is not yet the keeper's.
+    d.keeper_ease_target = None;
+    d.trip.position_mi = 4.5;
+    assert_eq!(d.keeper_speed_ahead(&mut app.ctx), None);
 }
 
 #[test]
@@ -512,4 +621,21 @@ fn test_upcoming_key_does_not_repeat_the_next_exit_key() {
     d.handle_key_event(&mut app.ctx, &key(Key::U));
 
     assert!(!last(&app).contains(&text), "{}", last(&app));
+}
+
+#[test]
+fn test_cancelling_a_keeper_only_session_remembers_its_speed_for_resume() {
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    d.trip.truck.set_air_ready(false);
+    d.trip.truck.start_engine();
+    app.ctx.settings.speed_keeper = true;
+    d.trip.truck.velocity_mps = mph_to_mps(27.0);
+    d.engage_keeper(&mut app.ctx, 35.0, "work", None, false);
+    let held = d
+        .keeper_mph
+        .unwrap_or_else(|| panic!("keeper off: {:?}", last(&app)));
+    assert_eq!(d.resume_target_mph, None);
+    d.cancel_keeper(&mut app.ctx, false);
+    assert_eq!(d.resume_target_mph, Some(held));
 }

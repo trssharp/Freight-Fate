@@ -12,7 +12,10 @@
 //!
 //! Port of `freight_fate/sim/weather.py`.
 
-use super::season::{adjust_for_calendar, date_text, real_clock_game_hours, season, temperature_c};
+use super::season::{
+    adjust_for_calendar, adjust_for_temperature, date_text, real_clock_game_hours, season,
+    temperature_c,
+};
 use crate::pyfmt::fmt_f;
 use crate::pyrandom::PyRandom;
 
@@ -301,7 +304,24 @@ impl WeatherSystem {
         let Some(temp) = temp else {
             return kind;
         };
+        if self.provider.is_some() && self.live_weather_controls_calendar {
+            // The real sky on the real date: the season guard is for an
+            // independent career calendar, and a real October snow at a
+            // Denver station is snow, not rain (seasonal audit, 2026-10-01).
+            return adjust_for_temperature(kind, Some(temp));
+        }
         adjust_for_calendar(kind, Some(temp), self.season_clock())
+    }
+
+    /// Whether a winter warning belongs in this drive: always on the live
+    /// calendar, and only in the career's winter on its own calendar, where
+    /// the sky is already kept out of season snow.
+    pub fn winter_fits_calendar(&self) -> bool {
+        if self.provider.is_some() && self.live_weather_controls_calendar {
+            return true;
+        }
+        self.season_clock()
+            .is_none_or(|clock| season(clock) == "winter")
     }
 
     /// Track the city whose real weather should apply (provider mode).
@@ -515,24 +535,19 @@ impl WeatherSystem {
         Some(format!("The observation is {minutes} {unit} old"))
     }
 
-    /// Honest last-known status for announcements and source reports.
+    /// Honest last-known status for announcements and source reports: an
+    /// update in progress or a failed check, or nothing.
+    ///
+    /// No observation age. A driver has no use for how many minutes old the
+    /// station reading is in a spoken line (player report, 2026-10-14); the
+    /// Weather app's Observation age row keeps it.
     pub fn last_known_notice(&mut self) -> String {
-        let mut parts: Vec<String> = Vec::new();
-        if let Some(age) = self.observation_age_text() {
-            if !age.is_empty() {
-                parts.push(age);
-            }
-        }
         if self.live_weather_refreshing() {
-            parts.push("Live weather is updating for your current location".to_string());
+            "Live weather is updating for your current location".to_string()
         } else if self.live_weather_refresh_failed() {
-            parts.push("The latest live weather check failed".to_string());
-        }
-        let joined = parts.join(". ");
-        if joined.is_empty() {
-            "Observation age is unavailable".to_string()
+            "The latest live weather check failed".to_string()
         } else {
-            joined
+            String::new()
         }
     }
 
@@ -565,14 +580,15 @@ impl WeatherSystem {
                 "{}. Temporary neutral driving conditions in use",
                 self.source_label()
             ),
-            "live" => format!(
-                "Live weather: {conditions}. {}",
-                self.live_observation_notice()
-            ),
-            "last_known" => format!(
-                "Last-known live weather: {conditions}. {}",
-                self.last_known_notice()
-            ),
+            "live" => format!("Live weather: {conditions}"),
+            "last_known" => {
+                let notice = self.last_known_notice();
+                if notice.is_empty() {
+                    format!("Last-known live weather: {conditions}")
+                } else {
+                    format!("Last-known live weather: {conditions}. {notice}")
+                }
+            }
             "fallback" => {
                 format!("Simulated fallback weather: {conditions}. Live weather is unavailable")
             }

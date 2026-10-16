@@ -14,6 +14,8 @@ use super::*;
 use crate::models::business::{business_status_summary, LEASED_OWNER_OPERATOR};
 use crate::models::career_ladder::STARTER_CARRIER_NAME;
 use crate::models::loyalty::LoyaltyAccount;
+use crate::models::solvency::REPOSSESSION_EQUITY_SHARE;
+use crate::models::trucks::TRUCK_CATALOG;
 use crate::settings::paths::ENV_LOCK;
 use crate::sim::vehicle::TruckState;
 
@@ -414,24 +416,92 @@ fn test_skip_signing_flag_is_ignored_in_frozen_builds() {
 }
 
 #[test]
-fn test_legacy_unsigned_json_save_keeps_amnesty_and_converts() {
+fn test_unsigned_json_save_is_marked_modified_and_converts() {
+    // This shape used to keep an amnesty as the look of a save from before
+    // signing. Those saves are refused by the 1.9 gate now, so the only
+    // unsigned JSON left is one written by hand -- which is how a career got
+    // edited without the game noticing.
     with_data_dir(|_| {
         let p = Profile::named("Unsigned");
         let mut data = p.to_dict();
         data.remove(SIGNATURE_FIELD);
+        data.insert("money".to_string(), json!(250_000.0));
         let legacy = p.path().with_extension("json");
         write_text(&legacy, &data);
 
         let loaded = load(&legacy);
 
         assert_eq!(loaded.name, "Unsigned");
-        assert!(!loaded.integrity_modified);
+        assert!(loaded.integrity_modified);
+        assert!(loaded.integrity_notice_pending);
         // Converted in place: packed and signed, old file kept as a rollback copy.
         let migrated = read_save(&p.path());
         assert!(migrated.contains_key(SIGNATURE_FIELD));
         assert!(!legacy.exists());
         assert!(legacy.with_extension("json.bak").exists());
     });
+}
+
+#[test]
+fn test_balance_no_career_could_hold_is_marked_even_when_the_game_signed_it() {
+    // A balance rewritten in memory is saved by the game under a valid
+    // signature. One delivery and a typed-in fortune, as seen on staging.
+    with_data_dir(|_| {
+        let mut p = Profile::named("Memory Edit");
+        p.career.total_earnings = 338.36;
+        // Written straight at the field, the way a memory editor does: the
+        // money guard's shadow still holds the old balance, so the save
+        // itself carries the mark.
+        p.money = 999_999_999_999_717_400.0;
+        let path = p.save().unwrap();
+
+        let loaded = load(&path);
+
+        assert!(loaded.integrity_modified);
+        assert!(loaded.integrity_notice_pending);
+        // The career still loads and keeps its numbers; it is marked, not mended.
+        assert_eq!(loaded.money, p.money);
+    });
+}
+
+#[test]
+fn test_a_balance_the_career_earned_is_never_marked() {
+    with_data_dir(|_| {
+        // A long career that kept nearly all of it.
+        let mut rich = Profile::named("Earned It");
+        rich.career.total_earnings = 4_000_000.0;
+        rich.set_money(3_900_000.0);
+        let path = rich.save().unwrap();
+        assert!(!load(&path).integrity_modified);
+
+        // Nothing delivered yet, and every catalog tractor and trailer handed
+        // back to the carrier at once on top of the richest start: the most a
+        // career with no earnings can hold.
+        let mut returned = Profile::named("Handed Back");
+        returned.set_money(plausibility::money_ceiling(0.0) - 2.0);
+        let path = returned.save().unwrap();
+        assert!(!load(&path).integrity_modified);
+
+        // A debt career carries negative money by design.
+        let mut broke = Profile::named("In The Red");
+        broke.set_money(-40_000.0);
+        let path = broke.save().unwrap();
+        assert!(!load(&path).integrity_modified);
+    });
+}
+
+#[test]
+fn test_the_ceiling_is_built_from_the_catalog_not_a_guess() {
+    let hand_back = plausibility::equipment_hand_back_ceiling();
+    // Every priced tractor and trailer is in it...
+    let dearest = TRUCK_CATALOG.values().map(|m| m.price).fold(0.0, f64::max);
+    assert!(hand_back >= dearest * REPOSSESSION_EQUITY_SHARE);
+    // ...and earnings move it dollar for dollar.
+    let base = plausibility::money_ceiling(0.0);
+    assert_eq!(plausibility::money_ceiling(50_000.0), base + 50_000.0);
+    assert!(plausibility::money_is_impossible(base + 1.0, 0.0));
+    assert!(!plausibility::money_is_impossible(base, 0.0));
+    assert!(plausibility::money_is_impossible(f64::NAN, 0.0));
 }
 
 #[test]
@@ -578,6 +648,34 @@ fn test_company_driver_condition_keys_under_the_assigned_rig() {
 
     assert_eq!(record_f64(&p, "rig", "brake_wear_pct"), 12.0);
     assert!(!p.truck_conditions.contains_key("heavy_hauler"));
+}
+
+/// The saved truck is the one the driver is actually in.
+///
+/// A company driver's tractor follows their level, but the `truck` field only
+/// changed when dispatch wrote a slip seat, a spare, or a status change into
+/// it. A driver promoted out of the long-haul yard kept "aero_cruiser" in
+/// the save for good, and every reader of the save -- the cloud backup, the
+/// public profile -- reported a tractor they no longer drove.
+#[test]
+fn test_saved_truck_is_the_one_the_company_driver_actually_drives() {
+    with_data_dir(|_| {
+        let mut p = Profile::named("Promoted");
+        p.business_status = COMPANY_DRIVER.to_string();
+        p.career.xp = crate::models::career::LEVEL_XP[12]; // level 13: premium fleet
+        p.truck = "aero_cruiser".to_string(); // the long-haul assignment, levels 9 to 12
+
+        let assigned = p.active_truck_key();
+        assert_ne!(assigned, "aero_cruiser");
+        assert_eq!(p.to_dict()["truck"], assigned);
+
+        // An owner-operator's truck is their own and is written as is.
+        let mut o = Profile::named("Owner");
+        o.business_status = LEASED_OWNER_OPERATOR.to_string();
+        o.truck = "aero_cruiser".to_string();
+        o.owned_trucks = vec!["aero_cruiser".to_string()];
+        assert_eq!(o.to_dict()["truck"], "aero_cruiser");
+    });
 }
 
 #[test]

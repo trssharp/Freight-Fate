@@ -1,4 +1,4 @@
-//! What the roadside writes on the licence: the serious-violation ladder, the
+//! What the roadside writes on the license: the serious-violation ladder, the
 //! major offense, the fatigue events, and the exploits the adversarial
 //! harness found.
 //!
@@ -28,10 +28,10 @@ use ff_core::sim::weather::WeatherKind;
 
 use freight_fate::app::testing::TestApp;
 use freight_fate::app::GameContext;
-use freight_fate::states::base::{Key, Menu, MenuItem, Mods};
+use freight_fate::states::base::{Menu, MenuItem};
 use freight_fate::states::driving::DrivingState;
 use freight_fate::states::driving_core::{
-    DRIVE_PHASE_DELIVERY, MICROSLEEP_FORCE_STOP_MISSES, PURSUIT_HOLD_S, SPEEDING_LEEWAY_MPH,
+    DRIVE_PHASE_DELIVERY, MICROSLEEP_FORCE_STOP_MISSES, PURSUIT_RUN_S, SPEEDING_LEEWAY_MPH,
 };
 use freight_fate::states::driving_engine_brake::JAKE_ZONE_FINES;
 use freight_fate::states::driving_rest_states::{
@@ -122,12 +122,18 @@ fn said(app: &TestApp) -> String {
     spoken(app).join(" ")
 }
 
-/// `_hold_run_key(app, monkeypatch, held=...)`.
-fn hold_run_key(app: &mut TestApp, held: bool) {
-    if held {
-        app.ctx.input.press(Key::X, Mods::SHIFT);
-    } else {
-        app.ctx.input.release(Key::X, Mods::NONE);
+/// Frames of the stop with the truck held at `mph`, braking or not. The
+/// trip is not stepped, so the miles stay put and the stop is judged on
+/// conduct alone; `advance_mi` moves the truck on by hand.
+fn roll_stop(app: &mut TestApp, drive: &mut DrivingState, mph: f64, seconds: f64, braking: bool) {
+    let dt = 1.0 / 60.0;
+    let frames = (seconds / dt).ceil() as i32;
+    for _ in 0..frames {
+        drive.trip.truck.velocity_mps = mph * 0.44704;
+        drive.update_pull_over(&mut app.ctx, dt, braking);
+        if drive.pull_over.is_none() {
+            break;
+        }
     }
 }
 
@@ -198,7 +204,7 @@ fn test_a_second_pursuit_ends_this_career_driving_for_good() {
 #[test]
 fn test_a_stop_that_suspends_the_cdl_does_not_send_you_back_out_driving() {
     // The stop menu used to offer "Pull back onto the highway" no matter what
-    // had just happened -- so a driver whose licence had been pulled seconds
+    // had just happened -- so a driver whose license had been pulled seconds
     // earlier was invited to drive on, with no way to end the run from the
     // shoulder. A suspended driver is done for now; the run ends here.
     let mut app = TestApp::new();
@@ -295,6 +301,7 @@ fn test_an_enforcement_stop_that_suspends_also_ends_the_run() {
             warned: true, // a serious violation: this is the second
             construction_zone: false,
             inspection_on_stop: false,
+            inspection_level: None,
         },
     );
 
@@ -344,7 +351,7 @@ fn test_speeding_nobody_saw_never_touches_the_licence() {
     // The strike is gone, and the guarantee it needed is now structural
     // rather than deliberate: with nobody watching, speeding produces no
     // citation to put on the record in the first place. Nothing may reach the
-    // licence file without a trooper having been there.
+    // license file without a trooper having been there.
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, "Jerry");
     drive.trip.posts = Vec::new(); // empty road
@@ -456,36 +463,60 @@ fn test_repeat_fatigue_events_speak_the_real_count() {
     }
 }
 
-// -- running is a choice, never an accident ---------------------------------------------
+// -- running is conduct, never a key ------------------------------------------------
 
+/// Sixty on the highway with the lights behind you, never a brake: past the
+/// final warning that is running, and troopers end it as a felony.
 #[test]
-fn test_holding_the_run_key_states_the_cost_before_it_counts() {
+fn test_holding_speed_past_the_final_warning_is_running() {
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, "Jerry");
     drive.trip.position_mi = drive.trip.total_miles() / 2.0;
     drive.begin_pull_over(&mut app.ctx, 65.0);
+    drive.pull_over_grace_s = 0.0;
     app.clear_speech();
 
-    hold_run_key(&mut app, true);
-    drive.update_pursuit_optin(&mut app.ctx, 0.1);
+    roll_stop(&mut app, &mut drive, 60.0, 60.0, false);
+    app.ctx.run_deferred();
 
     let lines = spoken(&app);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("Slow down now or you are running from the police")),
+        "{lines:#?}"
+    );
     assert!(
         lines.iter().any(|line| line.contains("felony")),
         "{lines:#?}"
     );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("disqualifies your CDL")),
-        "{lines:#?}"
-    );
-    assert!(drive.pull_over.is_some()); // nothing has happened yet
+    assert!(drive.pull_over.is_none());
+    assert!(app
+        .ctx
+        .state()
+        .is_some_and(|state| state.borrow().as_any().is::<FelonyStopState>()));
+    let p = app.ctx.profile.as_ref().expect("a career");
+    assert_eq!(p.driving_record.major_count(), 1);
+    assert!(p.driving_record.suspended(p.game_hours));
+}
 
-    // Letting go before the hold completes stops nothing from happening.
-    hold_run_key(&mut app, false);
-    drive.update_pursuit_optin(&mut app.ctx, PURSUIT_HOLD_S);
+/// The final warning alone is not the felony: the truck has to keep it up
+/// for the required seconds after it, and the warning speaks first.
+#[test]
+fn test_the_final_warning_comes_before_the_pursuit_counts() {
+    let mut app = TestApp::new();
+    let mut drive = a_drive(&mut app, "Jerry");
+    drive.trip.position_mi = drive.trip.total_miles() / 2.0;
+    drive.begin_pull_over(&mut app.ctx, 65.0);
+    drive.pull_over_grace_s = 0.0;
+    app.clear_speech();
+
+    // Long enough to drain the tracker and speak the final warning, not
+    // long enough to run.
+    roll_stop(&mut app, &mut drive, 60.0, 10.0, false);
+    assert_eq!(drive.pull_over_warning_level, 2);
     assert!(drive.pull_over.is_some());
+    assert!(drive.pull_over_run_s > 0.0 && drive.pull_over_run_s < PURSUIT_RUN_S);
     assert_eq!(
         app.ctx
             .profile
@@ -497,29 +528,122 @@ fn test_holding_the_run_key_states_the_cost_before_it_counts() {
     );
 }
 
+/// A brake after the final warning is a driver trying to stop, not running:
+/// troopers force the stop, a serious violation, and never a felony.
 #[test]
-fn test_holding_the_run_key_through_the_warning_lands_the_full_offense() {
+fn test_touching_the_brake_after_the_final_warning_is_a_forced_stop_not_a_felony() {
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, "Jerry");
-    drive.trip.position_mi = drive.trip.total_miles() / 2.0;
+    let start = drive.trip.total_miles() / 2.0;
+    drive.trip.position_mi = start;
     drive.begin_pull_over(&mut app.ctx, 65.0);
+    drive.pull_over_grace_s = 0.0;
 
-    hold_run_key(&mut app, true);
-    drive.update_pursuit_optin(&mut app.ctx, PURSUIT_HOLD_S + 0.1);
+    roll_stop(&mut app, &mut drive, 60.0, 10.0, false);
+    assert_eq!(drive.pull_over_warning_level, 2);
+    // Two miles on and braking, still rolling: the forced stop, in its own time.
+    drive.trip.position_mi = start + 2.5;
+    roll_stop(&mut app, &mut drive, 40.0, 20.0, true);
     app.ctx.run_deferred();
 
+    assert!(drive.pull_over.is_none());
     assert!(app
         .ctx
         .state()
-        .is_some_and(|state| state.borrow().as_any().is::<FelonyStopState>()));
-    let p = app.ctx.profile.as_ref().expect("a career");
-    assert_eq!(p.driving_record.major_count(), 1);
-    assert!(p.driving_record.suspended(p.game_hours));
+        .is_some_and(|state| state.borrow().as_any().is::<EnforcementStopState>()));
+    assert_eq!(
+        app.ctx
+            .profile
+            .as_ref()
+            .expect("a career")
+            .driving_record
+            .major_count(),
+        0
+    );
 }
 
+/// A slow roll under the floor is not running either, however long it
+/// goes on.
 #[test]
-fn test_the_second_pursuit_takes_twice_as_long_to_choose() {
-    // A lifetime disqualification gets its own, longer confirmation.
+fn test_a_slow_roll_never_reaches_a_felony() {
+    let mut app = TestApp::new();
+    let mut drive = a_drive(&mut app, "Jerry");
+    let start = drive.trip.total_miles() / 2.0;
+    drive.trip.position_mi = start;
+    drive.begin_pull_over(&mut app.ctx, 65.0);
+    drive.pull_over_grace_s = 0.0;
+
+    roll_stop(&mut app, &mut drive, 20.0, 10.0, false);
+    drive.trip.position_mi = start + 2.5;
+    roll_stop(&mut app, &mut drive, 20.0, 60.0, false);
+    app.ctx.run_deferred();
+
+    assert!(drive.pull_over.is_none());
+    assert!(app
+        .ctx
+        .state()
+        .is_some_and(|state| state.borrow().as_any().is::<EnforcementStopState>()));
+    assert_eq!(
+        app.ctx
+            .profile
+            .as_ref()
+            .expect("a career")
+            .driving_record
+            .major_count(),
+        0
+    );
+}
+
+/// Coasting down past the final warning is not running either: the run
+/// count starts at highway speed, but a truck that lets its speed fall away
+/// unbraked is handed to the forced stop, not left rolling for miles. The
+/// adversarial scale-bypass scenario found the first version rolling on
+/// with a stale run count holding the forced stop off.
+#[test]
+fn test_coasting_down_after_the_final_warning_is_a_forced_stop() {
+    let mut app = TestApp::new();
+    let mut drive = a_drive(&mut app, "Jerry");
+    let start = drive.trip.total_miles() / 2.0;
+    drive.trip.position_mi = start;
+    drive.begin_pull_over(&mut app.ctx, 65.0);
+    drive.pull_over_grace_s = 0.0;
+
+    roll_stop(&mut app, &mut drive, 60.0, 10.0, false);
+    assert_eq!(drive.pull_over_warning_level, 2);
+    assert!(drive.pull_over_run_s > 0.0);
+    // Two miles on, speed falling a mile an hour a second, never a brake.
+    drive.trip.position_mi = start + 2.5;
+    let dt = 1.0 / 60.0;
+    let mut mph: f64 = 60.0;
+    for _ in 0..(40.0 / dt) as i32 {
+        mph = (mph - dt).max(8.0);
+        drive.trip.truck.velocity_mps = mph * 0.44704;
+        drive.update_pull_over(&mut app.ctx, dt, false);
+        if drive.pull_over.is_none() {
+            break;
+        }
+    }
+    app.ctx.run_deferred();
+
+    assert!(drive.pull_over.is_none(), "the stop was never forced");
+    assert!(app
+        .ctx
+        .state()
+        .is_some_and(|state| state.borrow().as_any().is::<EnforcementStopState>()));
+    assert_eq!(
+        app.ctx
+            .profile
+            .as_ref()
+            .expect("a career")
+            .driving_record
+            .major_count(),
+        0
+    );
+}
+
+/// A lifetime disqualification gets its own warning and twice the run.
+#[test]
+fn test_the_second_pursuit_takes_twice_as_long_to_earn() {
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, "Jerry");
     app.ctx
@@ -530,17 +654,19 @@ fn test_the_second_pursuit_takes_twice_as_long_to_choose() {
         .record_major_offense(0.0);
     drive.trip.position_mi = drive.trip.total_miles() / 2.0;
     drive.begin_pull_over(&mut app.ctx, 65.0);
+    drive.pull_over_grace_s = 0.0;
     app.clear_speech();
 
-    hold_run_key(&mut app, true);
-    drive.update_pursuit_optin(&mut app.ctx, PURSUIT_HOLD_S + 0.1);
-
+    roll_stop(&mut app, &mut drive, 60.0, 10.0, false);
+    assert_eq!(drive.pull_over_warning_level, 2);
     assert!(
         spoken(&app).iter().any(|line| line.contains("for life")),
         "{:#?}",
         spoken(&app)
     );
-    // One hold is not enough.
+    // One run's worth is not enough the second time.
+    roll_stop(&mut app, &mut drive, 60.0, PURSUIT_RUN_S + 1.0, false);
+    assert!(drive.pull_over.is_some());
     assert!(
         !app.ctx
             .profile
@@ -550,7 +676,8 @@ fn test_the_second_pursuit_takes_twice_as_long_to_choose() {
             .lifetime_disqualified
     );
 
-    drive.update_pursuit_optin(&mut app.ctx, PURSUIT_HOLD_S);
+    roll_stop(&mut app, &mut drive, 60.0, PURSUIT_RUN_S + 1.0, false);
+    assert!(drive.pull_over.is_none());
     assert!(
         app.ctx
             .profile
@@ -614,7 +741,7 @@ fn test_a_paid_stop_is_not_charged_again_on_the_next_resume() {
         .expect("a career")
         .active_trip
         .is_some());
-    let money_before = app.ctx.profile.as_ref().expect("a career").money;
+    let money_before = app.ctx.profile.as_ref().expect("a career").money();
 
     // Brake to a stop: the roadside stop opens and the fine is paid.
     drive.trip.truck.velocity_mps = 0.0;
@@ -625,7 +752,7 @@ fn test_a_paid_stop_is_not_charged_again_on_the_next_resume() {
         .ctx
         .state()
         .is_some_and(|state| state.borrow().as_any().is::<EnforcementStopState>()));
-    let paid = money_before - app.ctx.profile.as_ref().expect("a career").money;
+    let paid = money_before - app.ctx.profile.as_ref().expect("a career").money();
     assert!(paid > 0.0);
     app.ctx.pop_state();
     app.ctx.run_deferred();
@@ -650,7 +777,7 @@ fn test_a_paid_stop_is_not_charged_again_on_the_next_resume() {
         .state()
         .is_some_and(|state| state.borrow().as_any().is::<EnforcementStopState>()));
     assert!(approx(
-        app.ctx.profile.as_ref().expect("a career").money,
+        app.ctx.profile.as_ref().expect("a career").money(),
         money_before - paid
     ));
 }
@@ -666,12 +793,12 @@ fn test_toggling_the_jake_cannot_farm_warnings_forever() {
         .insert("buffalo_ny_us".to_string());
     drive.jake_violation_deadline_s = None;
     drive.jake_citation_latched = false;
-    let money_before = app.ctx.profile.as_ref().expect("a career").money;
+    let money_before = app.ctx.profile.as_ref().expect("a career").money();
 
     drive.fine_engine_braking(&mut app.ctx, "buffalo_ny_us");
 
     let p = app.ctx.profile.as_ref().expect("a career");
-    assert!(approx(p.money, money_before - JAKE_ZONE_FINES[0]));
+    assert!(approx(p.money(), money_before - JAKE_ZONE_FINES[0]));
     // The citation is on the record even though it is not a serious one.
     assert_eq!(p.driving_record.citations, 1);
     assert_eq!(p.driving_record.serious_in_window(p.game_hours), 0);
@@ -697,6 +824,15 @@ fn test_the_fatigue_out_of_service_actually_holds_the_truck() {
         "{:#?}",
         spoken(&app)
     );
+    // The 70-hour limit does not reset on ten hours off: only the driving
+    // and duty clocks do, and the line says so.
+    assert!(
+        spoken(&app)
+            .iter()
+            .any(|line| line.contains("Driving and duty clocks reset, and the delivery deadline")),
+        "{:#?}",
+        spoken(&app)
+    );
 }
 
 #[test]
@@ -710,7 +846,7 @@ fn test_a_settled_stop_is_read_back_as_history_not_as_a_fresh_charge() {
     // silenced: re-reading the stop is the only way back to the detail.
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, "Jerry");
-    let money_before = app.ctx.profile.as_ref().expect("a career").money;
+    let money_before = app.ctx.profile.as_ref().expect("a career").money();
     app.clear_speech();
 
     let mut stop = EnforcementStopState::new(
@@ -727,9 +863,10 @@ fn test_a_settled_stop_is_read_back_as_history_not_as_a_fresh_charge() {
             warned: false,
             construction_zone: false,
             inspection_on_stop: false,
+            inspection_level: None,
         },
     );
-    let charged = money_before - app.ctx.profile.as_ref().expect("a career").money;
+    let charged = money_before - app.ctx.profile.as_ref().expect("a career").money();
     assert!(charged > 0.0);
 
     stop.announce_entry(&mut app.ctx);
@@ -755,7 +892,7 @@ fn test_a_settled_stop_is_read_back_as_history_not_as_a_fresh_charge() {
 
     // Saying it twice never charges twice.
     assert!(approx(
-        money_before - app.ctx.profile.as_ref().expect("a career").money,
+        money_before - app.ctx.profile.as_ref().expect("a career").money(),
         charged
     ));
 }
