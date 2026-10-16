@@ -26,6 +26,7 @@ pub const SETTINGS_FILE_NAME: &str = "settings.json";
 /// field kind. Each takes the field (already holding its default), the raw
 /// value, and the key (for the level warning).
 pub(crate) mod coerce {
+    use crate::settings::ScoreDisplay;
     use serde_json::Value;
 
     /// A string the value checks never accept: what a non-string lands on
@@ -69,6 +70,15 @@ pub(crate) mod coerce {
         if let Value::String(s) = value {
             *target = s.clone();
         }
+    }
+
+    pub(crate) fn score_display(target: &mut ScoreDisplay, value: &Value, _key: &str) {
+        *target = match value.as_str() {
+            Some("Both") | Some("both") => ScoreDisplay::Both,
+            Some("Percent") | Some("percent") => ScoreDisplay::Percent,
+            Some("Description") | Some("description") => ScoreDisplay::Description,
+            _ => ScoreDisplay::Both,
+        };
     }
 
     /// `pedal_latch` shipped as a bool, then a three-way that also caught
@@ -418,14 +428,12 @@ impl Settings {
             s.lane_keeping = LANE_KEEPING_FALLBACK.to_string();
             s.lane_keeping_unreadable = true;
             s.lane_departure_warning = false;
-            s.lane_centering_assist = false;
         }
         s.lane_keeping_rename_notice_left = s
             .lane_keeping_rename_notice_left
             .clamp(0, LANE_KEEPING_RENAME_NOTICES);
-        if data.is_some_and(|data| !data.contains_key("driving_assistance_preset")) {
+        if let Some(raw) = data.filter(|data| !data.contains_key("driving_assistance_preset")) {
             s.lane_departure_warning = s.lane_keeping != "full";
-            s.lane_centering_assist = s.lane_keeping == "partial";
             for field in DRIVING_ASSIST_FIELDS {
                 match field {
                     "descent_speed_control" => s.descent_speed_control = "off".to_string(),
@@ -433,13 +441,21 @@ impl Settings {
                     // difficulty. The blanket "everything off" below must
                     // not reach it, or a pre-preset save would change what
                     // the truck does the moment it is opened.
+                    "lane_departure_warning" | "lane_keeping" => {}
                     // Facility stopping was an explicit opt-in on every
-                    // pre-preset save (its merged rest-stop half too, kept
-                    // above); the blanket off must not take it back.
-                    "lane_departure_warning"
-                    | "lane_centering_assist"
-                    | "lane_keeping"
-                    | "destination_approach_assist" => {}
+                    // pre-preset save (its merged rest-stop half too), so the
+                    // blanket off must not take it back -- but it must be the
+                    // FILE's opt-in, never the class default. That default is
+                    // on since the Balanced fresh install, and a save written
+                    // before the preset existed has neither key, so reaching
+                    // for the default handed every migrating driver an assist
+                    // that takes the pedals at the gate, with every other
+                    // assist forced off and nothing said.
+                    "destination_approach_assist" => {
+                        let opted_in = |key: &str| raw.get(key) == Some(&Value::Bool(true));
+                        s.destination_approach_assist = opted_in("destination_approach_assist")
+                            || opted_in("selected_stop_assist");
+                    }
                     other => {
                         s.set_assist_value(other, super::AssistValue::Flag(false));
                     }
@@ -530,11 +546,8 @@ impl Settings {
         if !BACKUP_ANNOUNCEMENT_MODES.contains(&s.backup_announcements.as_str()) {
             s.backup_announcements = "every".to_string();
         }
-        // (cloud_saves, the mastodon fields, live_weather_controls_calendar
-        // and duck_audio_for_speech were type-checked in the raw copy.)
-        if s.mastodon_linked_handle == coerce::JUNK {
-            s.mastodon_linked_handle = String::new();
-        }
+        // (cloud_saves, live_weather_controls_calendar and
+        // duck_audio_for_speech were type-checked in the raw copy.)
         for level in [
             &mut s.master_volume,
             &mut s.sfx_volume,
@@ -548,6 +561,13 @@ impl Settings {
             &mut s.speech_volume,
         ] {
             *level = py_clamp_unit(*level);
+        }
+        // The language setting arrived with the translations. A player who
+        // already had a settings file has been hearing English, so that is
+        // what they keep until they choose otherwise; only a fresh install
+        // follows the operating system's language.
+        if data.is_some_and(|data| !data.contains_key("language")) {
+            s.language = crate::l10n::ENGLISH.to_string();
         }
         if s.radio_station_id.is_empty() || s.radio_station_id == coerce::JUNK {
             s.radio_station_id = "route_playlist".to_string();

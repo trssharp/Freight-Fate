@@ -10,6 +10,7 @@ use ff_core::speech_pacing::{EventPriority, SpeechCategory};
 
 use crate::app::{GameContext, SayEvent};
 use crate::discord_presence::{driving_presence, PresenceState};
+use crate::online_presence::RADIO_CLAUSE;
 use crate::states::base::TimedMessageState;
 use crate::states::driving::DrivingState;
 use crate::states::driving_core::*;
@@ -17,6 +18,117 @@ use crate::states::driving_menu_states::{replace_drive_with, DriveRef, FacilityA
 use crate::states::driving_updates::live;
 
 impl DrivingState {
+    /// Once-per-threshold low-fuel cue at about 15 percent remaining.
+    ///
+    /// Speaks on the Safety channel (heard at quiet and urgent_only), plays
+    /// the same short UI warning other mid-drive safety cues use, and latches
+    /// until a refill climbs the tank back above the line. Empty-tank rescue
+    /// keeps its own path; this cue stays silent once the tank is dry.
+    pub fn check_low_fuel_warning(&mut self, ctx: &mut GameContext) {
+        let fraction = self.trip.truck.fuel_fraction();
+        if self.trip.truck.fuel_gal <= 0.0 {
+            // Empty tank is the rescue line, not a second low-fuel cue.
+            return;
+        }
+        if fraction > LOW_FUEL_WARN_FRACTION {
+            self.low_fuel_said = false;
+            return;
+        }
+        if self.low_fuel_said {
+            return;
+        }
+        self.low_fuel_said = true;
+        let pct = fraction * 100.0;
+        let message = format!("Fuel low: {pct:.0} percent.");
+        ctx.audio.play("ui/warning");
+        ctx.say_event_with(message, SayEvent::new().category(SpeechCategory::Safety));
+    }
+
+    /// Miles per gallon this run is really getting: its own average once it
+    /// has driven and burned enough to measure, else [`ASSUMED_RANGE_MPG`].
+    /// The run's average already carries the load, the climbs and the
+    /// idling, which a flat figure cannot.
+    pub fn range_mpg(&self) -> f64 {
+        let used = self.trip.fuel_used_gal;
+        let driven = self.trip.position_mi;
+        if used >= RANGE_MEASURE_MIN_GAL && driven >= RANGE_MEASURE_MIN_MI {
+            (driven / used).clamp(RANGE_MPG_FLOOR, RANGE_MPG_CEILING)
+        } else {
+            ASSUMED_RANGE_MPG
+        }
+    }
+
+    /// Miles the fuel in the tank reaches at [`Self::range_mpg`].
+    pub fn fuel_range_mi(&self) -> f64 {
+        self.trip.truck.fuel_gal.max(0.0) * self.range_mpg()
+    }
+
+    /// Miles to the nearest fuel stop ahead this rig can use, if any.
+    pub fn next_fuel_stop_mi(&self) -> Option<f64> {
+        self.trip
+            .stops
+            .iter()
+            .filter(|stop| {
+                stop.actions.iter().any(|a| a == "fuel") && stop.accessible_to(self.trip.bobtail)
+            })
+            .map(|stop| stop.at_mi - self.trip.position_mi)
+            .filter(|ahead| *ahead >= 0.0)
+            .min_by(f64::total_cmp)
+    }
+
+    /// The fuel range, the miles it has to cover, and the next fuel stop
+    /// when that comes before the destination.
+    pub fn fuel_range_need(&self) -> (f64, f64, Option<f64>) {
+        let remaining = self.trip.remaining_miles();
+        let next_fuel = self.next_fuel_stop_mi().filter(|ahead| *ahead < remaining);
+        (
+            self.fuel_range_mi(),
+            next_fuel.unwrap_or(remaining),
+            next_fuel,
+        )
+    }
+
+    /// Warns once when the fuel range falls short of the next fuel stop, or
+    /// of the destination when no fuel stop comes first. Latched until the
+    /// range clears what it needs by a fifth, so a refill re-arms it and the
+    /// run's average wobbling across the line does not.
+    pub fn check_fuel_range_warning(&mut self, ctx: &mut GameContext) {
+        if self.trip.truck.fuel_gal <= 0.0 {
+            return;
+        }
+        let (range, needed, next_fuel) = self.fuel_range_need();
+        if range >= needed * 1.2 {
+            self.fuel_range_short_said = false;
+            return;
+        }
+        if range >= needed || self.fuel_range_short_said {
+            return;
+        }
+        self.fuel_range_short_said = true;
+        let range_text = ctx.settings.distance_text(range, false);
+        let terse = self.terse_speech(ctx);
+        let message = match next_fuel {
+            Some(ahead) => {
+                let ahead_text = ctx.settings.distance_text(ahead, false);
+                if terse {
+                    format!("Fuel range {range_text}, next fuel {ahead_text}.")
+                } else {
+                    format!(
+                        "Fuel range about {range_text}, short of the next fuel stop, \
+                         {ahead_text} ahead."
+                    )
+                }
+            }
+            None if terse => format!("Fuel range {range_text}, short of the destination."),
+            None => format!(
+                "Fuel range about {range_text}, short of the destination, with no fuel \
+                 stop ahead on this route."
+            ),
+        };
+        ctx.audio.play("ui/warning");
+        ctx.say_event_with(message, SayEvent::new().category(SpeechCategory::Safety));
+    }
+
     /// `_handle_out_of_fuel()`.
     pub fn handle_out_of_fuel(&mut self, ctx: &mut GameContext) {
         if self.rescue_offered {
@@ -27,7 +139,7 @@ impl DrivingState {
         let billing = {
             let profile = profile_mut_of(ctx);
             if player_pays_operating_costs(&profile.business_status) {
-                profile.money -= fee; // can go negative: the rescue is not optional
+                profile.spend(fee); // can go negative: the rescue is not optional
                 format!("for {} dollars", fmt_grouped(fee, 0))
             } else {
                 // the carrier pays for company fuel, but a preventable service
@@ -46,7 +158,7 @@ impl DrivingState {
         // never-dropped contract instead of purging the channel.
         let engine = ctx.control_hint("engine");
         let mut opts = SayEvent::queued().priority(EventPriority::Route);
-        opts.category = Some(SpeechCategory::Money);
+        opts.category = Some(SpeechCategory::Safety);
         ctx.say_event_with(
             format!(
                 "Out of fuel. Roadside rescue brought thirty gallons {billing}. Press {engine} \
@@ -68,6 +180,10 @@ impl DrivingState {
         self.exit_stop = None;
         self.exit_signal_on = false;
         self.exit_signal_canceled = false;
+        // A cancel belongs to the approach it was made on. Left standing, the
+        // rebuilt exit carries the same key, the scanner skips it, and lane
+        // keeping never takes the exit this loop-back says it will.
+        self.canceled_exit_key = None;
         self.cancel_cruise(ctx, false);
         let exit_at = match exit_details {
             Some(details) => details.0,
@@ -96,12 +212,6 @@ impl DrivingState {
         self.destination_exit_announced_key = String::new();
         self.destination_exit_response_s = 0.0;
         self.destination_exit_cache = None;
-        // The loop-back is a whole fresh approach, so the once-per-drive
-        // "lane keeping will take this exit" warning is owed again. Spending
-        // it on the first approach and then never repeating it is half of how
-        // a truck comes to leave the highway with nothing said (Sarah A,
-        // St. George to Cedar City, 2026-08-26).
-        self.lane_keeping_takes_exit_said = false;
         let automated = ctx.settings.lane_is_automated();
         let reroute_text = if self.terse_speech(ctx) {
             // Terse holds on to consequences, and who is driving the second
@@ -109,11 +219,10 @@ impl DrivingState {
             // lane work is theirs they still need to hear that arming it is
             // on them again -- and when it is not, that it is not.
             if automated {
-                "Safe turnaround. Destination exit ahead again; lane keeping will take it."
-                    .to_string()
+                "Destination exit ahead again.".to_string()
             } else {
                 format!(
-                    "Safe turnaround. Destination exit ahead again; press {} to signal.",
+                    "Destination exit ahead again. Press {} to signal.",
                     ctx.control_hint("take_exit")
                 )
             }
@@ -124,13 +233,11 @@ impl DrivingState {
             // instruction to take it themselves -- which is what "I was about
             // to hit X when the truck took the exit" is describing. Never
             // name a control the driver's own settings have taken off them.
-            "You loop back through the next safe turnaround. The destination exit is ahead \
-             again, and lane keeping will take it."
-                .to_string()
+            "You turned around, and the destination exit is ahead again.".to_string()
         } else {
             format!(
-                "You loop back through the next safe turnaround. The destination exit is ahead \
-                 again. Press {} to signal for it.",
+                "You turned around, and the destination exit is ahead again. Press {} to signal \
+                 for it.",
                 ctx.control_hint("take_exit")
             )
         };
@@ -143,54 +250,83 @@ impl DrivingState {
         let mut opts = SayEvent::new();
         opts.category = Some(SpeechCategory::Navigation);
         ctx.say_event_with(
-            format!("You missed the destination exit for {facility}. {reroute_text}"),
+            format!("Missed the destination exit for {facility}. {reroute_text}"),
             opts,
         );
     }
 
+    /// The assisted stop at a facility entrance: the assist takes the pedals,
+    /// brings the truck to rest, sets the parking brake and holds there for
+    /// the driver's key. `true` means the assist owns this frame and the
+    /// gate's manual flow must not run.
+    ///
+    /// Shared by the dock gate and the pickup gate. It lived only in
+    /// `handle_arrival_gate` until 2026-09-20, so the setting that promises
+    /// to stop at "the selected facility arrival point" stopped the truck at
+    /// a delivery and not at a pickup: `handle_pickup_gate` only OPENED the
+    /// check-in once the truck was already under docking speed, and nothing
+    /// ever put the brake on. The owner drove into Oshkosh Dry Warehouse and
+    /// stopped the truck himself (2026-09-20), which is the same report the
+    /// delivery side answered in August. `open_ready_facility_arrival` has
+    /// always dispatched the confirm key by phase, so the pickup needed the
+    /// hold and nothing else.
+    pub(crate) fn hold_at_facility_entrance(&mut self, ctx: &mut GameContext) -> bool {
+        if !ctx.settings.destination_approach_assist {
+            return false;
+        }
+        // A ramp-end arrival may already have started the automatic
+        // pull-in before this frame reaches the finished-trip handler.
+        // Do not queue the manual "Press Enter" hold prompt behind the
+        // truthful dock-opening line: even though its validity gate keeps
+        // it out of speech, it leaves a contradictory transcript and can
+        // be handed to other announcement consumers as actionable text.
+        if self.arrival_menu_open {
+            return true;
+        }
+        // An arrival pause, held until the departure resumes it. Ending the
+        // session here lost the driver's set speed at every assisted pickup
+        // (tester report, 2026-09-28).
+        if self.speed_control_armed {
+            self.pause_speed_control(ctx, false);
+        } else {
+            self.cancel_cruise(ctx, false);
+        }
+        self.trip.truck.throttle = 0.0;
+        self.trip.truck.brake = 1.0;
+        if self.trip.truck.speed_mph() <= 0.5 && !self.arrival_full_stop_said {
+            self.arrival_full_stop_said = true;
+            self.trip.truck.set_parking_brake();
+            // Only while the key still does something. A cut line is
+            // handed back so it finishes, and this one asks for a
+            // keypress -- handed back after the driver has pressed it
+            // and the dock menu is open, it asks for a press that has
+            // already happened (Shane, 2026-08-21, three of these at
+            // one dock). Third line in this family after the scale and
+            // the destination exit; the rule is the same every time.
+            //
+            // Rust: the live `_arrival_menu_open` read cannot ride a
+            // 'static closure, so it goes through `live` like the scale
+            // reminder's mile does. The flag is stamped where it moves as
+            // well as per frame, because the drive stops ticking the
+            // moment the dock menu takes over -- which is exactly the
+            // moment this gate has to notice.
+            self.refresh_live_facts();
+            let mut opts = SayEvent::new().valid(|| !live::arrival_menu_open());
+            opts.category = Some(SpeechCategory::Navigation);
+            ctx.say_event_with(
+                format!(
+                    "Holding at the entrance. Press {} to continue.",
+                    ctx.control_hint("confirm")
+                ),
+                opts,
+            );
+        }
+        true
+    }
+
     /// `_handle_arrival_gate()`.
     pub fn handle_arrival_gate(&mut self, ctx: &mut GameContext) {
-        if ctx.settings.destination_approach_assist {
-            // A ramp-end arrival may already have started the automatic
-            // pull-in before this frame reaches the finished-trip handler.
-            // Do not queue the manual "Press Enter" hold prompt behind the
-            // truthful dock-opening line: even though its validity gate keeps
-            // it out of speech, it leaves a contradictory transcript and can
-            // be handed to other announcement consumers as actionable text.
-            if self.arrival_menu_open {
-                return;
-            }
-            self.cancel_cruise(ctx, false);
-            self.trip.truck.throttle = 0.0;
-            self.trip.truck.brake = 1.0;
-            if self.trip.truck.speed_mph() <= 0.5 && !self.arrival_full_stop_said {
-                self.arrival_full_stop_said = true;
-                self.trip.truck.set_parking_brake();
-                // Only while the key still does something. A cut line is
-                // handed back so it finishes, and this one asks for a
-                // keypress -- handed back after the driver has pressed it
-                // and the dock menu is open, it asks for a press that has
-                // already happened (Shane, 2026-08-21, three of these at
-                // one dock). Third line in this family after the scale and
-                // the destination exit; the rule is the same every time.
-                //
-                // Rust: the live `_arrival_menu_open` read cannot ride a
-                // 'static closure, so it goes through `live` like the scale
-                // reminder's mile does. The flag is stamped where it moves as
-                // well as per frame, because the drive stops ticking the
-                // moment the dock menu takes over -- which is exactly the
-                // moment this gate has to notice.
-                self.refresh_live_facts();
-                let mut opts = SayEvent::new().valid(|| !live::arrival_menu_open());
-                opts.category = Some(SpeechCategory::Navigation);
-                ctx.say_event_with(
-                    format!(
-                        "Facility stopping assistance is holding at the entrance. Press {} to continue into the facility.",
-                        ctx.control_hint("confirm")
-                    ),
-                    opts,
-                );
-            }
+        if self.hold_at_facility_entrance(ctx) {
             return;
         }
         if self.trip.truck.speed_mph() <= DOCKING_MAX_MPH && self.trip.truck.parking_brake {
@@ -214,7 +350,7 @@ impl DrivingState {
             let message = if self.terse_speech(ctx) {
                 format!("At {facility}. Stop to dock.")
             } else {
-                format!("Still at {facility}. The delivery is here, not ahead. Stop to dock.")
+                format!("Still at {facility}. Stop to dock.")
             };
             self.remind_arrival_gate(ctx, "Destination gate: stop to dock.", &message, false);
             return;
@@ -237,11 +373,7 @@ impl DrivingState {
             format!("Destination ahead, {facility}. Stop at the gate.")
         };
         if keeper_held {
-            message.push_str(if self.terse_speech(ctx) {
-                " Speed keeper off."
-            } else {
-                " Speed keeper off. The pedals are yours."
-            });
+            message.push_str(" Speed keeper off.");
         }
         self.seed_gate_grace_at_gate(ctx, &message);
         if keeper_held {
@@ -323,7 +455,11 @@ impl DrivingState {
     /// Mirrors the update loop's gate dispatch so the info keys agree with
     /// what the gate handlers are actually waiting for.
     pub fn arrival_gate_query_text(&self, ctx: &GameContext) -> Option<String> {
-        if !self.trip.finished || self.arrival_menu_open || self.departure_chain {
+        if !self.trip.finished
+            || self.arrival_menu_open
+            || self.departure_chain
+            || self.stop_chain.is_some()
+        {
             return None;
         }
         if self.phase == DRIVE_PHASE_PICKUP {
@@ -355,11 +491,7 @@ impl DrivingState {
         let message = if ctx.settings.destination_approach_assist {
             format!("At {facility}. Stop to dock.")
         } else {
-            format!(
-                "At {facility}. Stop, set the parking brake with {}, then {} opens the facility.",
-                ctx.control_hint("parking_brake"),
-                ctx.control_hint("rest")
-            )
+            format!("At {facility}. Stop and set the parking brake.")
         };
         self.say_route_navigation(ctx, &message);
     }
@@ -399,7 +531,7 @@ impl DrivingState {
         ctx.replace_state(
             TimedMessageState::new(
                 "Pulling into destination",
-                &format!("Pulling into {facility}. Brakes set; dock menu opening in a moment."),
+                &format!("Pulling into {facility}."),
                 "Pulling into the destination facility.",
                 STOP_PULL_IN_WAIT_S,
                 move |ctx: &mut GameContext| {
@@ -531,7 +663,7 @@ impl DrivingState {
             .station_by_id(&self.radio_station_id)
             .cloned()
             .unwrap_or_else(|| self.radio.tuned_station());
-        let mut clause = format!("listening to {}", station.display_name());
+        let mut clause = format!("{RADIO_CLAUSE}{}", station.display_name());
         // And the song, when the stream says: broadcast metadata the station
         // itself publishes to every listener, so no more private than the
         // station name. The tick's copy, not a fresh read -- presence is

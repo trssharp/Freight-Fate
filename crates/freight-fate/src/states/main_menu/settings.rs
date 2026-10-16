@@ -35,6 +35,11 @@ impl SettingsState {
         ("Problem reports", "reports"),
     ];
 
+    /// Categories with nothing to do on iPhone and iPad: TestFlight and the
+    /// App Store do the updating, and the log sits where the player cannot
+    /// open it.
+    const HIDDEN_ON_IOS: [&'static str; 2] = ["updates", "reports"];
+
     pub fn new() -> Self {
         Self {
             menu: MenuCore::new("Settings")
@@ -74,6 +79,7 @@ impl Menu for SettingsState {
     fn build_items(&mut self, _ctx: &mut GameContext) -> Vec<MenuItem<Self>> {
         let mut items: Vec<MenuItem<Self>> = Self::CATEGORIES
             .iter()
+            .filter(|(_, key)| !Self::HIDDEN_ON_IOS.contains(key) || !cfg!(target_os = "ios"))
             .map(|(label, key)| {
                 MenuItem::new(*label, move |s: &mut Self, ctx| s.open(ctx, key))
                     .help(format!("Open {} settings.", label.to_lowercase()))
@@ -138,10 +144,11 @@ pub const SETTINGS_LAYOUT_NOTICES: [(i64, &str); 3] = [
         "Speech verbosity is now Driving speech, in the Speech category, with \
          two more steps. Normal is now standard and terse is now quiet; your \
          choice came with you. Both still speak every safety call, route \
-         instruction, and money consequence; quiet trades confirmations and \
-         status for short sounds. Urgent only, below them, speaks safety \
-         calls, costs, and the directions you cannot take back, while a \
-         heads-up about a bend or a town becomes a short sound.",
+         instruction, and money consequence. Quiet keeps short confirmations \
+         and status updates, including lane openings. Urgent only speaks \
+         safety warnings and directions requiring action; road heads-ups and \
+         confirmations become sounds, while routine costs and status are silent. \
+         Events silenced by your setting stay out of message review.",
     ),
 ];
 
@@ -409,7 +416,8 @@ impl SettingsCategoryState {
         save_settings(&ctx.settings);
         ctx.audio.play("ui/menu_select");
         let text = self.current_text(ctx);
-        if !ctx.speech.say_adjustment_preview(setting, &text, true) {
+        let heard = ctx.tr(&text);
+        if !ctx.speech.say_adjustment_preview(setting, &heard, true) {
             ctx.say(&text);
         }
     }

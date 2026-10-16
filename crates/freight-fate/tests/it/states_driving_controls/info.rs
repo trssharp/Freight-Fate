@@ -19,8 +19,10 @@ fn test_speed_key_includes_cruise_set_speed_when_active() {
     app.clear_speech();
     d.handle_key_event(&mut app.ctx, &key(Key::Space));
     let said = last(&app);
-    assert!(said.contains("automatic speed control"), "{said}");
-    assert!(said.contains("cruise set at 55 miles per hour"), "{said}");
+    assert!(
+        said.contains("Adaptive cruise set at 55 miles per hour."),
+        "{said}"
+    );
 }
 
 #[test]
@@ -32,13 +34,12 @@ fn test_speed_key_includes_speed_keeper_target_when_active() {
     app.clear_speech();
     d.handle_key_event(&mut app.ctx, &key(Key::Space));
     let said = last(&app);
-    assert!(said.contains("automatic speed control"), "{said}");
     assert!(
-        said.contains("speed keeper holding 15 miles per hour"),
+        said.contains("Speed keeper holding 15 miles per hour."),
         "{said}"
     );
     assert!(
-        said.contains("open-road target 55 miles per hour"),
+        said.contains("Open-road target 55 miles per hour."),
         "{said}"
     );
 }
@@ -158,7 +159,6 @@ fn test_alt_c_repeats_the_cb_call_at_the_distance_it_is_now() {
     app.clear_speech();
     d.handle_key_event(&mut app.ctx, &alt(Key::C));
     let said = last(&app);
-    assert!(said.starts_with("CB chatter"), "{said}");
     assert_eq!(said, d.trip.cb_patrol_message(&post, 2.0));
     assert_ne!(said, first_heard, "the distance went stale");
 }
@@ -203,11 +203,11 @@ fn test_a_later_announcement_takes_the_a_key_but_not_the_cb_repeat() {
 
     app.clear_speech();
     d.handle_key_event(&mut app.ctx, &key(Key::A));
-    assert!(!last(&app).contains("CB chatter"), "{}", last(&app));
+    assert!(!last(&app).contains("in the median"), "{}", last(&app));
 
     app.clear_speech();
     d.handle_key_event(&mut app.ctx, &alt(Key::C));
-    assert!(last(&app).starts_with("CB chatter"), "{}", last(&app));
+    assert!(last(&app).contains("in the median"), "{}", last(&app));
 }
 
 #[test]
@@ -223,7 +223,7 @@ fn test_alt_c_brings_back_the_voice_and_not_the_squelch() {
     let audio = app.record_audio();
     app.clear_speech();
     d.handle_key_event(&mut app.ctx, &alt(Key::C));
-    assert!(last(&app).starts_with("CB chatter"), "{}", last(&app));
+    assert!(last(&app).contains("in the median"), "{}", last(&app));
     assert!(
         !audio
             .borrow()
@@ -330,6 +330,75 @@ fn test_upcoming_key_handles_a_clear_road() {
     assert!(last(&app).contains("Nothing notable"), "{}", last(&app));
 }
 
+/// Agent drives A and B (2026-09-24): "Nothing notable in the next 15
+/// miles." 1.2 and 3.5 miles before the destination exit.
+#[test]
+fn test_upcoming_key_names_the_destination_exit() {
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    d.trip.zones.clear();
+    d.trip.stops.clear();
+    d.trip.curves.clear();
+    d.trip.position_mi = 0.0;
+    let exit = d
+        .destination_exit_stop(&mut app.ctx)
+        .expect("the delivery has a destination exit");
+    d.trip.position_mi = exit.at_mi - 1.2;
+    app.clear_speech();
+    d.handle_key_event(&mut app.ctx, &key(Key::U));
+    let report = last(&app);
+    assert!(!report.contains("Nothing notable"), "{report}");
+    assert!(report.contains("destination exit"), "{report}");
+    assert!(
+        report.contains(&app.ctx.settings.distance_text(1.2, true)),
+        "{report}"
+    );
+}
+
+/// Agent drive A (2026-09-24): U said "facility gate in 0.3 miles" -- where
+/// the gate's 15 zone starts -- while R said "three quarters of a mile to the
+/// gate". Both read the gate now.
+#[test]
+fn test_upcoming_key_reads_the_gate_where_route_status_does() {
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    d.trip.stops.clear();
+    d.trip.curves.clear();
+    d.destination_exit_taken = true;
+    d.ramp_mi = Some(0.75);
+    let pos = d.trip.position_mi;
+    d.trip.zones = vec![Zone::new(pos + 0.25, pos + 0.75, 15.0, "facility gate")];
+    app.clear_speech();
+    d.handle_key_event(&mut app.ctx, &key(Key::U));
+    let report = last(&app);
+    let gate = app.ctx.settings.distance_text(0.75, true);
+    assert!(report.contains(&format!("facility gate in {gate}")), "{report}");
+    d.handle_key_event(&mut app.ctx, &key(Key::R));
+    let status = last(&app).to_lowercase();
+    assert!(
+        status.contains(&spoken_closing_distance(0.75, true).to_lowercase()),
+        "{status}"
+    );
+}
+
+/// Agent drive B (2026-09-24): stopped at the ramp's stop bar two miles from
+/// the gate, C said "arrival in 8.6 hours at a typical highway pace".
+#[test]
+fn test_clock_key_estimates_the_approach_from_the_road_left_to_the_gate() {
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    d.destination_exit_taken = true;
+    d.ramp_mi = Some(2.0);
+    d.trip.truck.velocity_mps = 0.0;
+    app.clear_speech();
+    d.handle_key_event(&mut app.ctx, &key(Key::C));
+    let report = last(&app);
+    assert!(
+        report.contains("Arrival 0.1 hours at a typical street pace"),
+        "{report}"
+    );
+}
+
 #[test]
 fn test_upcoming_key_stays_a_couple_of_sentences() {
     let mut app = TestApp::new();
@@ -401,7 +470,29 @@ fn test_safe_speed_key_answers_for_the_ramp() {
     d.ramp_mi = Some(d.trip.position_mi); // on the ramp now
     app.clear_speech();
     d.handle_key_event(&mut app.ctx, &key(Key::D));
-    assert_eq!(last(&app), "Safe speed 45 miles per hour for the ramp.");
+    assert_eq!(last(&app), "Safe speed 45 miles per hour, the exit speed.");
+}
+
+#[test]
+fn test_safe_speed_key_says_nothing_of_the_ramp_before_the_gore() {
+    // The gore takes road speed; the exit speed is braked for past it, so an
+    // armed exit ahead does not lower the mainline answer (realistic exit,
+    // 2026-09-24).
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    d.trip.weather.current = WeatherKind::Clear;
+    d.trip.position_mi = d.trip.total_miles() / 2.0;
+    d.exit_stop = Some(ff_core::sim::trip_models::RoadStop::new(
+        "Test Plaza",
+        d.trip.position_mi + 1.0,
+        "truck_stop",
+    ));
+    d.exit_signal_on = true;
+    app.clear_speech();
+    d.handle_key_event(&mut app.ctx, &key(Key::D));
+    let said = last(&app);
+    assert!(!said.contains("ramp") && !said.contains("exit"), "{said}");
+    assert!(said.starts_with("Safe speed "), "{said}");
 }
 
 #[test]
@@ -426,7 +517,7 @@ fn test_grade_key_reads_slope_and_verdict() {
     d.handle_key_event(&mut app.ctx, &key(Key::G));
     let said = last(&app);
     assert!(said.contains("percent uphill"), "{said}");
-    assert!(said.contains("lose speed"), "{said}");
+    assert!(said.contains("Losing speed."), "{said}");
 
     // Downhill with no jake and speed building: the warning speaks.
     d.trip.truck.grade = -0.05;
@@ -436,7 +527,7 @@ fn test_grade_key_reads_slope_and_verdict() {
     d.handle_key_event(&mut app.ctx, &key(Key::G));
     let said = last(&app);
     assert!(said.contains("percent downhill"), "{said}");
-    assert!(said.contains("set the jake"), "{said}");
+    assert!(said.contains("Set the jake."), "{said}");
 }
 
 #[test]
@@ -451,11 +542,11 @@ fn test_clock_key_leads_with_time_then_schedule_verdict() {
     // must carry the answer, not a preamble.
     assert!(!report.starts_with("It is"), "{report}");
     let verdict_at = report
-        .find("On schedule: arrival in")
-        .or_else(|| report.find("Running behind: arrival in"))
+        .find("On schedule. Arrival")
+        .or_else(|| report.find("Running behind. Arrival"))
         .unwrap_or(usize::MAX);
     assert!(verdict_at > 0 && verdict_at < 60, "{report}");
-    assert!(report.contains("deadline in"), "{report}");
+    assert!(report.contains("Deadline "), "{report}");
     assert!(report.contains("due"), "{report}");
 }
 
@@ -471,7 +562,25 @@ fn real_time_clock_names_the_synchronized_value_truthfully() {
     let report = last(&app);
 
     assert!(report.starts_with("3 PM local game time"), "{report}");
-    assert!(report.contains("deadline in"), "{report}");
+    assert!(report.contains("Deadline "), "{report}");
+}
+
+/// Real time chosen while rolling waits for the next stop, so until then the
+/// clock is still the route's and keeps the route's zone name.
+#[test]
+fn pending_real_time_keeps_the_running_clocks_zone_name() {
+    let mut app = TestApp::new();
+    app.ctx.settings.time_scale = 20.0;
+    let mut d = a_drive(&mut app);
+    app.ctx.settings.time_scale = 1.0;
+    let zone = d.trip.current_timezone().name;
+
+    app.clear_speech();
+    d.handle_key_event(&mut app.ctx, &key(Key::C));
+    let report = last(&app);
+
+    assert!(!report.contains("local game time"), "{report}");
+    assert!(report.contains(zone), "{report}");
 }
 
 #[test]
@@ -503,7 +612,7 @@ fn test_clock_key_keeps_one_hours_clause_instead_of_the_whole_report() {
     let report = last(&app);
     // The limit that comes first still rides the clock key: a driver can be on
     // schedule and out of hours at once.
-    assert!(report.contains("Break due in 3 hours."), "{report}");
+    assert!(report.contains("30-minute break due in 3 hours."), "{report}");
     // ...but the full ELD report belongs to Tab and the three hours keys.
     assert!(!report.contains("hours of driving left"), "{report}");
     assert!(!report.contains("ELD status"), "{report}");
@@ -534,16 +643,16 @@ fn test_alt_a_s_and_d_each_answer_one_hours_question() {
     app.clear_speech();
     d.handle_key_event(&mut app.ctx, &alt(Key::A));
     assert!(
-        last(&app).starts_with("At the wheel so far:"),
+        last(&app).starts_with("Driven "),
         "{}",
         last(&app)
     );
-    assert!(last(&app).contains("5 hours driving"), "{}", last(&app));
+    assert!(last(&app).contains("Driven 5 hours"), "{}", last(&app));
 
     app.clear_speech();
     d.handle_key_event(&mut app.ctx, &alt(Key::S));
     assert!(
-        last(&app).starts_with("Break due in 3 hours"),
+        last(&app).starts_with("30-minute break due in 3 hours"),
         "{}",
         last(&app)
     );
@@ -593,8 +702,8 @@ fn test_alt_d_carries_the_next_legal_stop_context() {
     // The stop-planning clause moved off the clock key onto the key that
     // answers "when does this shift end".
     assert!(
-        verbose.contains("Destination estimated reachable before your next hours limit")
-            && verbose.contains("No HOS stop is needed first"),
+        verbose.contains("Destination fits this shift")
+            && verbose.contains("No HOS stop first"),
         "{verbose}"
     );
 
@@ -652,7 +761,7 @@ fn test_controller_clock_button_keeps_the_whole_hours_report() {
     // A pad has nowhere to put three more info buttons, so this one press must
     // still carry the hours a keyboard player gets from Alt A/S/D.
     assert!(
-        last(&app).contains("hours of driving left"),
+        last(&app).contains("14-hour window"),
         "{}",
         last(&app)
     );
@@ -843,6 +952,29 @@ fn test_alt_j_toggles_whether_j_arms_the_automatic_jake() {
     d.handle_key_event(&mut app.ctx, &alt(Key::J));
     assert!(d.auto_jake_enabled);
     assert_eq!(last(&app), "Automatic jake on.");
+}
+
+#[test]
+fn test_automatic_jake_off_carries_into_the_next_drive() {
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    d.handle_key_event(&mut app.ctx, &alt(Key::J));
+    assert!(!app.ctx.settings.automatic_jake);
+    let next = a_drive(&mut app);
+    assert!(!next.auto_jake_enabled);
+}
+
+#[test]
+fn test_a_stage_picked_over_a_cruise_raised_jake_is_the_drivers() {
+    let mut app = TestApp::new();
+    let mut d = a_drive(&mut app);
+    d.cruise_jake_stage = 3;
+    d.trip.truck.engine_brake_stage = 3;
+    d.handle_key_event(&mut app.ctx, &key(Key::Num1));
+    assert_eq!(d.cruise_jake_stage, 0);
+    // Cruise handing its retarder back no longer takes the driver's stage.
+    d.clear_cruise(false);
+    assert_eq!(d.trip.truck.engine_brake_stage, 1);
 }
 
 #[test]

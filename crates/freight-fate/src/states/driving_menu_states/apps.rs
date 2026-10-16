@@ -184,7 +184,10 @@ impl DriverAppScreenState {
                         "Observation age: {}.",
                         d.trip.weather.observation_age_value()
                     ),
-                    format!("Conditions: {}", d.trip.weather.source_conditions(imperial)),
+                    format!(
+                        "Conditions: {}.",
+                        d.trip.weather.source_conditions(imperial)
+                    ),
                     format!(
                         "Safe speed guidance: about {}.",
                         ctx.settings
@@ -202,6 +205,18 @@ impl DriverAppScreenState {
                     lines.push(format!("Forecast ahead: {}.", forecast.join(", then ")));
                 } else {
                     lines.push("Forecast ahead: unavailable.".to_string());
+                }
+                // A warning was spoken once as it arrived and then lived only
+                // in message review; a player asked how to hear a special
+                // weather statement again while driving (Mastodon, 2026-10-05).
+                if !d.trip.live_alerts.is_empty() {
+                    let alerts: Vec<String> = d
+                        .trip
+                        .live_alerts
+                        .iter()
+                        .map(|alert| alert.spoken())
+                        .collect();
+                    lines.push(format!("Weather alerts: {}.", alerts.join("; ")));
                 }
                 lines
             })
@@ -263,7 +278,8 @@ impl DriverAppScreenState {
             .with(ctx, |d, ctx| {
                 let summary =
                     crate::states::driving_core::hos_of(ctx).summary(&ctx.settings.hos_mode);
-                let mut lines = vec![format!("ELD: {}", summary.trim_end_matches('.'))];
+                let summary = summary.trim_end_matches('.');
+                let mut lines = vec![format!("ELD: {summary}")];
                 let context = d.hos_route_context(ctx);
                 if context.is_empty() {
                     lines.push("ELD route note: no legal stop warning.".to_string());
@@ -391,6 +407,13 @@ impl Menu for DriverAppScreenState {
             return;
         };
         let refresh_failure_started = refresh_failed && !self.weather_refresh_failed;
+        // Same rule as the trip: a new cell loading while simulated weather
+        // is in use is not a status change.
+        let status = if status == "loading" && self.weather_status == Some("fallback") {
+            "fallback"
+        } else {
+            status
+        };
         if changed.is_none() && Some(status) == self.weather_status && !refresh_failure_started {
             self.weather_refresh_failed = refresh_failed;
             return;

@@ -2,12 +2,19 @@
 //! (`ArrivalState._award_arrival_achievements`), kept apart from the money
 //! so the settlement arithmetic stays readable.
 
+use chrono::{Datelike, Local};
 use ff_core::achievements::{add_unique_stat, increment_stat, reset_stat};
+use ff_core::data::regions::REGIONS;
 use ff_core::models::carrier_fleet::{fleet_tier_for_level, FLEET_TIERS};
-use ff_core::sim::season::{date_text, is_friday_the_thirteenth, player_calendar_hours, season};
+use ff_core::sim::season::{
+    date_text, is_friday_the_thirteenth, is_truck_driver_appreciation_week, player_calendar_hours,
+    season,
+};
+use ff_core::sim::vehicle::{combination_tare_kg, max_legal_cargo_tons, TruckSpecs};
 use serde_json::Value;
 
 use crate::app::GameContext;
+use crate::net::server_now;
 use crate::states::driving::DrivingState;
 use crate::states::driving_core::{is_night, profile_mut_of, profile_of};
 use crate::states::driving_menu_states::{simple_arrival_badge, ArrivalState};
@@ -20,6 +27,66 @@ use crate::states::driving_menu_states::{simple_arrival_badge, ArrivalState};
 /// must not crash a settlement.
 fn live_calendar(ctx: &GameContext, d: &DrivingState) -> bool {
     d.trip.weather.provider.is_some() && ctx.settings.live_weather_controls_calendar
+}
+
+/// How close to the legal ceiling a load has to come to count as "pushing
+/// the legal weight limit". Dispatch clamps every load to what a stock
+/// tractor and trailer can haul under 80,000 lb, so the badge is measured
+/// from that ceiling rather than a fixed tonnage the board can never offer.
+pub const MAX_GROSS_MARGIN_TONS: f64 = 1.0;
+
+/// The cargo weight a load needs for "Grossed Out at the Scale House".
+pub fn max_gross_badge_tons() -> f64 {
+    max_legal_cargo_tons(combination_tare_kg(&TruckSpecs::default())) - MAX_GROSS_MARGIN_TONS
+}
+
+/// Towns strung along the old Mother Road that the map carries.
+pub const ROUTE66: [&str; 20] = [
+    "chicago_il_us",
+    "bloomington_il_us",
+    "springfield_il_us",
+    "st_louis_mo_us",
+    "rolla_mo_us",
+    "springfield_mo_us",
+    "joplin_mo_us",
+    "tulsa_ok_us",
+    "oklahoma_city_ok_us",
+    "amarillo_tx_us",
+    "tucumcari_nm_us",
+    "albuquerque_nm_us",
+    "gallup_nm_us",
+    "holbrook_az_us",
+    "winslow_az_us",
+    "flagstaff_az_us",
+    "kingman_az_us",
+    "barstow_ca_us",
+    "victorville_ca_us",
+    "los_angeles_ca_us",
+];
+
+/// Redwood country: the far-north California towns in the big trees' shade.
+pub const NORCAL_GIANTS: [&str; 7] = [
+    "santa_rosa_ca_us",
+    "chico_ca_us",
+    "ukiah_ca_us",
+    "willits_ca_us",
+    "fortuna_ca_us",
+    "eureka_ca_us",
+    "crescent_city_ca_us",
+];
+
+/// How many of the map's regions the career has hauled through. Only the
+/// current region names count, so a key a save kept from an older map can
+/// neither stand in for one nor push the count past the real total.
+fn canonical_regions_visited(ctx: &GameContext) -> usize {
+    let visited = profile_of(ctx).achievement_stats.get("regions_visited");
+    let visited = visited.and_then(Value::as_array);
+    REGIONS
+        .iter()
+        .filter(|region| {
+            visited.is_some_and(|values| values.iter().any(|v| v.as_str() == Some(**region)))
+        })
+        .count()
 }
 
 fn int_stat(ctx: &GameContext, key: &str) -> i64 {
@@ -102,7 +169,7 @@ pub(crate) fn award_arrival_achievements(
     if level >= 3 {
         push(&mut ids, "level_three");
     }
-    let money = profile_of(ctx).money;
+    let money = profile_of(ctx).money();
     if money >= 25_000.0 {
         push(&mut ids, "twenty_five_grand");
     }
@@ -127,16 +194,6 @@ pub(crate) fn award_arrival_achievements(
     if (dest_lon - origin_lon).abs() >= 35.0 {
         push(&mut ids, "coast_to_coast");
     }
-    const ROUTE66: [&str; 8] = [
-        "chicago_il_us",
-        "st_louis_mo_us",
-        "tulsa_ok_us",
-        "oklahoma_city_ok_us",
-        "amarillo_tx_us",
-        "albuquerque_nm_us",
-        "flagstaff_az_us",
-        "los_angeles_ca_us",
-    ];
     if ROUTE66.contains(&origin.as_str()) && ROUTE66.contains(&dest.as_str()) {
         push(&mut ids, "route66_run");
     }
@@ -171,7 +228,7 @@ pub(crate) fn award_arrival_achievements(
     }
 
     // -- Challenges: grind milestones, long hauls, spotless runs ----------
-    if region_count >= 14 {
+    if canonical_regions_visited(ctx) >= REGIONS.len() {
         push(&mut ids, "all_regions");
     }
     if deliveries >= 50 {
@@ -252,7 +309,7 @@ pub(crate) fn award_arrival_achievements(
     if let Some((_, badge)) = STATE_BADGES.iter().find(|(name, _)| *name == dest_state) {
         push(&mut ids, badge);
     }
-    // Map coverage milestones across the 623-city network.
+    // Map coverage milestones across the whole city network.
     let city_count = add_unique_stat(profile_mut_of(ctx), "cities_delivered", &dest);
     if city_count >= 25 {
         push(&mut ids, "twenty_five_cities");
@@ -288,8 +345,7 @@ pub(crate) fn award_arrival_achievements(
         // "by Two"
         push(&mut ids, "gulf_coast_by_two");
     }
-    if dest == "santa_rosa_ca_us" || dest == "chico_ca_us" {
-        // big-tree country
+    if NORCAL_GIANTS.contains(&dest.as_str()) {
         push(&mut ids, "norcal_giants");
     }
     const TRIANGLE: [&str; 5] = [
@@ -362,7 +418,7 @@ pub(crate) fn award_arrival_achievements(
     if job.cargo.key == "grain" || job.cargo.key == "farm_inputs" {
         push(&mut ids, "farm_load");
     }
-    if job.weight_tons >= 24.0 {
+    if job.weight_tons >= max_gross_badge_tons() {
         push(&mut ids, "max_gross_load");
     }
 
@@ -444,6 +500,12 @@ pub(crate) fn award_arrival_achievements(
     if (3.0..6.0).contains(&d.trip.start_hour) {
         push(&mut ids, "dawn_run");
     }
+    // Better than eight miles to the gallon over the whole run. The model is
+    // calibrated for 6.5-7 at cruise, so this is a light foot, not a freebie;
+    // a run with no fuel burned at all (a resumed trip) cannot earn it.
+    if d.trip.fuel_used_gal > 0.0 && d.trip.position_mi / d.trip.fuel_used_gal > 8.0 {
+        push(&mut ids, "thrifty_run");
+    }
     if d.trip.truck.fuel_fraction() < 0.08 {
         push(&mut ids, "fuel_fumes");
     }
@@ -465,8 +527,21 @@ pub(crate) fn award_arrival_achievements(
     if arrival_date == "January 1" && arrival_hour < 3.0 {
         push(&mut ids, "new_year_run");
     }
-    if is_friday_the_thirteenth(calendar_hours) && trip_damage <= 1.0 {
-        push(&mut ids, "friday_thirteenth");
+    // Days the player is living rather than the career's: read off
+    // orinks.net's clock, because the computer's can be set to any date. No
+    // word from the server this session, no badge.
+    if let Some(today) = server_now().map(|now| now.with_timezone(&Local).date_naive()) {
+        if is_friday_the_thirteenth(today) && trip_damage <= 1.0 {
+            push(&mut ids, "friday_thirteenth");
+        }
+        // Ten-four day: the date reads as the acknowledgment every driver on
+        // the channel has been saying all year.
+        if (today.month(), today.day()) == (10, 4) {
+            push(&mut ids, "ten_four_day");
+        }
+        if is_truck_driver_appreciation_week(today) {
+            push(&mut ids, "appreciation_week");
+        }
     }
     if job.distance_mi >= 1_000.0 {
         push(&mut ids, "five_hundred_mile_run");
@@ -477,7 +552,7 @@ pub(crate) fn award_arrival_achievements(
     if arrival_hour < 4.0 && increment_stat(profile_mut_of(ctx), "night_deliveries") >= 10 {
         push(&mut ids, "night_shift_regular");
     }
-    // A clean licence is a running record, so a single ticket ends it: the
+    // A clean license is a running record, so a single ticket ends it: the
     // counter only advances on deliveries that came with none.
     if d.speeding_tickets == 0 {
         if increment_stat(profile_mut_of(ctx), "ticket_free_deliveries") >= 50 {
@@ -512,7 +587,6 @@ pub(crate) fn award_arrival_achievements(
             state.record_badge(
                 result.award.message.normal.clone(),
                 result.award.achievement.name.to_string(),
-                result.publicly_eligible,
             );
         }
     }

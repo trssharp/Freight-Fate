@@ -8,7 +8,87 @@ unrealistic. Use real numbers; where we do not have data, go and get it.
 This file is the standing record for that work. Keep it updated as the work
 lands -- it is what the next session reads.
 
-## What is wrong today
+## STATUS: model and runtime landed 2026-09-18; the map rebake is not
+
+What is done, on `feat/corner-speed-geometry`:
+
+* `crates/ff-core/src/data/corners.rs` is the model, with every source and
+  the derivation in its module docs and the calibration gate below kept as an
+  executable test.
+* `turn_speed_mph` reads it. The 15 mph floor is gone.
+* `tools/build_local_geometry.py` keeps the turn angle it used to discard
+  (`turn_geometry` replaces `turn_direction`) and reports the read/assumed
+  ratio on stdout and in the layer's coverage block.
+* `local_turn_deg` is plumbed through `Leg`, the local-geometry JSON, the
+  route reversal and the baked container. The container's `FORMAT_VERSION`
+  went to 3, so a stale `world.ffdata` is refused with the re-bake command
+  rather than half-read.
+
+What is NOT done: **`src/freight_fate/data/local_geometry.json` has not been
+rebuilt**, so no shipped route carries a real angle yet and every corner is
+priced as a square one (9.4 mph) by the assumed path. The model is correct and
+the game is playable; it is uniform rather than varied until the bake runs.
+Running it needs the state PBFs in `~/.cache/freight-fate-osm/regions` and a
+long wall clock. Until then there is no ratio to read at all: the shipped
+`local_geometry.json` and `facility_approaches.json` carry no turn-angle keys
+and no `meta` coverage block, so every corner takes the assumed path silently.
+The read/assumed ratio first exists in the layer the bake writes.
+
+Note when the bake does run: 84 percent of approach targets are estimated
+fallbacks with no coordinates at all, so they can never carry an angle. Only
+the 1,077 turn-level city-service routes can. Do not read a low ratio as a
+bake failure without checking that denominator first.
+
+### The defect this exposed -- FIXED 2026-09-18
+
+Two tests failed on this branch and they were the same bug:
+`states_driving_facility::test_the_approach_assist_stops_the_truck_on_a_facility_street_chain`
+and `states_driving_approach_sweep::test_the_approach_assist_stops_the_truck_at_every_kind_of_destination`.
+The destination approach assist ran the truck out of air on a facility street
+chain, set the spring brakes, and parked it short of the gate, at every
+destination.
+
+The first diagnosis blamed `keeper_snub_brakes` cycling across its 1.5/1.0
+mph band. **That was wrong**, and the instrumented re-run says so plainly:
+over the 1,200 frames of the drain, `keeper_snub` rose ONCE while the pedal
+rose 179 times. The snub does not cycle. It latches and stays latched.
+
+The real mechanism is the latch outliving the frames that apply it.
+`update_keeper` returns early whenever the driver is on the accelerator or
+the automatic has an open driveline mid-shift, and `update_frame`'s input
+pass -- which ramps `truck.brake` down every frame nobody commands it --
+runs BEFORE it. So on an overridden frame the held application was not
+paused, it was dropped; the next frame the keeper reached its controller it
+re-made the same application from zero, and `consume_brake_air`, which
+charges `air_loss_primary_per_application_psi` on every RISING edge, billed
+4.5 psi again. Measured on the Aberdeen chain: nine re-applications a second,
+about eight psi a second against the four the compressor makes at idle, 308
+rising edges over the chain. FMCSA's CDL manual names the same thing on a
+real truck -- fanning the brakes spends reservoir air the compressor cannot
+replace, and the spring brakes come on.
+
+The corner price is what put the truck where it shows, not what broke it. At
+the old 15 mph corner floor the truck rode above its eased target with no
+snub latched; at 9.35 it settles right on the release edge with one latched.
+
+Fixed in two halves, and neither works alone. The pedal write moved into
+`apply_keeper_snub` and is re-asserted from `update_frame` beside the other
+assists' floors -- the treatment `apply_hazard_brake` and the arrival's
+pedals already have -- so one held snub costs one application however many
+frames the keeper spends overridden. And a driver on the accelerator now
+releases the snub: `keeper_snub_brakes` re-evaluates the latch only on frames
+the keeper reaches its controller, so re-asserting a pedal it can no longer
+judge deadlocks the truck (measured: Aberdeen at rest at 0.01 mph with the
+snub held, ten thousand feet short). The release is also the rule the keeper
+already applied to its own throttle, now applied to the driver's.
+
+No threshold was changed: the snub band, the 4.5 psi, and the corner price
+are all exactly as they were.
+
+What the truck should FEEL like holding roughly 8 mph through a chain of
+square corners is still the owner's call and is still untouched.
+
+## What was wrong (the 2026-08-21 report)
 
 `DrivingTurnMixin._turn_speed_mph` (`src/freight_fate/states/driving_turns.py`)
 is not a model. It is the street's posted limit clamped between
@@ -63,7 +143,7 @@ mostly assumed says so on stdout and as a ratio in the layer's `meta`.
   radii of 27 to 86 ft, free-flow, mostly passenger cars.
   <https://static.tti.tamu.edu/tti.tamu.edu/documents/0-4365-4.pdf>
 
-## The open modelling decision
+## The modelling decision, as decided
 
 `V = sqrt(15 R (e + f))`, with `e = 0` at an at-grade intersection. The
 question is which R.
@@ -84,3 +164,15 @@ you chose and why, and do NOT pick whichever makes the number look nice --
 point at, and must never exceed the measured 85th-percentile car speeds for
 the same radius. If your model cannot meet that against real baked corners,
 say so with numbers rather than adjusting a constant until it does.
+
+**Met, 2026-09-18.** Neither candidate above won: TxDOT gives THREE designs
+per angle and the one that matters is the 3-centered compound, whose middle
+radius (65 ft at 90 degrees) is the tightest arc the corner actually holds.
+The lateral is derived from the equal-rollover-margin principle rather than
+chosen -- a car takes a 65 ft corner at a measured 18.8 mph, which is 0.361 g
+against its own 1.41 g stability factor, so about a quarter of what would roll
+it; the same quarter of the truck's 0.35 g is 0.090 g. That gives 9.4 mph at
+90 degrees, 11.6 at 60, 7.8 at 120. Inside the band, well under the car, and
+arrived at without CDL practice being an input -- so its agreement is a check
+on the model, not a fit to it. `corners.rs` holds the full derivation and
+`tests::the_model_meets_its_calibration_gate` keeps this paragraph honest.

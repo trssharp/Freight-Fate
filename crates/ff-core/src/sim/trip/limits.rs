@@ -41,34 +41,29 @@ impl Trip {
     }
 
     pub fn zone_warning_message(&self, zone: &Zone, ahead: f64) -> String {
-        if zone.reason == "construction" {
-            let merge_part = if zone.closed_side.is_some() {
-                let (shut, keep) = Self::closure_phrases(zone);
-                format!("The {shut} lane is closed, merge {keep} before the work zone. ")
-            } else {
-                "All lanes open through the work. ".to_string()
-            };
-            // NOT "Brake now!". This is an advance warning that fires up to
-            // eight miles out, and "Brake now" is the emergency hazard
-            // opening -- the words the cab uses for debris in your lane.
-            // Telling a driver to brake now for something eight miles away is
-            // untrue, and they act on it: Shane asked why the game slows "as
-            // early as we are" for construction when the assists in fact ease
-            // at the taper, and he had been braking because he was told to
-            // (2026-08-24). It also spends the phrase that has to mean
-            // something when a real emergency uses it. The heavy-traffic and
-            // generic zone warnings below have always opened with the
-            // distance; this one was the odd sibling out.
-            // The mile ahead of the work is the reduced-speed approach, the
-            // way a real interstate work zone steps its limit down through
-            // its advance warning area; the taper is the short merge at the
-            // end of it (MUTCD Part 6), so the word is kept for that spot
-            // alone (owner ruling, 2026-09-14).
+        // NOT "Brake now!". This is an advance warning that fires up to
+        // eight miles out, and "Brake now" is the emergency hazard opening;
+        // Shane had been braking for work eight miles away because he was
+        // told to (2026-08-24). It opens with the distance like its siblings.
+        // One short form for every verbosity: the full warning ran three
+        // sentences (speech mode audit, 2026-10-03).
+        if let Some(short) = self.zone_warning_terse(zone, ahead) {
+            return short;
+        }
+        if self.street_zone_before(zone).is_some() {
+            // The next street's lower number, the way the limit pacenote says
+            // it on a highway; "facility access road ahead" was the road the
+            // truck is already on.
             return format!(
-                "In {}, construction ahead. {merge_part}Speed limit {} from {} out, then {} through the work zone.",
+                "Speed limit drops to {} in {}.",
+                self.speed_value(zone.limit_mph),
+                self.ahead_text(ahead)
+            );
+        }
+        if super::streets::is_street_zone_reason(&zone.reason) {
+            return format!(
+                "In {}, speed limit {}.",
                 self.ahead_text(ahead),
-                self.speed_value(CONSTRUCTION_TAPER_LIMIT_MPH),
-                self.ahead_text(CONSTRUCTION_TAPER_MI),
                 self.speed_value(zone.limit_mph)
             );
         }
@@ -88,9 +83,45 @@ impl Trip {
         )
     }
 
+    /// The construction warning, in the terse slot grammar: the thing and
+    /// how far, the lane to be in, the limit. The mile ahead of the work is
+    /// the reduced-speed approach, the way a real interstate work zone steps
+    /// its limit down through its advance warning area (MUTCD Part 6; owner
+    /// ruling, 2026-09-14), at the approach's own limit (2026-09-28). Other
+    /// zones keep their one-sentence wording.
+    pub fn zone_warning_terse(&self, zone: &Zone, ahead: f64) -> Option<String> {
+        if zone.reason != "construction" {
+            return None;
+        }
+        let merge = if zone.closed_side.is_some() {
+            let (_, keep) = Self::closure_phrases(zone);
+            format!(" Merge {keep}.")
+        } else {
+            String::new()
+        };
+        let taper_mph = self
+            .zones
+            .iter()
+            .find(|z| z.reason == "construction merge" && (z.end_mi - zone.start_mi).abs() < 1e-6)
+            .map_or(CONSTRUCTION_TAPER_LIMIT_MPH, |z| z.limit_mph);
+        let limit = if taper_mph <= zone.limit_mph {
+            self.speed_value(zone.limit_mph)
+        } else {
+            format!(
+                "{}, then {}",
+                self.speed_value(taper_mph),
+                self.speed_value(zone.limit_mph)
+            )
+        };
+        Some(format!(
+            "Construction, {}.{merge} Limit {limit}.",
+            self.ahead_text(ahead)
+        ))
+    }
+
     /// What to call a live jam: rush hour gets named when it is one.
     pub fn congestion_phrase(&self) -> &'static str {
-        let hour = self.current_hour().rem_euclid(24.0);
+        let hour = self.local_hour();
         let in_rush = RUSH_HOUR_WINDOWS
             .iter()
             .any(|(start, end)| *start <= hour && hour < *end);
@@ -101,34 +132,29 @@ impl Trip {
         }
     }
 
-    pub fn zone_entry_message(&self, zone: &Zone) -> String {
-        if zone.reason == "construction merge" {
-            if zone.closed_side.is_some() {
-                let (shut, keep) = Self::closure_phrases(zone);
-                return format!(
-                    "Reduced speed for construction. The {shut} lane closes ahead, merge {keep}. Speed limit {}.",
-                    self.speed_value(zone.limit_mph)
-                );
+    /// A work zone entry: the lane to be in and the limit (speech mode
+    /// audit, 2026-10-03). Other zones are a sentence already.
+    pub fn zone_entry_terse(&self, zone: &Zone) -> Option<String> {
+        let limit = self.speed_value(zone.limit_mph);
+        let keep = zone
+            .closed_side
+            .as_ref()
+            .map(|_| Self::closure_phrases(zone).1);
+        match (zone.reason.as_str(), keep) {
+            ("construction merge", Some(keep)) => {
+                Some(format!("Reduced speed. Merge {keep}. Limit {limit}."))
             }
-            return format!(
-                "Reduced speed for construction. Flagger ahead. Speed limit {}.",
-                self.speed_value(zone.limit_mph)
-            );
+            ("construction merge", None) => Some(format!("Flagger ahead. Limit {limit}.")),
+            ("construction", Some(keep)) => Some(format!("Work zone. Keep {keep}. Limit {limit}.")),
+            ("construction", None) => Some(format!("Work zone. Limit {limit}.")),
+            _ => None,
         }
-        if zone.reason == "construction" {
-            if zone.closed_side.is_some() {
-                let (shut, keep) = Self::closure_phrases(zone);
-                // "Keep left" is the same instruction on a two-lane stretch
-                // and still true on a wider one.
-                return format!(
-                    "Work zone active. The {shut} lane is closed, keep {keep}. Speed limit {}.",
-                    self.speed_value(zone.limit_mph)
-                );
-            }
-            return format!(
-                "Work zone active. Speed limit {}.",
-                self.speed_value(zone.limit_mph)
-            );
+    }
+
+    pub fn zone_entry_message(&self, zone: &Zone) -> String {
+        // A work zone's entry is its short form at every verbosity.
+        if let Some(short) = self.zone_entry_terse(zone) {
+            return short;
         }
         if zone.reason == "heavy traffic" && zone.aadt.is_some() {
             return format!(
@@ -136,6 +162,36 @@ impl Trip {
                 crate::data::world_models::py_capitalize(self.congestion_phrase()),
                 self.speed_value(zone.limit_mph)
             );
+        }
+        if zone.reason == super::streets::YARD_ZONE {
+            return format!(
+                "Into the yard. Yard limit {}.",
+                self.speed_value(zone.limit_mph)
+            );
+        }
+        if zone.reason == super::streets::LOT_ZONE {
+            return format!(
+                "Into the lot. Lot limit {}.",
+                self.speed_value(zone.limit_mph)
+            );
+        }
+        if let Some(before) = self.street_zone_before(zone) {
+            // A new street's limit, said the way the road signs it: the
+            // number, and which way it went.
+            let verb = if zone.limit_mph < before.limit_mph {
+                "reduced"
+            } else {
+                "raised"
+            };
+            return format!(
+                "Speed limit {verb} to {}.",
+                self.speed_value(zone.limit_mph)
+            );
+        }
+        if super::streets::is_street_zone_reason(&zone.reason) {
+            // The first street: just its limit. The line onto the streets
+            // has already named it, and a street is not a zone.
+            return format!("Speed limit {}.", self.speed_value(zone.limit_mph));
         }
         // Say you are *in* it, not that it is ahead; pairs with the "End of
         // ... zone" exit.
@@ -171,6 +227,30 @@ impl Trip {
         for i in 0..self.zones.len() {
             if self.zones[i].reason == "construction merge" {
                 continue;
+            }
+            // The yard begins at the driveway, which is a turn: its own call
+            // names the corner and its speed, lower than the yard's.
+            if matches!(
+                self.zones[i].reason.as_str(),
+                super::streets::YARD_ZONE | super::streets::LOT_ZONE
+            ) {
+                continue;
+            }
+            // A street's change of limit is signed where it changes. Only a
+            // drop big enough to brake for earns a warning ahead, the rule
+            // the highway pacenote keeps (`next_limit_drop`); a rise never.
+            // Only at the pacenote's own lead, and only to a truck over the
+            // new number: a zone warning's reach is sized for the highway, and
+            // "drops to 30 in 2 miles" four streets out named a sign the
+            // driver could do nothing about yet.
+            if let Some(before) = self.street_zone_before(&self.zones[i]) {
+                let speed = self.truck.speed_mph();
+                if before.limit_mph - self.zones[i].limit_mph < LIMIT_DROP_WARN_MIN_DELTA_MPH
+                    || speed <= self.zones[i].limit_mph + PACENOTE_MARGIN_MPH
+                    || self.zones[i].start_mi - pos > self.limit_drop_warning_lead_mi(speed)
+                {
+                    continue;
+                }
             }
             if self
                 .announced_zone_warnings
@@ -214,10 +294,10 @@ impl Trip {
             let zone = self.zones[i].clone();
             self.announced_zone_warnings.insert(zone_key(&zone));
             self.pending_zone_warning = Some(zone.start_mi);
-            let message = self.zone_warning_message(&zone, ahead);
+            let message = SpokenMessage::new(self.zone_warning_message(&zone, ahead));
             self.emit(
                 TripEventKind::GpsCue,
-                SpokenMessage::new(message),
+                message,
                 TripEventData {
                     zone: Some(zone),
                     ..Default::default()
@@ -253,7 +333,10 @@ impl Trip {
                         .as_ref()
                         .is_some_and(|previous| self.same_traffic_pace(previous, &zone));
                 let urgent = old_limit.is_some_and(|old| zone.limit_mph < old);
-                if already_spoken {
+                if self.yard_entry_held && Self::is_yard_like(&zone) {
+                    // Not in until the driveway turn is settled: gated.
+                    self.zone_entry_spoken = false;
+                } else if already_spoken {
                     // Keep the local section and its queue lifecycle, without
                     // repeating the speed the driver is already following.
                 } else if urgent || self.event_breather.ready("zone") {
@@ -277,11 +360,15 @@ impl Trip {
                     .remove(&zone_key(&previous));
                 let resumed = self.corridor_limit_at(pos);
                 self.announced_speed_limit = Some(resumed);
-                let message = format!(
-                    "End of {} zone. Speed limit {}.",
-                    previous.reason,
-                    self.speed_value(resumed)
-                );
+                let message = if super::streets::is_street_zone_reason(&previous.reason) {
+                    format!("Speed limit {}.", self.speed_value(resumed))
+                } else {
+                    format!(
+                        "End of {} zone. Speed limit {}.",
+                        previous.reason,
+                        self.speed_value(resumed)
+                    )
+                };
                 self.emit(
                     TripEventKind::ZoneExit,
                     SpokenMessage::new(message),
@@ -291,12 +378,20 @@ impl Trip {
             }
             self.entered_zone = zone;
         } else if let Some(zone) = zone {
-            if !self.zone_entry_spoken && self.event_breather.ready("zone") {
+            let held = self.yard_entry_held && Self::is_yard_like(&zone);
+            if !held && !self.zone_entry_spoken && self.event_breather.ready("zone") {
                 // Self-supersede: this zone is still the one governing the
                 // truck and its own entry was gated when it started.
                 self.speak_zone_entry(&zone);
             }
         }
+    }
+
+    fn is_yard_like(zone: &Zone) -> bool {
+        matches!(
+            zone.reason.as_str(),
+            super::streets::YARD_ZONE | super::streets::LOT_ZONE
+        )
     }
 
     pub fn speak_zone_entry(&mut self, zone: &Zone) {
@@ -305,10 +400,10 @@ impl Trip {
                 z.reason == "construction merge" && (z.end_mi - zone.start_mi).abs() < 0.01
             });
         self.event_breather.spoke("zone");
-        let message = self.zone_entry_message(zone);
+        let message = SpokenMessage::new(self.zone_entry_message(zone));
         self.emit(
             TripEventKind::ZoneEnter,
-            SpokenMessage::new(message),
+            message,
             TripEventData {
                 zone: Some(zone.clone()),
                 suppress_sound: Some(quiet),
@@ -375,7 +470,7 @@ impl Trip {
                 return;
             }
         }
-        let verb = if lowered { "reduced to" } else { "raised to" };
+        let verb = if lowered { "reduced" } else { "raised" };
         let near = if lowered {
             self.nearest_urban_city(self.position_mi)
         } else {
@@ -405,7 +500,7 @@ impl Trip {
         }
         self.event_breather.spoke("limit");
         let message = format!(
-            "Speed limit {verb} {}{where_}{span}.",
+            "Speed limit {verb} to {}{where_}{span}.",
             self.speed_value(limit)
         );
         self.emit(
@@ -427,7 +522,7 @@ impl Trip {
             return stop_reason;
         }
         if self.lowered_limit_downgrade_ahead() {
-            return " for the downgrade".to_string();
+            return " for the downhill grade".to_string();
         }
         String::new()
     }

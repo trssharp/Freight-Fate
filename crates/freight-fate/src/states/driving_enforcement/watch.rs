@@ -2,13 +2,13 @@
 //! per-frame draw that turns an observation into a pull-over.
 
 use ff_core::models::enforcement::{
-    CHAIN_LAW_FINE, FOLLOWING_TOO_CLOSE_FINE, LANE_MISUSE_FINE, LIGHTS_FINE, UNSAFE_DAMAGE_FINE,
+    chain_law_fine, FOLLOWING_TOO_CLOSE_FINE, LANE_MISUSE_FINE, LIGHTS_FINE, UNSAFE_DAMAGE_FINE,
 };
 use ff_core::pyfmt::{py_str_float, round_py_n};
 use ff_core::pyrandom::PyRandom;
 use ff_core::sim::enforcement_observe::{
     observe, Observation, RoadSample, COVER_RADIUS_MI, COVER_SPEED_TOLERANCE_MPH, TAILGATE_GAP_S,
-    WHAT_CHAINS, WHAT_DAMAGE, WHAT_FOLLOWING, WHAT_LIGHTS, WHAT_SPEEDING,
+    WHAT_CHAINS, WHAT_DAMAGE, WHAT_EQUIPMENT, WHAT_FOLLOWING, WHAT_LIGHTS, WHAT_SPEEDING,
 };
 use ff_core::sim::enforcement_posts::{
     post_seed, EnforcementPost, METHOD_PACING, PACING_WINDOW_MI,
@@ -56,7 +56,19 @@ impl DrivingState {
         let visibility = self.trip.weather.effects().visibility_mi;
         let visibility = if visibility == 0.0 { 10.0 } else { visibility };
         let gap_s = self.trip.traffic_context().map(|c| c.gap_seconds());
-        let chain_level = self.trip.chain_law_level();
+        // The law binds on the posted grade and nowhere else: the same test
+        // the entry citation makes (`update_chain_law`). Snow anywhere used
+        // to let a scale or a patrol in Chicago write "running the chain
+        // control without chains" (seasonal audit, 2026-10-01).
+        // Colorado Level 1 leaves a tandem-drive truck unchained, and
+        // Wyoming Level 1 takes snow tires (`rig_compliant_at`).
+        let chain_level = if self.trip.chain_law_area_at(position).is_some()
+            && !self.trip.rig_compliant_at(position)
+        {
+            self.trip.chain_law_level()
+        } else {
+            0
+        };
         let night = is_night(self.trip.local_hour());
         let pack_neighbours = self.trip.traffic_manager.pack_neighbours(
             position,
@@ -87,9 +99,27 @@ impl DrivingState {
             in_left_lane: self.lane.lane > 0,
             pack_neighbours,
             crest_between,
-            paced_mi: self.pacing_mi.get(&post.id()).copied().unwrap_or(0.0),
+            paced_mi: self.paced_mi(post),
             over_limit_mi: self.over_limit_mi,
+            tire_wear_pct: self.trip.truck.tire_wear_pct,
+            trailer_defect: self.visible_trailer_defect.0.clone(),
         }
+    }
+
+    /// Keep the trailer defect a passing trooper could see current: the
+    /// pickup plan is read again every half mile, not every frame, and only
+    /// the visible items count -- a brake out of adjustment is under the
+    /// trailer, where the scale finds it and a unit driving past does not.
+    pub fn refresh_visible_trailer_defect(&mut self, ctx: &GameContext) {
+        let position = self.trip.position_mi;
+        if (position - self.visible_trailer_defect.1).abs() < 0.5 {
+            return;
+        }
+        let defect = self
+            .hooked_trailer_defect(ctx)
+            .filter(|defect| !defect.contains("brake"))
+            .unwrap_or_default();
+        self.visible_trailer_defect = (defect, position);
     }
 
     /// Whether the road hides the post from an optical method.
@@ -178,19 +208,25 @@ impl DrivingState {
             self.update_marked_unit_passes(ctx, previous_mi);
             self.update_tableaus(ctx, previous_mi);
         }
-        let audible: Vec<String> = self
-            .trip
-            .posts
-            .iter()
-            .filter(|post| post.staffed && position >= post.watch_start_mi() - POST_MARKER_LEAD_MI)
-            .map(|post| post.id())
-            .collect();
+        let mut id = std::mem::take(&mut self.post_id_scratch);
+        let mut audible: Vec<String> = Vec::new();
+        for post in &self.trip.posts {
+            if !(post.staffed && position >= post.watch_start_mi() - POST_MARKER_LEAD_MI) {
+                continue;
+            }
+            post.write_id(&mut id);
+            if !self.marked_post_ids.contains(id.as_str()) {
+                audible.push(id.clone());
+            }
+        }
+        self.post_id_scratch = id;
         for post_id in audible {
             self.mark_post_audible(ctx, &post_id);
         }
         if self.enforcement_bypassed(ctx) {
             return;
         }
+        self.refresh_visible_trailer_defect(ctx);
         if self.enforcement_busy() {
             // Defer, never drop. The look is TAKEN here and held: the officer
             // saw what they saw, and only the lights wait for the cab to be
@@ -284,20 +320,38 @@ impl DrivingState {
     /// (measured 2026-08-16: 315 looks, zero catches over 2,000 miles).
     pub fn track_pacing(&mut self, moved: f64) {
         let position = self.trip.position_mi;
-        let behinds: Vec<(String, f64)> = self
-            .trip
-            .posts
-            .iter()
-            .filter(|post| post.method == METHOD_PACING && post.staffed)
-            .map(|post| (post.id(), position - post.at_mi))
-            .collect();
-        for (id, behind) in behinds {
+        let mut id = std::mem::take(&mut self.post_id_scratch);
+        for post in &self.trip.posts {
+            if !(post.method == METHOD_PACING && post.staffed) {
+                continue;
+            }
+            let behind = position - post.at_mi;
             if 0.0 < behind && behind <= PACING_WINDOW_MI {
-                *self.pacing_mi.entry(id).or_insert(0.0) += moved;
-            } else if behind > PACING_WINDOW_MI {
-                self.pacing_mi.remove(&id);
+                post.write_id(&mut id);
+                match self.pacing_mi.get_mut(id.as_str()) {
+                    Some(paced) => *paced += moved,
+                    None => {
+                        self.pacing_mi.insert(id.clone(), 0.0 + moved);
+                    }
+                }
+            } else if behind > PACING_WINDOW_MI && !self.pacing_mi.is_empty() {
+                post.write_id(&mut id);
+                self.pacing_mi.remove(id.as_str());
             }
         }
+        self.post_id_scratch = id;
+    }
+
+    /// Road `post` has paced the truck over, from [`Self::track_pacing`].
+    pub fn paced_mi(&mut self, post: &EnforcementPost) -> f64 {
+        if self.pacing_mi.is_empty() {
+            return 0.0;
+        }
+        post.write_id(&mut self.post_id_scratch);
+        self.pacing_mi
+            .get(self.post_id_scratch.as_str())
+            .copied()
+            .unwrap_or(0.0)
     }
 
     /// Take this mile's look and act on it.
@@ -346,7 +400,26 @@ impl DrivingState {
         let mut best: Option<Observation> = None;
         for post in &watching {
             let sample = self.road_sample(post);
-            if let Some(found) = observe(post, &sample) {
+            let found = observe(post, &sample);
+            // The look, for a tester's log: which post, what it could read,
+            // and what it made of it. Never spoken.
+            log::debug!(
+                target: "freight_fate::enforcement",
+                "look: {} {} at {:.2} (truck {:.2}) announced={} declined={} tires={:.0} trailer={:?} -> {}",
+                post.kind,
+                post.method,
+                post.at_mi,
+                sample.position_mi,
+                post.announced,
+                post.declined,
+                sample.tire_wear_pct,
+                sample.trailer_defect,
+                found
+                    .as_ref()
+                    .map(|f| format!("{} {:.2}", f.what, f.confidence))
+                    .unwrap_or_else(|| "nothing".to_string())
+            );
+            if let Some(found) = found {
                 if best
                     .as_ref()
                     .is_none_or(|b| found.confidence > b.confidence)
@@ -371,6 +444,16 @@ impl DrivingState {
             &format!("observe:{violation_key}"),
         ))
         .random();
+        log::info!(
+            target: "freight_fate::enforcement",
+            "{} at {:.1}: {} ({}) confidence {:.2}, roll {:.2}",
+            best.post.kind,
+            position,
+            best.what,
+            best.detail,
+            best.confidence,
+            roll
+        );
         if roll >= best.confidence {
             // Noticed and let go. A post does not re-decide: this is what
             // makes "five over near a post is ignored" a state rather than a
@@ -397,6 +480,32 @@ impl DrivingState {
             let position = self.trip.position_mi;
             let (limit, _) = self.trip.speed_limit_at(position);
             self.begin_pull_over(ctx, limit);
+            return;
+        }
+        if observation.what == WHAT_EQUIPMENT {
+            // The rolling look found something: the stop is a Level 2
+            // walk-around, and the report prices it, not this stop.
+            let summary = format!(
+                "A trooper on this {reason} looked the truck over as they passed and saw {}. \
+                 They are pulling you in for a walk-around inspection.",
+                observation.detail
+            );
+            let lights_message = format!(
+                "Lights and siren behind you. A trooper on this {reason} saw {} and wants a look \
+                 at the truck. Signal with {} and stop on the shoulder.",
+                observation.detail,
+                ctx.control_hint("take_exit")
+            );
+            self.begin_enforcement_pull_over(
+                ctx,
+                "roadside_walkaround",
+                "Roadside inspection",
+                &summary,
+                0.0,
+                0.0,
+                "Back on the highway.",
+                &lights_message,
+            );
             return;
         }
         let (summary, fine, return_message) = self.observed_stop_terms(observation);
@@ -438,7 +547,7 @@ impl DrivingState {
                     "A trooper on this {reason} saw you running the chain control without chains \
                      on the drives."
                 ),
-                CHAIN_LAW_FINE,
+                chain_law_fine(self.trip.state_code_at(self.trip.position_mi).as_deref()),
                 "Back on the highway. Chain up before the next control.".to_string(),
             );
         }

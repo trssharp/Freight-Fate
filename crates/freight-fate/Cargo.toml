@@ -17,12 +17,35 @@ path = "src/lib.rs"
 name = "freightfate"
 path = "src/main.rs"
 
+# The agent server is tooling for playtesting agents, not the game, so its
+# tests stay out of a plain `cargo test`. Run them with
+# `cargo test -p freight-fate --test agent_server`; CI runs that as its own step.
+[[test]]
+name = "agent_server"
+path = "tests/agent_server.rs"
+test = false
+required-features = ["agent-server"]
+
+[features]
+default = ["agent-server"]
+# `--agent-server`: the MCP server that lets an agent play, including a
+# `--staging` mode that backs up to the staging site. Dev builds have it;
+# player builds leave it out, because tools/build_release.py builds with
+# --no-default-features.
+agent-server = []
+
 [lints]
 workspace = true
 
 [dependencies]
 ff-core = { path = "../ff-core" }
-prism = { path = "../prism" }
+# Prism is compiled from source and linked in.
+# 0.1.4 at least: it loads the optional screen reader DLLs (Windows) and
+# Speech Dispatcher (Linux) at run time, and anchors its backends for GCC
+# and Clang, so build.rs needs no delay-load or whole-archive flags.
+# Earlier releases also drop every backend from a static link (0.1.1) or
+# overrun the caller's stack in Prism::new (0.1.2; trypsynth/prismer#2).
+prismer = { version = "0.1.4", features = ["static"] }
 bass-sys = { path = "../bass-sys" }
 anyhow.workspace = true
 thiserror.workspace = true
@@ -47,6 +70,7 @@ sdl2 = { workspace = true, features = ["raw-window-handle"] }
 url.workspace = true
 form_urlencoded.workspace = true
 webbrowser.workspace = true
+sys-locale.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
@@ -71,6 +95,16 @@ sdl2 = { workspace = true, features = ["bundled", "static-link"] }
 # and the executable itself depends on nothing but libc.
 [target.'cfg(target_os = "linux")'.dependencies]
 sdl2 = { workspace = true, features = ["bundled", "static-link"] }
+
+# iOS compiles SDL2 in for the same reason as macOS, and because an app
+# bundle may not load a dylib from anywhere but its own Frameworks folder.
+# The UIKit gesture and VoiceOver layer is Objective-C, built by `cc`.
+[target.'cfg(target_os = "ios")'.dependencies]
+sdl2 = { workspace = true, features = ["bundled", "static-link"] }
+raw-window-handle.workspace = true
+
+[build-dependencies]
+cc = "1"
 
 [dev-dependencies]
 tempfile.workspace = true

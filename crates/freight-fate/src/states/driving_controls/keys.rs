@@ -24,8 +24,8 @@ impl DrivingState {
     /// Every key first resolves to the [`Action`] the player has it on
     /// (`ctx.bindings`), so a moved shortcut lands here without the table
     /// knowing. The fixed keys -- Control to stop the voice, Escape to pause,
-    /// plus and minus, the radio dial, Enter, F1 -- are matched on the key
-    /// itself, the way they always were. Three orderings are load-bearing and
+    /// F2 for the command list, plus and minus, the radio dial, Enter, F1 --
+    /// are matched on the key itself, the way they always were. Three orderings are load-bearing and
     /// kept: a chord is tried before the bare key (so Alt with a number reads
     /// a place instead of changing the engine brake), `+`/`-` fall back to the
     /// typed character, and the radio dial reads Ctrl before Shift so
@@ -48,6 +48,11 @@ impl DrivingState {
         let Some((key, mods, text)) = event.key_down() else {
             return;
         };
+        // OS key-repeat must not walk the cruise dial: a held Plus used to
+        // race the open-road target (and the live adaptive-cruise set speed)
+        // to the ceiling in about a second and a half. Discrete presses keep
+        // the old +5 / Ctrl+1 step; repeats are ignored.
+        let repeat = event.key_repeat();
 
         let automatic = self.trip.truck.transmission.automatic;
         if !automatic && mods.shift {
@@ -68,14 +73,25 @@ impl DrivingState {
             self.push_pause_menu(ctx);
             return;
         }
+        if key == Key::F2 {
+            self.push_driving_commands(ctx);
+            return;
+        }
         if let Some(action) = ctx.bindings.action_for(key, mods) {
+            if repeat && matches!(action, Action::CruiseUp | Action::CruiseDown) {
+                return;
+            }
             self.run_key_action(ctx, action);
             return;
         }
         if plus {
-            self.adjust_cruise(ctx, 1, mods.ctrl);
+            if !repeat {
+                self.adjust_cruise(ctx, 1, mods.ctrl);
+            }
         } else if minus {
-            self.adjust_cruise(ctx, -1, mods.ctrl);
+            if !repeat {
+                self.adjust_cruise(ctx, -1, mods.ctrl);
+            }
         } else if matches!(key, Key::Return | Key::KpEnter) {
             if self.assisted_facility_confirmation_ready(ctx) {
                 self.open_ready_facility_arrival(ctx);
@@ -120,7 +136,7 @@ impl DrivingState {
     /// trooper run) are polled each frame through the same table and do
     /// nothing here; steering's tap is the exception, because with lane
     /// keeping on full a tap of the steering key changes lanes.
-    fn run_key_action(&mut self, ctx: &mut GameContext, action: Action) {
+    pub(crate) fn run_key_action(&mut self, ctx: &mut GameContext, action: Action) {
         let automatic = self.trip.truck.transmission.automatic;
         match action {
             Action::Engine => self.toggle_engine(ctx),
@@ -234,14 +250,23 @@ impl DrivingState {
             Action::SafeSpeed => self.speak_safe_speed(ctx),
             Action::HosWheel => self.speak_hos_wheel_time(ctx),
             Action::LastAnnouncement => self.speak_last_announcement(ctx),
+            // The key itself is answered on every screen before a state
+            // sees it; this arm is the F2 list's row.
+            Action::CopyLastSpoken => crate::states::base::copy_last_spoken(ctx),
             Action::Grade => self.speak_grade(ctx),
             Action::LaneLocator => self.toggle_lane_locator(ctx),
             Action::Upcoming => self.speak_upcoming(ctx, 15.0),
             Action::Radio => self.toggle_radio(ctx),
             Action::RadioFavorite => self.toggle_radio_favorite(ctx),
+            Action::RadioTuneNext
+            | Action::RadioTunePrev
+            | Action::RadioVolumeUp
+            | Action::RadioVolumeDown
+            | Action::RadioCategoryNext
+            | Action::RadioCategoryPrev => {}
             Action::RadioNowPlaying => self.speak_radio_now_playing(ctx),
             Action::RadioStatus => self.speak_radio_status(ctx),
-            Action::Accelerate | Action::Brake | Action::EmergencyBrake => {}
+            Action::Accelerate | Action::Brake | Action::EmergencyBrake | Action::Straighten => {}
         }
     }
 
@@ -296,6 +321,8 @@ impl DrivingState {
             return;
         }
         self.lane_change_target = Some(target);
+        self.pass_returning = false; // the driver's own move now
+        self.keeping_lane_change = false;
         self.lane_change_timer = LANE_TAP_CHANGE_S;
         self.lane_signal_timer = 0.0;
         let pan = if direction > 0 { -0.6 } else { 0.6 };

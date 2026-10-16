@@ -137,13 +137,110 @@ fn test_chain_swaps_to_streets_and_keeps_the_clock() {
         .zones
         .iter()
         .any(|zone| zone.reason == "facility access road"));
-    assert!(d
+    // The yard behind a driveway, or no gate stretch at all on a chain that
+    // ends on the public street -- never the old 15 on the street.
+    // (A chain baked before the street detail keeps its old gate zone.)
+    assert!(d.trip.has_street_detail());
+    assert_eq!(
+        d.trip.zones.iter().any(|zone| zone.reason == "yard"),
+        d.trip.driveway_mi().is_some()
+    );
+    assert!(!d
         .trip
         .zones
         .iter()
         .any(|zone| zone.reason == "facility gate"));
     // No random hazards on the last city miles.
     assert_eq!(d.trip.hazard_scale, 0.0);
+}
+
+#[test]
+fn test_each_corner_chimes_with_its_own_call_in_order() {
+    // Live drive into Ardmore, 2026-09-24: the yard's streets open with three
+    // corners 0.05 mile apart -- left onto West Broadway Street, right onto M
+    // Street Southwest, left back onto West Broadway Street. The first is
+    // called in the off-the-ramp line, and that line's grace (its words at
+    // the slowest modelled voice, 71 seconds) held the corner in play long
+    // after the truck had made it: the other two calls came late, and all
+    // three turn tones sounded together 0.2 mile on.
+    //
+    // The chime goes with the call now (player report, 2026-10-13), so each
+    // one has to sound before its own corner and after the one before it is
+    // taken: never a right chime while a left is still ahead.
+    use freight_fate::playtest::harness::{PlaytestHarness, RouteSetup};
+    use freight_fate::states::driving_turns::is_judged_turn;
+    let dt = 1.0 / 30.0;
+    let mut harness = PlaytestHarness::new();
+    {
+        let settings = &mut harness.app.ctx.settings;
+        settings.apply_driving_assistance_preset("all");
+        settings.speed_keeper = true;
+        settings.automatic_transmission = true;
+    }
+    harness.start_route(
+        "oklahoma_city_ok_us",
+        "ardmore_ok_us",
+        RouteSetup::seeded(4242)
+            .named("Ardmore Corners")
+            .destination_location("Ardmore Company Yard"),
+    );
+    let log = harness.app.record_audio();
+    let corners = harness.with_drive(|d, ctx| {
+        if let Some(profile) = ctx.profile.as_mut() {
+            profile.tutorial_done = true;
+        }
+        d.tutorial = None;
+        d.departure_checked = true;
+        d.truck_mut().start_engine();
+        d.truck_mut().set_air_ready(false);
+        d.truck_mut().transmission.automatic = true;
+        d.truck_mut().transmission.gear = 4;
+        d.truck_mut().velocity_mps = 15.0 / 2.23694;
+        d.destination_exit_taken = true;
+        d.speed_control_armed = true;
+        assert!(d.begin_surface_chain(ctx, true));
+        d.trip
+            .navigation_cues
+            .iter()
+            .filter(|cue| is_judged_turn(cue))
+            .take(3)
+            .map(|cue| (cue.at_mi, cue.direction.clone()))
+            .collect::<Vec<_>>()
+    });
+    let sides: Vec<&str> = corners.iter().map(|(_, side)| side.as_str()).collect();
+    assert_eq!(sides, ["left", "right", "left"], "{corners:?}");
+    assert!(corners[2].0 - corners[0].0 < 0.15, "{corners:?}");
+    let mut tones = Vec::new();
+    let mut played = 0;
+    for _ in 0..(30 * 120) {
+        harness.advance_clock(dt);
+        harness.with_drive(|d, ctx| {
+            let cut_out = d.truck().specs.air_governor_cut_out_psi;
+            d.truck_mut().set_air_pressure_psi(cut_out);
+            d.update_frame(ctx, dt);
+        });
+        let at = harness.read_drive(|d| d.trip.position_mi);
+        let calls = log.borrow().played.clone();
+        for (key, _, _) in &calls[played..] {
+            if key.starts_with("events/turn_") {
+                tones.push((key.clone(), at));
+            }
+        }
+        played = calls.len();
+        if at > corners[2].0 + 0.05 {
+            break;
+        }
+    }
+    assert_eq!(tones.len(), 3, "{tones:?}");
+    let mut previous_mi = f64::NEG_INFINITY;
+    for ((key, at), (corner_mi, side)) in tones.iter().zip(&corners) {
+        assert_eq!(key, &format!("events/turn_{side}"), "{tones:?}");
+        assert!(
+            *at <= *corner_mi && *at > previous_mi,
+            "the {side} turn at {corner_mi:.2} mile sounded at {at:.3}: {tones:?}"
+        );
+        previous_mi = *corner_mi;
+    }
 }
 
 #[test]
@@ -238,6 +335,59 @@ fn test_chain_survives_save_and_resume() {
 }
 
 #[test]
+fn test_a_resumed_street_chain_calls_its_first_corner_fresh() {
+    // Rebuilding a saved chain ran the live off-the-ramp handoff: the first
+    // corner was marked as called in a line that is never spoken on a
+    // resume, so the resumed drive heard no approach call for it, and an
+    // armed session asked the speed keeper to take a parked, engine-off
+    // truck ("needs the engine running") as the drive loaded. Ardmore's yard
+    // streets open with a corner inside the first call's window.
+    use freight_fate::playtest::harness::{PlaytestHarness, RouteSetup};
+    let mut harness = PlaytestHarness::new();
+    harness.app.ctx.settings.speed_keeper = true;
+    harness.start_route(
+        "oklahoma_city_ok_us",
+        "ardmore_ok_us",
+        RouteSetup::seeded(4242)
+            .named("Ardmore Resume")
+            .destination_location("Ardmore Company Yard"),
+    );
+    let key = harness.with_drive(|d, ctx| {
+        d.destination_exit_taken = true;
+        assert!(d.begin_surface_chain(ctx, true));
+        let corner = d
+            .turn_cue_in_play()
+            .expect("the yard's streets open with a corner");
+        assert!(
+            d.turn_advised.contains(&corner.key),
+            "the live handoff calls the first corner"
+        );
+        corner.key
+    });
+    harness.app.clear_speech();
+
+    let resumed = harness.with_drive(|d, ctx| {
+        d.speed_control_armed = true;
+        let snap = d.snapshot(ctx);
+        DrivingState::from_snapshot(ctx, &snap).expect("the snapshot resumes")
+    });
+
+    assert!(resumed.surface_chain);
+    assert!(!resumed.turn_advised.contains(&key));
+    assert!(!resumed.turn_announced.contains(&key));
+    assert!(
+        resumed.speed_control_armed,
+        "the session waits for the truck to roll"
+    );
+    assert!(resumed.keeper_mph.is_none());
+    let heard = [harness.app.main_lines(), harness.app.event_lines()].concat();
+    assert!(
+        !heard.iter().any(|line| line.contains("speed keeper needs")),
+        "{heard:?}"
+    );
+}
+
+#[test]
 fn test_a_departure_chain_and_a_surface_chain_never_run_together() {
     let world = get_world();
     let Some((city, location)) = a_turn_level_facility(world) else {
@@ -249,6 +399,132 @@ fn test_a_departure_chain_and_a_surface_chain_never_run_together() {
     };
     d.surface_chain = true;
     assert!(!d.begin_departure_chain(&mut app.ctx, false));
+}
+
+/// With Facility streets off, the 1.8 arrival and departure: no street chain
+/// either end of a delivery, even to and from a facility that has one, and a
+/// pickup in town is the single access-road leg.
+#[test]
+fn test_facility_streets_off_skips_both_chains() {
+    let world = get_world();
+    let Some((city, location)) = a_turn_level_facility(world) else {
+        return;
+    };
+    let classic = world
+        .facility_approach_route_with(&city, &location, false)
+        .expect("the facility resolves");
+    assert_eq!(classic.legs.len(), 1);
+    assert!(classic.legs.iter().all(|leg| leg.local_speed_mph == 0.0));
+
+    let mut app = TestApp::new();
+    app.ctx.settings.facility_streets = false;
+    let Some(mut d) = a_drive_to(&mut app, &city, &location) else {
+        return;
+    };
+    assert!(!d.facility_streets_on);
+    d.destination_exit_taken = true;
+    assert!(d.surface_chain_route(&app.ctx).is_none());
+    assert!(!d.destination_street_chain_ahead(&app.ctx));
+    assert!(!d.begin_surface_chain(&mut app.ctx, false));
+    assert!(!d.surface_chain);
+
+    // Out of the same facility, loaded.
+    let mut job = make_reposition_job(world, &city, "Denver", false, None).expect("a job");
+    job.origin_location = location.clone();
+    let route = world
+        .shortest_route(&city, "Denver", None, false)
+        .ok()
+        .flatten()
+        .expect("a corridor to Denver");
+    let mut out = DrivingState::new(
+        &mut app.ctx,
+        job.clone(),
+        route.clone(),
+        Some(0),
+        DRIVE_PHASE_DELIVERY,
+        Some(12.0),
+    );
+    assert!(out.departure_chain_route(&app.ctx).is_none());
+    assert!(!out.begin_departure_chain(&mut app.ctx, false));
+
+    // The streets setting still drives that departure.
+    app.ctx.settings.facility_streets = true;
+    let mut streets = DrivingState::new(
+        &mut app.ctx,
+        job,
+        route,
+        Some(0),
+        DRIVE_PHASE_DELIVERY,
+        Some(12.0),
+    );
+    assert!(streets.begin_departure_chain(&mut app.ctx, false));
+}
+
+/// With Facility streets off the facility's exit ramp ends at the facility,
+/// as in 1.8: no traffic light or stop sign at its end. Other exits keep
+/// theirs.
+#[test]
+fn test_facility_streets_off_has_no_light_or_sign_at_the_facility_ramp() {
+    let world = get_world();
+    let Some((city, location)) = a_turn_level_facility(world) else {
+        return;
+    };
+    let mut app = TestApp::new();
+    let Some(mut d) = a_drive_to(&mut app, &city, &location) else {
+        return;
+    };
+    let total = d.trip.total_miles();
+    let exits: Vec<f64> = (1..40).map(|i| total * f64::from(i) / 40.0).collect();
+    let controls = |d: &DrivingState, ctx: &freight_fate::app::GameContext, kind: &str| {
+        exits
+            .iter()
+            .map(|&at| d.ramp_control_for(ctx, &RoadStop::new("Exit", at, kind), None))
+            .collect::<Vec<_>>()
+    };
+    let with_streets = controls(&d, &app.ctx, "delivery_destination");
+    assert!(
+        with_streets.iter().any(|control| control != "none"),
+        "{with_streets:?}"
+    );
+    let truck_stop = controls(&d, &app.ctx, "truck_stop");
+
+    d.facility_streets_on = false;
+    let classic = controls(&d, &app.ctx, "delivery_destination");
+    assert!(
+        classic.iter().all(|control| control == "none"),
+        "{classic:?}"
+    );
+    assert_eq!(controls(&d, &app.ctx, "truck_stop"), truck_stop);
+}
+
+/// A drive keeps the Facility streets value it started with, across a save
+/// and a change of the setting before the resume.
+#[test]
+fn test_a_resumed_drive_keeps_its_facility_streets() {
+    let world = get_world();
+    let Some((city, location)) = a_turn_level_facility(world) else {
+        return;
+    };
+    let mut app = TestApp::new();
+    app.ctx.settings.facility_streets = false;
+    let Some(d) = a_drive_to(&mut app, &city, &location) else {
+        return;
+    };
+    let snap = d.snapshot(&app.ctx);
+    assert_eq!(snap["facility_streets"], false);
+    app.ctx.settings.facility_streets = true;
+    let mut resumed =
+        DrivingState::from_snapshot(&mut app.ctx, &snap).expect("the snapshot resumes");
+    assert!(!resumed.facility_streets_on);
+    resumed.destination_exit_taken = true;
+    assert!(!resumed.begin_surface_chain(&mut app.ctx, false));
+
+    // A save from before the setting was made on the streets.
+    let mut old = snap.clone();
+    old.as_object_mut().unwrap().remove("facility_streets");
+    app.ctx.settings.facility_streets = false;
+    let resumed = DrivingState::from_snapshot(&mut app.ctx, &old).expect("the snapshot resumes");
+    assert!(resumed.facility_streets_on);
 }
 
 // -- cases that wait on another driving mixin -----------------------------------------
@@ -285,7 +561,7 @@ fn test_exit_missed_when_too_fast() {
     d.trip.truck.velocity_mps = too_fast_mph / 2.2369362920544;
     d.toggle_exit_signal(&mut app.ctx);
     assert_eq!(d.exit_stop.as_ref().map(|s| s.key()), Some(stop.key()));
-    d.exit_lane_alignment = 1.0;
+    d.exit_lane_entered = true;
     d.trip.position_mi = stop.at_mi;
 
     d.update_frame(&mut app.ctx, 1.0 / 60.0);
@@ -318,12 +594,15 @@ fn test_taking_the_exit_puts_the_truck_on_the_ramp() {
     d.trip.position_mi = stop.at_mi - 1.0;
     d.trip.truck.velocity_mps = 13.0; // ~29 mph: inside gore acceptance
     d.toggle_exit_signal(&mut app.ctx);
-    d.exit_lane_alignment = 1.0;
+    d.exit_lane_entered = true;
     d.trip.position_mi = stop.at_mi;
 
     d.update_frame(&mut app.ctx, 1.0 / 60.0);
 
-    assert_eq!(d.ramp_mi, Some(RAMP_LENGTH_MI));
+    // Gore to bar is this exit's own ramp, then the stretch to the driveway.
+    let expected = d.trip.ramp_length_mi(&stop) + RAMP_ACCESS_MI;
+    let ramp_mi = d.ramp_mi.expect("on the ramp");
+    assert!((ramp_mi - expected).abs() < 0.01, "{ramp_mi} vs {expected}");
     assert!(d.ramp_stop.is_some());
 }
 

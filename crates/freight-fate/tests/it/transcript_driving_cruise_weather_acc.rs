@@ -323,10 +323,7 @@ fn test_adaptive_cruise_follows_npc_traffic() {
     assert!(harness.read_drive(|d| d.acc_following));
     assert!(harness.read_drive(|d| d.truck().throttle) < 0.9);
     assert!(harness.read_drive(|d| d.truck().brake) > 0.0);
-    assert!(said_any(
-        &harness,
-        "Traffic ahead, adaptive cruise reducing speed."
-    ));
+    assert!(said_any(&harness, "Traffic ahead, slowing."));
 }
 
 #[test]
@@ -478,10 +475,7 @@ fn test_adaptive_cruise_follows_the_lane_being_entered_mid_change() {
 
     assert_eq!(harness.read_drive(|d| d.lane_change_target), Some(1)); // still underway
     assert!(harness.read_drive(|d| d.acc_following));
-    assert!(said_any(
-        &harness,
-        "Traffic ahead, adaptive cruise reducing speed."
-    ));
+    assert!(said_any(&harness, "Traffic ahead, slowing."));
 }
 
 #[test]
@@ -519,10 +513,7 @@ fn test_adaptive_cruise_reverts_to_origin_lane_when_a_change_is_aborted() {
 
     assert_eq!(harness.read_drive(|d| d.lane.lane), 0); // still in the origin lane
     assert!(harness.read_drive(|d| d.acc_following)); // following the origin lead again
-    assert!(said_any(
-        &harness,
-        "Traffic ahead, adaptive cruise reducing speed."
-    ));
+    assert!(said_any(&harness, "Traffic ahead, slowing."));
 }
 
 #[test]
@@ -550,10 +541,7 @@ fn test_adaptive_cruise_ignores_distant_slower_traffic() {
 
     assert!(!harness.read_drive(|d| d.acc_following));
     assert!(approx(harness.read_drive(|d| d.truck().brake), 0.0));
-    assert!(!said_any(
-        &harness,
-        "Traffic ahead, adaptive cruise reducing speed."
-    ));
+    assert!(!said_any(&harness, "Traffic ahead, slowing."));
 }
 
 #[test]
@@ -592,19 +580,17 @@ fn test_adaptive_cruise_follow_cue_does_not_repeat_within_the_cooldown() {
     let cue_count = |harness: &PlaytestHarness| {
         spoken(harness)
             .iter()
-            .filter(|e| *e == "Traffic ahead, adaptive cruise reducing speed.")
+            .filter(|e| *e == "Traffic ahead, slowing.")
             .count()
     };
 
     frame(&mut harness, DT);
     assert!(harness.read_drive(|d| d.acc_following));
-    // Raised once. The route-start line lands in the same frame and purges
-    // the channel, so the pacer hands this one back and submits it again --
-    // that pair is ONE occurrence reaching the player, and without the
-    // hand-back the flush would take the whole of it before the voice said a
-    // word of why the truck was slowing.
+    // Raised once. The route-start line lands in the same frame and queues
+    // behind it rather than purging it and handing it back, so the voice is
+    // sent it once.
     let raised_once = cue_count(&harness);
-    assert_eq!(raised_once, 2, "{:#?}", spoken(&harness));
+    assert_eq!(raised_once, 1, "{:#?}", spoken(&harness));
 
     harness.with_drive(|d, _| d.trip.set_npc_vehicles(Vec::new())); // drifts out
     frame(&mut harness, DT);
@@ -636,7 +622,7 @@ fn test_adaptive_cruise_caps_at_posted_limit() {
     assert!(harness.read_drive(|d| d.acc_limit_capped));
     assert!(harness.read_drive(|d| d.truck().throttle) < 0.8); // backed off the throttle
     assert!(harness.read_drive(|d| d.truck().brake) > 0.0); // braking down toward the limit
-    assert!(said_any(&harness, "adaptive cruise easing to"));
+    assert!(said_any(&harness, "ruise easing to"));
 }
 
 #[test]
@@ -656,7 +642,7 @@ fn test_adaptive_cruise_slows_before_large_limit_drop() {
     assert!(harness.read_drive(|d| d.acc_limit_capped));
     assert!(harness.read_drive(|d| d.truck().throttle) < 0.8);
     assert!(harness.read_drive(|d| d.truck().brake) > 0.0);
-    assert!(said_any(&harness, "adaptive cruise easing to"));
+    assert!(said_any(&harness, "ruise easing to"));
 }
 
 #[test]
@@ -681,7 +667,7 @@ fn test_adaptive_cruise_easing_preannounces_the_capped_target() {
 
     frame(&mut harness, DT);
 
-    assert!(said_any(&harness, "adaptive cruise easing to"));
+    assert!(said_any(&harness, "ruise easing to"));
     // 40 + ACC_LIMIT_OFFSET_MPH
     assert!(harness.read_drive(|d| d
         .trip
@@ -811,10 +797,7 @@ fn test_adaptive_cruise_increases_gap_for_bad_weather() {
 
     assert!(wet_gap > clear_gap, "{wet_gap} {clear_gap}");
     assert!(harness.read_drive(|d| d.acc_following));
-    assert!(said_any(
-        &harness,
-        "Wet roads, adaptive cruise increasing following gap."
-    ));
+    assert!(said_any(&harness, "Wet roads, longer gap."));
 }
 
 #[test]
@@ -1050,22 +1033,20 @@ fn test_speed_control_restores_cruise_target_after_zone() {
         original_target
     ));
     // Once for the zone. The work-zone warning lands in the same frame and
-    // purges the channel, so the keeper line is handed back and submitted
-    // again; the pair is one occurrence reaching the player, where the flush
-    // alone used to take all of it.
+    // queues behind the keeper line instead of purging it and handing it back.
     assert_eq!(
         spoken(&harness)
             .iter()
             .filter(|e| e.contains("Speed keeper holding"))
             .count(),
-        2,
+        1,
         "{:#?}",
         spoken(&harness)
     );
     assert_eq!(
         spoken(&harness)
             .iter()
-            .filter(|e| e.contains("Adaptive cruise resuming"))
+            .filter(|e| e.contains("Cruise resuming"))
             .count(),
         1
     );
@@ -1204,7 +1185,7 @@ fn test_a_hazard_that_leaves_the_truck_below_cruise_speed_still_resumes() {
         spoken(&harness)
     );
     assert!(
-        said_any(&harness, "Automatic speed control resuming."),
+        said_any(&harness, "Speed control resuming."),
         "{:?}",
         spoken(&harness)
     );

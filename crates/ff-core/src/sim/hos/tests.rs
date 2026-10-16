@@ -295,6 +295,30 @@ fn test_full_off_duty_and_sleeper_resets_clear_split_pending_summary() {
 }
 
 #[test]
+fn test_back_to_back_berth_rests_are_one_period() {
+    // Two 3-hour picks at one stop are 6 hours in a row, not two 3-hour
+    // halves (tester report, 2026-09-23).
+    let mut c = HosClock::new();
+    c.drive(500.0);
+    c.on_duty(235.0);
+    c.sleeper_split_rest(180.0);
+    c.sleeper_split_rest(180.0);
+    assert_eq!(c.split_rest_history.len(), 1);
+    assert_eq!(c.split_rest_history[0].minutes, 360.0);
+    assert_eq!(c.reset_minutes_left(), Some(240.0));
+
+    // Reaching 7 hours takes the whole period off the window.
+    c.sleeper_split_rest(60.0);
+    assert_eq!(c.duty_min, 735.0);
+
+    // And ten in a row is a full reset.
+    c.sleeper_split_rest(180.0);
+    assert_eq!(c.driving_min, 0.0);
+    assert_eq!(c.duty_min, 0.0);
+    assert_eq!(c.reset_minutes_left(), None);
+}
+
+#[test]
 fn test_split_long_period_must_be_sleeper_berth() {
     let mut c = HosClock::new();
     c.drive(300.0);
@@ -315,7 +339,7 @@ fn test_split_pending_summary_names_needed_pair() {
 
     assert_eq!(
         c.split_pending_summary(),
-        Some("Sleeper split pending: pair this with 2 more hours at sleep-capable parking.")
+        Some("Sleeper split open: 2 more hours off duty or in the sleeper to pair it.")
     );
 }
 
@@ -327,7 +351,7 @@ fn test_hos_summary_mentions_pending_sleeper_split() {
 
     let summary = c.summary("realistic");
 
-    assert!(summary.contains("Sleeper split pending"));
+    assert!(summary.contains("Sleeper split open"));
     assert!(summary.contains("2 more hours"));
 }
 
@@ -473,8 +497,8 @@ fn test_hos_summary_includes_time_units() {
     let summary = c.summary("realistic");
 
     assert!(summary.contains("9 hours of driving left"));
-    assert!(summary.contains("break due in 6 hours"));
-    assert!(summary.contains("duty window closes in 12 hours"));
+    assert!(summary.contains("30-minute break due in 6 hours"));
+    assert!(summary.contains("12 hours left in the 14-hour window"));
 }
 
 #[test]
@@ -487,8 +511,8 @@ fn test_hos_summary_omits_break_when_duty_window_closes_first() {
 
     let summary = c.summary("realistic");
 
-    assert!(summary.contains("1.8 hours of duty window left"));
-    assert!(!summary.contains("break due"));
+    assert!(summary.contains("1.8 hours left in the 14-hour window"));
+    assert!(!summary.contains("30-minute break due"));
 }
 
 // -- the one-answer readouts (Alt A, Alt S, Alt D) ---------------------------------
@@ -510,9 +534,9 @@ fn test_wheel_time_leads_with_its_own_noun_and_names_both_spent_clocks() {
 
     let said = c.wheel_time_summary("realistic", false);
 
-    assert!(said.starts_with("At the wheel so far:"));
-    assert!(said.contains("5.4 hours driving"));
-    assert!(said.contains("5.4 hours on duty this shift"));
+    assert!(said.starts_with("Driven "));
+    assert!(said.contains("Driven 5.4 hours"));
+    assert!(said.contains("On duty 5.4 hours"));
 }
 
 #[test]
@@ -532,14 +556,14 @@ fn test_wheel_time_speaks_short_stretches_as_minutes() {
 
     assert!(c
         .wheel_time_summary("realistic", false)
-        .contains("24 minutes driving"));
+        .contains("Driven 24 minutes"));
 }
 
 #[test]
 fn test_wheel_time_says_no_driving_yet_on_a_fresh_shift() {
     assert!(HosClock::new()
         .wheel_time_summary("realistic", false)
-        .contains("no driving yet"));
+        .contains("Driven nothing yet"));
 }
 
 #[test]
@@ -573,8 +597,8 @@ fn test_wheel_time_answers_instead_of_going_quiet_with_enforcement_off() {
 
     for mode in ["off", "debug_off"] {
         let said = c.wheel_time_summary(mode, false);
-        assert!(said.contains("5.4 hours driving"));
-        assert!(said.contains("enforcement is off"));
+        assert!(said.contains("Driven 5.4 hours"));
+        assert!(said.contains("Hours enforcement off."));
     }
 }
 
@@ -585,9 +609,12 @@ fn test_break_key_leads_with_the_break_and_counts_driving_time() {
 
     assert_eq!(
         c.break_summary("realistic", false),
-        "Break due in 6 hours of driving."
+        "30-minute break due in 6 hours of driving."
     );
-    assert_eq!(c.break_summary("realistic", true), "Break due in 6 hours.");
+    assert_eq!(
+        c.break_summary("realistic", true),
+        "30-minute break due in 6 hours."
+    );
 }
 
 #[test]
@@ -597,7 +624,7 @@ fn test_break_key_speaks_minutes_when_under_an_hour() {
 
     assert!(c
         .break_summary("realistic", false)
-        .contains("Break due in 24 minutes"));
+        .contains("30-minute break due in 24 minutes"));
 }
 
 #[test]
@@ -606,15 +633,15 @@ fn test_break_key_answers_the_break_first_then_the_window_that_closes_first() {
     // has to answer the break, then add the fact that overrides it.
     let said = duty_closes_first().break_summary("realistic", false);
 
-    assert!(said.starts_with("Break due in 3.5 hours"));
-    assert!(said.contains("duty window closes first, in 1.8 hours"));
+    assert!(said.starts_with("30-minute break due in 3.5 hours"));
+    assert!(said.contains(", 1.8 hours left in the 14-hour window"));
 }
 
 #[test]
 fn test_terse_break_key_still_names_the_window_that_closes_first() {
     let said = duty_closes_first().break_summary("realistic", true);
 
-    assert!(said.contains("Break due in 3.5 hours"));
+    assert!(said.contains("30-minute break due in 3.5 hours"));
     assert!(said.contains("duty window 1.8 hours"));
 }
 
@@ -662,7 +689,7 @@ fn test_break_key_says_none_required_with_enforcement_off() {
             .contains("Break: none required."));
         assert!(HosClock::new()
             .break_summary(mode, false)
-            .contains("enforcement is off"));
+            .contains("Hours enforcement off."));
     }
 }
 
@@ -729,7 +756,7 @@ fn test_drive_time_key_carries_the_pending_sleeper_split() {
     for terse in [false, true] {
         assert!(c
             .drive_time_summary("realistic", terse)
-            .contains("Sleeper split pending"));
+            .contains("Sleeper split open"));
     }
     // The split belongs to the shift-ending key, not the other two.
     assert!(!c
@@ -748,7 +775,7 @@ fn test_drive_time_key_says_no_limit_with_enforcement_off() {
     for mode in ["off", "debug_off"] {
         let said = c.drive_time_summary(mode, false);
         assert!(said.contains("no limit"));
-        assert!(said.contains("enforcement is off"));
+        assert!(said.contains("Hours enforcement off."));
     }
 }
 
@@ -829,7 +856,7 @@ fn test_off_mode_never_warns_or_violates() {
     assert!(!c.in_violation("off"));
     assert_eq!(c.remaining_min("off"), None);
     assert!(!c.summary("off").contains("developer mode"));
-    assert!(c.summary("off").contains("enforcement is off"));
+    assert!(c.summary("off").contains("Hours enforcement off."));
 }
 
 // -- serialization and compatibility ----------------------------------------------
@@ -1212,6 +1239,112 @@ fn test_fatigue_grows_faster_at_night() {
 }
 
 #[test]
+fn awake_fatigue_gain_uses_day_and_night_rates() {
+    // Eight daytime hours at the day rate.
+    let day_8h = awake_fatigue_gain(8.0, 8.0 * 60.0);
+    assert!(approx(day_8h, fatigue_rate_per_min(false) * 8.0 * 60.0));
+    // A full day crosses night, so it outpaces pure day rate and stays finite.
+    let day_24h = awake_fatigue_gain(8.0, 24.0 * 60.0);
+    assert!(day_24h > fatigue_rate_per_min(false) * 24.0 * 60.0);
+    assert!(day_24h.is_finite());
+}
+
+#[test]
+fn course_fatigue_is_half_the_driving_rate_day_and_night() {
+    // An 8 h day class from 10: 0.0575/min x 480 = 27.6, landing at 37.6.
+    let day = course_fatigue(10.0, 8.0, 8.0 * 60.0, |_| 1.0);
+    assert!(approx(day, 37.6), "8 h day class: {day}");
+    assert!(approx(
+        day - 10.0,
+        CLASSROOM_FATIGUE_FACTOR * awake_fatigue_gain(8.0, 8.0 * 60.0)
+    ));
+    // 9 PM to 5 AM is all night: 0.085/min x 480 = 40.8, landing at 50.8.
+    let night = course_fatigue(10.0, 21.0, 8.0 * 60.0, |_| 1.0);
+    assert!(approx(night, 50.8), "8 h night class: {night}");
+}
+
+#[test]
+fn course_fatigue_scale_multiplies_each_minute() {
+    // A buff at rate 0.5 for the first four hours only.
+    let buffed = course_fatigue(0.0, 8.0, 8.0 * 60.0, |h| if h < 4.0 { 0.5 } else { 1.0 });
+    let plain_half = 0.0575 * 240.0;
+    assert!(approx(buffed, plain_half * 0.5 + plain_half), "{buffed}");
+}
+
+#[test]
+fn multi_day_course_counts_only_the_last_class_day() {
+    // 24 h from 7 AM: the last class day is 8 AM to 4 PM, all day rate:
+    // 0.0575 x 480 = 27.6, whatever the driver walked in with.
+    let fresh = course_fatigue(0.0, 7.0, 24.0 * 60.0, |_| 1.0);
+    let tired = course_fatigue(95.0, 7.0, 24.0 * 60.0, |_| 1.0);
+    assert!(approx(fresh, 27.6), "24 h course: {fresh}");
+    assert!(
+        approx(fresh, tired),
+        "arrival fatigue is replaced, not added"
+    );
+    assert!(approx(
+        fresh,
+        CLASSROOM_FATIGUE_FACTOR * awake_fatigue_gain(8.0, 8.0 * 60.0)
+    ));
+    // The 10 h threshold: a 10 h course is two days, a 9.9 h course is one.
+    let ten = course_fatigue(50.0, 8.0, 10.0 * 60.0, |_| 1.0);
+    assert!(approx(ten, 27.6), "10 h course: {ten}");
+    let under = course_fatigue(50.0, 8.0, 9.9 * 60.0, |_| 1.0);
+    assert!(under > 50.0);
+    // The cliff the cutoff comment describes: 599 min from 8 AM at 50.
+    let cliff = course_fatigue(50.0, 8.0, 599.0, |_| 1.0);
+    assert!(approx(cliff, 50.0 + 0.0575 * 599.0), "599 min: {cliff}");
+}
+
+#[test]
+fn multi_day_course_class_day_is_daytime_from_any_start_hour() {
+    // Schools teach 8 AM to 4 PM: a course starting at 3 to 7 AM must not
+    // run its last class day overnight.
+    for start in [3.0, 5.0, 7.0, 12.0, 21.0, 23.5, 0.0] {
+        for arrival in [0.0, 40.0, 95.0] {
+            let after = course_fatigue(arrival, start, 24.0 * 60.0, |_| 1.0);
+            assert!(
+                approx(after, 27.6),
+                "start {start}, arrival {arrival}: {after}"
+            );
+        }
+    }
+    // Days past the first and a long-running game clock change nothing.
+    assert!(approx(
+        course_fatigue(0.0, 1000.0 + 5.0, 24.0 * 60.0, |_| 1.0),
+        27.6
+    ));
+    assert!(approx(
+        course_fatigue(0.0, 21.0, 10.0 * 60.0, |_| 1.0),
+        27.6
+    ));
+}
+
+#[test]
+fn multi_day_course_buffs_follow_the_class_day_hours() {
+    // From 3 AM the class day runs 5 to 13 hours into the course. A half
+    // rate buff for the first 9 hours covers its first four class hours.
+    let buffed = course_fatigue(0.0, 3.0, 24.0 * 60.0, |h| if h < 9.0 { 0.5 } else { 1.0 });
+    let half = 0.0575 * 240.0;
+    assert!(approx(buffed, half * 0.5 + half), "from 3 AM: {buffed}");
+    // From 9 PM the class day is 8 AM to 4 PM next day, 11 to 19 hours in.
+    let buffed = course_fatigue(0.0, 21.0, 24.0 * 60.0, |h| if h < 15.0 { 0.5 } else { 1.0 });
+    assert!(approx(buffed, half * 0.5 + half), "from 9 PM: {buffed}");
+    // A flat mode multiplier scales the whole day.
+    assert!(approx(
+        course_fatigue(0.0, 5.0, 24.0 * 60.0, |_| 0.8),
+        0.8 * 27.6
+    ));
+}
+
+#[test]
+fn course_fatigue_clamps_and_ignores_bad_minutes() {
+    assert_eq!(course_fatigue(95.0, 21.0, 8.0 * 60.0, |_| 1.0), 100.0);
+    assert_eq!(course_fatigue(12.0, 8.0, f64::NAN, |_| 1.0), 12.0);
+    assert_eq!(course_fatigue(12.0, 8.0, -60.0, |_| 1.0), 12.0);
+}
+
+#[test]
 fn test_fatigue_shortens_the_reaction_window() {
     assert_eq!(reaction_window_mult(0.0), 1.0);
     assert_eq!(reaction_window_mult(FATIGUE_DROWSY), 1.0);
@@ -1239,7 +1372,8 @@ fn rest_sleeper_split_floors_by_completion() {
     assert_eq!(rest_sleeper_split(50.0, 120.0, false), 32.0);
     assert_eq!(rest_sleeper_split(50.0, 480.0, false), 20.0);
     assert_eq!(rest_sleeper_split(50.0, 480.0, true), 10.0);
-    assert_eq!(rest_sleeper_split(5.0, 120.0, true), 10.0);
+    assert_eq!(rest_sleeper_split(5.0, 120.0, true), 5.0);
+    assert_eq!(rest_sleeper_split(0.0, 180.0, false), 0.0);
 }
 
 #[test]

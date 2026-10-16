@@ -28,12 +28,28 @@ fn test_facility_approach_data_covers_full_facility_set() {
     let data = read_json("facility_approaches.json");
     let coverage = &data["coverage"];
 
-    assert_eq!(coverage["facilities"], 5037);
-    assert_eq!(coverage["source_backed_endpoints"], 3198);
-    assert_eq!(coverage["road_snapped"], 1579);
-    assert_eq!(coverage["turn_level"], 1415);
-    assert_eq!(coverage["nearest_road_fallback"], 1619);
-    assert_eq!(coverage["representative_fallback"], 1839);
+    // The counts move with every sweep (ROADMAP keeps their history), so what
+    // is checked is that they add up and stay in step with the endpoint layer
+    // they were built from.
+    let n = |v: &serde_json::Value| v.as_u64().unwrap();
+    let endpoints = read_json("facility_endpoints.json");
+    let endpoint_coverage = &endpoints["coverage"];
+    assert_eq!(coverage["facilities"], endpoint_coverage["facilities"]);
+    assert_eq!(
+        coverage["source_backed_endpoints"],
+        endpoint_coverage["source_backed"]
+    );
+    assert_eq!(
+        coverage["representative_fallback"],
+        endpoint_coverage["fallback"]
+    );
+    // Every sourced endpoint snapped to a road or fell back to the nearest
+    // one, and a turn-by-turn chain needs a snapped road.
+    assert_eq!(
+        n(&coverage["road_snapped"]) + n(&coverage["nearest_road_fallback"]),
+        n(&coverage["source_backed_endpoints"])
+    );
+    assert!(n(&coverage["turn_level"]) <= n(&coverage["road_snapped"]));
     assert_eq!(coverage["gate_yard_dock_hints"], 0);
 
     // The 2026-07-14 regen keys records by current slug facility ids and
@@ -185,7 +201,8 @@ fn test_facility_route_keeps_existing_fallback_when_no_source_geometry() {
 /// "a side street", but `facility_approaches.json` was baked before that
 /// and still carries the literal as a road name. Whatever the bake says,
 /// the truck never speaks it: a road with no name is said to be what it
-/// is, on the arrival chain and on the reversed departure chain alike.
+/// is, on the arrival chain and on the reversed departure chain alike. The
+/// 2026-09-16 Illinois re-route baked that last block as "a service road".
 #[test]
 fn test_facility_chains_never_say_unnamed_public_road() {
     let w = world();
@@ -226,17 +243,29 @@ fn test_facility_chains_never_say_unnamed_public_road() {
     }
     assert!(checked > 0);
 
-    // The reported chain, spoken end to end: the last turn in, and the
-    // outbound start on the same road.
+    // A chain spoken end to end: the last turn in, and the outbound start on
+    // the same road. The report was Chicago Cross-Dock, whose endpoint (a
+    // transit stop, Museum Campus) the 2026-09-17 re-sweep replaced, and its
+    // new chain ends on a named street. Amarillo's truck terminal kept its endpoint, a real
+    // carrier's yard, and still ends on an unnamed service road.
     let arrival = w
-        .facility_approach_route("chicago_il_us", "Chicago Cross-Dock")
+        .facility_approach_route("amarillo_tx_us", "Route 66 Truck Terminal")
         .expect("approach route");
     let last = arrival.legs.last().expect("a turn-level chain");
-    assert_eq!(last.highway, "a side street");
-    assert_eq!(last.local_cue, "Turn left onto a side street.");
+    // The terminal used to be reached down an unnamed service way. The
+    // 2026-09-20 screens took parking aisles, drive-throughs and permit-only
+    // ways out of the graph, and the route that survives comes in off a
+    // named street -- which is the better answer, and the pairing below is
+    // what this test is actually for.
+    assert_eq!(last.highway, "North Williams Street");
+    assert_eq!(last.local_cue, "Turn right onto North Williams Street.");
     let departure = w
-        .facility_departure_route("chicago_il_us", "Chicago Cross-Dock")
+        .facility_departure_route("amarillo_tx_us", "Route 66 Truck Terminal")
         .expect("departure route")
         .expect("a multi-leg chain");
-    assert_eq!(departure.legs[0].local_cue, "Start on a side street.");
+    assert_eq!(departure.legs[0].highway, last.highway);
+    assert_eq!(
+        departure.legs[0].local_cue,
+        "Start on North Williams Street."
+    );
 }

@@ -105,11 +105,11 @@ pub enum EventPriority {
 /// CONFIRMATION. CONFIRMATION is an outcome report -- the assist cleared it,
 /// the latch caught, here is what happened. A stalled engine, a grounded
 /// tractor, a scrapped chain set are unrequested failures that stop the
-/// truck and demand a next action; at quiet and urgent_only CONFIRMATION is
+/// truck and demand a next action; at urgent_only CONFIRMATION is
 /// an EARCON, so miscategorising one of these turns the instruction that
 /// gets the truck moving again into a chime. Route it by what actually
-/// changed instead: SAFETY when the truck will not move and the line says
-/// what to press, MONEY when it cost money or equipment.
+/// changed instead: SAFETY for a failure or recovery instruction, MONEY
+/// for a cost report that does not require immediate action.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SpeechCategory {
     Safety,
@@ -127,11 +127,22 @@ pub enum SpeechCategory {
     Coaching,
     Confirmation,
     Status,
+    /// The other vehicles on the road when nothing is asked of the driver:
+    /// a slow car or brake lights miles ahead, adaptive cruise settling in
+    /// behind someone, a traffic pack, lane keeping going around a slow
+    /// truck. The pass-by and engine sounds already carry it, and the assist
+    /// is the one answering it, so only standard puts it into words. Quiet
+    /// is meant to be quiet: a player's report (2026-10-03) was that quiet
+    /// still read out every slow box truck and its speed. Traffic the driver
+    /// must answer -- closing on a slow vehicle, stopped traffic, a merge
+    /// into the lane -- is a hazard and stays SAFETY.
+    Traffic,
 }
 
 impl SpeechCategory {
-    /// Every category, in the Python enum's declaration order.
-    pub const ALL: [SpeechCategory; 7] = [
+    /// Every category, in declaration order (Traffic is the Rust-era
+    /// addition, appended so the Python order of the rest is unchanged).
+    pub const ALL: [SpeechCategory; 8] = [
         SpeechCategory::Safety,
         SpeechCategory::Navigation,
         SpeechCategory::NavigationAdvisory,
@@ -139,6 +150,7 @@ impl SpeechCategory {
         SpeechCategory::Coaching,
         SpeechCategory::Confirmation,
         SpeechCategory::Status,
+        SpeechCategory::Traffic,
     ];
 
     /// The Python `StrEnum` value.
@@ -151,6 +163,7 @@ impl SpeechCategory {
             SpeechCategory::Coaching => "coaching",
             SpeechCategory::Confirmation => "confirmation",
             SpeechCategory::Status => "status",
+            SpeechCategory::Traffic => "traffic",
         }
     }
 
@@ -164,10 +177,13 @@ impl SpeechCategory {
 
 /// What a rung does with a category.
 ///
-/// `Earcon` and `Silent` both stop the words; they differ in whether the
-/// sound layer still marks the moment. Neither loses the line -- both still
-/// reach the message log, and the status-query keys still answer, so nothing
-/// the ladder cuts becomes unreachable.
+/// `Silent` stops the words and makes no sound in their place, and keeps
+/// them out of message review. Status-query keys still answer on demand.
+///
+/// There used to be an `Earcon` disposition as well: four synthesized notes
+/// (Road ahead, Coaching, Confirmation and Status note) stood in for the
+/// words a rung cut. The owner retired it on 2026-10-03 -- a quiet rung
+/// should be quiet, not a run of bloops announcing lines nobody hears.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Disposition {
     /// speaks, normal rendering
@@ -178,19 +194,16 @@ pub enum Disposition {
     FirstOccurrence,
     /// speaks on enter, worsen, and clear only
     Transitions,
-    /// the sound layer carries it; no words
-    Earcon,
-    /// no words, no sound; log and status keys only
+    /// no words, no sound; status keys still answer
     Silent,
 }
 
 impl Disposition {
-    pub const ALL: [Disposition; 6] = [
+    pub const ALL: [Disposition; 5] = [
         Disposition::Full,
         Disposition::Terse,
         Disposition::FirstOccurrence,
         Disposition::Transitions,
-        Disposition::Earcon,
         Disposition::Silent,
     ];
 
@@ -201,7 +214,6 @@ impl Disposition {
             Disposition::Terse => "terse",
             Disposition::FirstOccurrence => "first",
             Disposition::Transitions => "transitions",
-            Disposition::Earcon => "earcon",
             Disposition::Silent => "silent",
         }
     }
@@ -215,17 +227,18 @@ impl Disposition {
 // changed nothing a player could hear. In a game read entirely by ear, a
 // setting that offers a choice and produces no audible difference is worse
 // than one fewer choice: it reads as broken. The CATEGORY stays (that one
-// line, and the Coaching note earcon quiet retires it to); it is the RUNG
+// line); it is the RUNG
 // that is gone, and re-adding it is one row of a data table once there are
 // tips to put in it.
 pub const DRIVING_SPEECH_MODES: [&str; 3] = ["standard", "quiet", "urgent_only"];
 
 /// One rung's row of the table: a disposition per category.
-pub type DispositionRow = [(SpeechCategory, Disposition); 7];
+pub type DispositionRow = [(SpeechCategory, Disposition); 8];
 
 /// The rung table. Read a row as "at this rung, a line of this category is
-/// delivered this way". Safety and money are FULL or TERSE in every row and
-/// a test pins that: R1's never-dropped contract outranks any rung.
+/// delivered this way". Safety and immediate navigation always speak. Quiet
+/// keeps short confirmations and status but not the traffic around the
+/// truck; Urgent only omits routine costs, status and traffic.
 pub const DRIVING_SPEECH_DISPOSITIONS: [(&str, DispositionRow); 3] = [
     (
         "standard",
@@ -237,6 +250,7 @@ pub const DRIVING_SPEECH_DISPOSITIONS: [(&str, DispositionRow); 3] = [
             (SpeechCategory::Coaching, Disposition::FirstOccurrence),
             (SpeechCategory::Confirmation, Disposition::Full),
             (SpeechCategory::Status, Disposition::Transitions),
+            (SpeechCategory::Traffic, Disposition::Full),
         ],
     ),
     (
@@ -246,21 +260,23 @@ pub const DRIVING_SPEECH_DISPOSITIONS: [(&str, DispositionRow); 3] = [
             (SpeechCategory::Money, Disposition::Terse),
             (SpeechCategory::Navigation, Disposition::Terse),
             (SpeechCategory::NavigationAdvisory, Disposition::Terse),
-            (SpeechCategory::Coaching, Disposition::Earcon),
-            (SpeechCategory::Confirmation, Disposition::Earcon),
-            (SpeechCategory::Status, Disposition::Earcon),
+            (SpeechCategory::Coaching, Disposition::Silent),
+            (SpeechCategory::Confirmation, Disposition::Terse),
+            (SpeechCategory::Status, Disposition::Terse),
+            (SpeechCategory::Traffic, Disposition::Silent),
         ],
     ),
     (
         "urgent_only",
         [
             (SpeechCategory::Safety, Disposition::Terse),
-            (SpeechCategory::Money, Disposition::Terse),
+            (SpeechCategory::Money, Disposition::Silent),
             (SpeechCategory::Navigation, Disposition::Terse),
-            (SpeechCategory::NavigationAdvisory, Disposition::Earcon),
+            (SpeechCategory::NavigationAdvisory, Disposition::Silent),
             (SpeechCategory::Coaching, Disposition::Silent),
-            (SpeechCategory::Confirmation, Disposition::Earcon),
+            (SpeechCategory::Confirmation, Disposition::Silent),
             (SpeechCategory::Status, Disposition::Silent),
+            (SpeechCategory::Traffic, Disposition::Silent),
         ],
     ),
 ];
@@ -280,34 +296,6 @@ pub fn row_disposition(row: &DispositionRow, category: SpeechCategory) -> Option
     row.iter()
         .find(|(candidate, _)| *candidate == category)
         .map(|(_, disposition)| *disposition)
-}
-
-/// The sound that carries a category once a rung stops speaking it. Every
-/// value is a real `SoundEntry.name` in the Learn game sounds catalog
-/// (`sound_catalog::CATALOG`) -- pinned by
-/// `test_every_earcon_category_is_learnable` -- because a sound the player
-/// cannot look up is information removed rather than information moved
-/// (R14). CONFIRMATION had reused the hazard-clear chime that shipped in S3
-/// rather than getting a cue of its own. That was a mistake and is fixed:
-/// the chime already means "you got past the hazard", so at quiet it fired
-/// for every silenced confirmation -- including "Automatic braking.", which
-/// happens while the hazard is still there (owner playtest, 2026-08-17).
-/// COACHING, CONFIRMATION, NAVIGATION_ADVISORY and STATUS have no existing
-/// sound that means what an earcon here needs to mean, so each gets its own
-/// synthesized entry (`ladder_earcons`).
-pub const LADDER_EARCONS: [(SpeechCategory, &str); 4] = [
-    (SpeechCategory::NavigationAdvisory, "Road ahead note"),
-    (SpeechCategory::Coaching, "Coaching note"),
-    (SpeechCategory::Confirmation, "Confirmation note"),
-    (SpeechCategory::Status, "Status note"),
-];
-
-/// `LADDER_EARCONS.get(category)`.
-pub fn ladder_earcon(category: SpeechCategory) -> Option<&'static str> {
-    LADDER_EARCONS
-        .iter()
-        .find(|(candidate, _)| *candidate == category)
-        .map(|(_, name)| *name)
 }
 
 /// How this rung delivers this category.
@@ -355,8 +343,8 @@ struct Protected {
 ///   means say nothing at all.
 /// * `note_spoken` records a line that did reach the voice.
 /// * `is_silenced_repeat`/`note_silenced` are the same pair for a line the
-///   driving speech rung cut to an earcon or to nothing -- a private
-///   namespace so a silenced occurrence can dedupe its own earcon without
+///   driving speech rung cut to nothing -- a private
+///   namespace so a silenced occurrence can dedupe itself without
 ///   ever registering as something `is_repeat` would recognise as heard.
 /// * `note_interrupt` for an interrupting line (it purges the channel), or
 ///   `should_flush` for a queued one -- true there means the backlog has
@@ -375,7 +363,7 @@ pub struct EventSpeechPacer {
     /// condition key -> the last thing said about it.
     conditions: HashMap<String, String>,
     // The same two maps, but for occurrences the driving speech rung
-    // silenced (an earcon or nothing, never the words). Kept separate from
+    // silenced (never the words). Kept separate from
     // `recent`/`conditions` on purpose: those two belong to what the player
     // actually heard, and `is_repeat` consults them to decide whether a
     // genuinely spoken line would be news. If a silenced occurrence wrote
@@ -407,6 +395,11 @@ pub struct EventSpeechPacer {
     /// caller can name it in the transcript. See `MOSTLY_HEARD_FRACTION`.
     mostly_heard: Option<String>,
     receipts: DeliveryReceipts,
+    /// When the voice last went from quiet to speaking: the start of the
+    /// backlog `clear_at` projects the end of. See `should_flush`.
+    busy_since: f64,
+    /// Whether every line in that backlog is ROUTE or CRITICAL.
+    backlog_urgent: bool,
 }
 
 impl Default for EventSpeechPacer {
@@ -489,7 +482,38 @@ impl EventSpeechPacer {
             rescued_until: HashMap::new(),
             mostly_heard: None,
             receipts: DeliveryReceipts::default(),
+            busy_since: 0.0,
+            backlog_urgent: false,
         }
+    }
+
+    /// Extend the projection by `text`, noting when a quiet voice starts
+    /// and whether everything it holds is a ROUTE or CRITICAL line.
+    fn extend_projection(&mut self, now: f64, text: &str, priority: EventPriority) {
+        if now >= self.clear_at {
+            self.busy_since = now;
+            self.backlog_urgent = true;
+        }
+        self.backlog_urgent &= priority >= EventPriority::Route;
+        self.clear_at = now.max(self.clear_at) + Self::duration_s(text);
+    }
+
+    /// Start the projection over with `text`: the purge silenced the voice.
+    fn restart_projection(&mut self, now: f64, text: &str, priority: EventPriority) {
+        self.clear_at = now;
+        self.extend_projection(now, text, priority);
+    }
+
+    /// Whether everything the voice holds is ROUTE or CRITICAL, started
+    /// inside its pre-utterance pause and still true: this same instant of
+    /// road, with nothing in it heard yet and nothing stale.
+    fn backlog_is_this_instant(&self, now: f64) -> bool {
+        self.backlog_urgent
+            && now - self.busy_since < Self::BASE_UTTERANCE_S
+            && self
+                .protected
+                .as_ref()
+                .is_none_or(|held| held.valid.as_ref().is_none_or(|valid| valid()))
     }
 
     /// Swap the clock under a live pacer (the Python tests poked
@@ -503,7 +527,7 @@ impl EventSpeechPacer {
     }
 
     fn duration_s(text: &str) -> f64 {
-        Self::BASE_UTTERANCE_S + text.chars().count() as f64 / Self::CHARS_PER_S
+        Self::BASE_UTTERANCE_S + spoken_length(text) / Self::CHARS_PER_S
     }
 
     // -- what the player has already heard ---------------------------------
@@ -569,14 +593,14 @@ impl EventSpeechPacer {
         self.receipts.forget(key);
     }
 
-    // -- what the rung silenced (earcon-only or fully quiet) ----------------
+    // -- what the rung silenced ----------------
 
-    /// True when this silenced occurrence was already marked (earcon or not).
+    /// True when this silenced occurrence was already marked.
     ///
     /// The silenced branches' own dedup: mirrors [`Self::is_repeat`]'s rules
     /// exactly, but reads a namespace private to occurrences the rung cut,
     /// never `conditions`/`recent`. A silenced repeat must not go unmarked
-    /// (that is the earcon machine-gun this exists to stop), but it must
+    /// (a re-firing standing condition would log again every time), but it must
     /// equally never be mistaken for a genuinely spoken occurrence by
     /// [`Self::is_repeat`] once the rung changes and the condition is still
     /// active -- that would silence the very line the player raised the rung
@@ -609,7 +633,7 @@ impl EventSpeechPacer {
         }
     }
 
-    /// Record a silenced occurrence (earcon played, or fully quiet).
+    /// Record a silenced occurrence.
     pub fn note_silenced(&mut self, text: &str, key: Option<&str>) {
         if text.is_empty() {
             return;
@@ -663,6 +687,25 @@ impl EventSpeechPacer {
                 done_at: self.clear_at,
                 valid,
             });
+        }
+    }
+
+    /// `track` for a line delivered queued behind whatever is already in the
+    /// voice. A confirmation neither takes the slot nor empties it: it plays
+    /// after the protected line rather than replacing it, so a turn call or
+    /// a warning still speaking ahead of it is rescued if an interrupt cuts
+    /// it, as it was before the category reached this path. Emptying it
+    /// lost "Exit 50B in half a mile, keep right." to the automatic braking
+    /// that cut it, because a cruise confirmation had queued behind it.
+    fn track_queued(
+        &mut self,
+        text: &str,
+        priority: EventPriority,
+        category: Option<SpeechCategory>,
+        valid: Option<Valid>,
+    ) {
+        if category != Some(SpeechCategory::Confirmation) {
+            self.track(text, priority, category, valid);
         }
     }
 
@@ -749,6 +792,31 @@ impl EventSpeechPacer {
         Some((text, priority))
     }
 
+    /// Whether the only thing ahead of `text` in the voice is the protected
+    /// ROUTE or CRITICAL line, saying its words right now and still true (its
+    /// `valid`, when it has one), with nothing queued behind it.
+    ///
+    /// "Saying its words" is past the pre-utterance pause: a line cut inside
+    /// that pause has not been heard at all, so the flush below restarting it
+    /// ahead of the new line costs the player nothing -- that is the burst of
+    /// route lines landing in one frame, and its hand-back stays. A line past
+    /// it has been heard in part, and cutting it either replays it from the
+    /// top or drops its tail.
+    ///
+    /// A line superseded by what happened since -- "assistance is holding for
+    /// your gap" once the gap has come -- is not live, so the flush takes it
+    /// and it is never handed back.
+    fn only_a_live_line_ahead(&self, now: f64, text: &str) -> bool {
+        self.protected.as_ref().is_some_and(|held| {
+            let started_at = held.done_at - Self::duration_s(&held.text);
+            now - started_at >= Self::BASE_UTTERANCE_S
+                && now < held.done_at
+                && self.clear_at <= held.done_at
+                && held.text != text
+                && held.valid.as_ref().is_none_or(|valid| valid())
+        })
+    }
+
     /// An interrupting line purges the channel: the projection restarts.
     ///
     /// Returns the ROUTE or CRITICAL line the purge plausibly cut off
@@ -767,7 +835,8 @@ impl EventSpeechPacer {
         let cut = self.take_protected(Some(text));
         self.interrupt_deliveries();
         self.purge_next = false;
-        self.clear_at = self.now() + Self::duration_s(text);
+        let now = self.now();
+        self.restart_projection(now, text, priority);
         self.track(text, priority, category, valid);
         cut
     }
@@ -785,8 +854,8 @@ impl EventSpeechPacer {
         category: Option<SpeechCategory>,
         valid: Option<Valid>,
     ) {
-        let start = self.now().max(self.clear_at);
-        self.clear_at = start + Self::duration_s(text);
+        let now = self.now();
+        self.extend_projection(now, text, priority);
         self.track(text, priority, category, valid);
     }
 
@@ -811,6 +880,24 @@ impl EventSpeechPacer {
     pub fn delivery_pending(&mut self) -> bool {
         let now = self.now();
         self.receipts.has_pending(now)
+    }
+
+    /// A handed-back line spoken AHEAD of the line that flushed it: the
+    /// channel is busy for its length too, but the flushing line stays the
+    /// newest protected one, so a later flush rescues that line rather than
+    /// this one a second time.
+    ///
+    /// The flushing line now starts after this one, so its projected finish
+    /// moves with the channel's. Left where the flush put it, the line read
+    /// as speaking since the flush, and a second flush or an interrupt while
+    /// the hand-back still played dropped it as heard -- a turn call the
+    /// player never heard a word of.
+    pub fn note_ahead(&mut self, text: &str) {
+        let duration = Self::duration_s(text);
+        self.clear_at += duration;
+        if let Some(held) = self.protected.as_mut() {
+            held.done_at += duration;
+        }
     }
 
     /// A rescued line is the same delivery, now queued to finish.
@@ -849,6 +936,14 @@ impl EventSpeechPacer {
         self.now() < self.clear_at
     }
 
+    /// Whether a CRITICAL line is still being spoken, by the same projection.
+    pub fn speaking_critical(&mut self) -> bool {
+        let now = self.now();
+        self.protected
+            .as_ref()
+            .is_some_and(|held| held.priority == EventPriority::Critical && now < held.done_at)
+    }
+
     /// Whether this queued line would start past its priority's budget.
     ///
     /// A pure reading -- the projection is not touched, nothing is tracked.
@@ -876,12 +971,15 @@ impl EventSpeechPacer {
     /// announcement gives a backlog of chatter under a second before it goes
     /// in front of it.
     ///
-    /// (As in the Python, the slot is re-armed here WITHOUT a category: a
-    /// confirmation delivered queued still takes it.)
+    /// A confirmation delivered queued does not take the slot
+    /// (`track_queued`). Without that, lane keeping's "The road narrows to
+    /// two lanes." was handed back after the automatic braking that cut it
+    /// and heard twice, eight seconds apart (QA drive, 2026-10-13).
     pub fn should_flush(
         &mut self,
         text: &str,
         priority: EventPriority,
+        category: Option<SpeechCategory>,
         valid: Option<Valid>,
     ) -> bool {
         let now = self.now();
@@ -893,13 +991,40 @@ impl EventSpeechPacer {
             // one really is stale, so it is dropped rather than rescued.
             self.purge_next = false;
             self.interrupt_deliveries();
-            self.clear_at = now + Self::duration_s(text);
+            self.restart_projection(now, text, priority);
             self.protected = None;
-            self.track(text, priority, None, valid);
+            self.track_queued(text, priority, category, valid);
             return true;
         }
         let start = now.max(self.clear_at);
         let budget = Self::wait_budget_s(priority);
+        if start - now > budget && self.backlog_is_this_instant(now) {
+            // Everything the voice holds is route or safety, still true, and
+            // began inside its pre-utterance pause: nothing has been heard
+            // and nothing is stale; it is this same instant of road (chatter
+            // in it is still flushed, and a line gone untrue is still
+            // superseded). A flush here purged it only to hand the
+            // newest of it back ahead of this line -- the same order, the
+            // same wait -- and anything older than that newest line was lost
+            // without a word: "Off the ramp and onto city streets" gone
+            // under "Entering ... zone", and every burst logged twice as a
+            // requeue (live drive into Abilene, 2026-09-24). It queues.
+            self.extend_projection(now, text, priority);
+            self.track_queued(text, priority, category, valid);
+            return false;
+        }
+        if start - now > budget && self.only_a_live_line_ahead(now, text) {
+            // Nothing stale is waiting: the wait is the rest of one ROUTE or
+            // CRITICAL line the player is hearing, still true. A flush here
+            // purged nothing but that line, and then either handed it back to
+            // be said again from the top ahead of this one ("Exit speed 49.
+            // You take exit 113" heard twice, agent drives 2026-09-24) or
+            // dropped its tail ("Light red." cutting the take line). Waiting
+            // it out is shorter than the replay, and it is heard once.
+            self.extend_projection(now, text, priority);
+            self.track_queued(text, priority, category, valid);
+            return false;
+        }
         if start - now > budget {
             // A stale flush takes the backlog -- everything in it described
             // miles already driven -- but NOT a protected line that is still
@@ -953,12 +1078,12 @@ impl EventSpeechPacer {
                 self.protected = None;
             }
             self.interrupt_deliveries();
-            self.clear_at = now + Self::duration_s(text);
-            self.track(text, priority, None, valid);
+            self.restart_projection(now, text, priority);
+            self.track_queued(text, priority, category, valid);
             return true;
         }
-        self.clear_at = start + Self::duration_s(text);
-        self.track(text, priority, None, valid);
+        self.extend_projection(now, text, priority);
+        self.track_queued(text, priority, category, valid);
         false
     }
 
@@ -991,6 +1116,19 @@ impl EventSpeechPacer {
         self.purge_next = true;
         self.protected = None;
     }
+}
+
+/// A line's length in English characters' worth of speaking time. A Chinese
+/// or Japanese character carries a syllable or more, about as long to say
+/// as three English letters, so a translated line is not mistaken for a
+/// short one by the backlog projection.
+fn spoken_length(text: &str) -> f64 {
+    text.chars()
+        .map(|c| match c as u32 {
+            0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xAC00..=0xD7AF => 3.0,
+            _ => 1.0,
+        })
+        .sum()
 }
 
 #[cfg(test)]

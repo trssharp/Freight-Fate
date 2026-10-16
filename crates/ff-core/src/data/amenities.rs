@@ -40,7 +40,9 @@ pub const SIGNATURE_SERVICE_LABELS: &[(&str, &str)] = &[
     ("restaurant", "a sit-down restaurant"),
     ("barbecue", "smoked barbecue and brisket"),
     ("souvenirs", "souvenirs and road snacks"),
-    ("cat_scale", "a Cat certified weigh scale"),
+    ("coffee", "five-cent coffee"),
+    ("ice_water", "free ice water"),
+    ("cat_scale", "a CAT Scale"),
     ("laundry", "public laundry facilities"),
     ("game_room", "a game room"),
     ("barber", "a barber shop"),
@@ -117,13 +119,10 @@ pub const BRANDS: &[Brand] = &[
         key: "flying_j",
         spoken: "Flying J",
         tier: "travel_center",
-        signature: &[
-            "showers",
-            "cat_scale",
-            "laundry",
-            "premium_wifi",
-            "game_room",
-        ],
+        // No CAT Scale here or at Pilot: a stop's own listed services say
+        // whether it has one, so a brand-wide claim could name a scale the
+        // stop's menu does not offer.
+        signature: &["showers", "laundry", "premium_wifi", "game_room"],
         keywords: &["flying j"],
         bans_big_rigs: false,
     },
@@ -131,7 +130,7 @@ pub const BRANDS: &[Brand] = &[
         key: "pilot",
         spoken: "Pilot",
         tier: "travel_center",
-        signature: &["showers", "cat_scale", "laundry", "premium_wifi"],
+        signature: &["showers", "laundry", "premium_wifi"],
         keywords: &["pilot"],
         bans_big_rigs: false,
     },
@@ -142,6 +141,14 @@ pub const BRANDS: &[Brand] = &[
         signature: &["barbecue", "souvenirs"],
         keywords: &["big buck", "buc-ee", "bucee", "buckee"],
         bans_big_rigs: true,
+    },
+    Brand {
+        key: "wall_drug",
+        spoken: "Wall Drug",
+        tier: "landmark",
+        signature: &["coffee", "ice_water"],
+        keywords: &["wall drug"],
+        bans_big_rigs: false,
     },
 ];
 
@@ -330,22 +337,33 @@ mod tests {
     #[test]
     fn test_pilot_has_enhanced_amenities() {
         let pilot = classify_brand("Pilot Travel Center").unwrap();
-        for key in ["showers", "cat_scale", "laundry", "premium_wifi"] {
+        for key in ["showers", "laundry", "premium_wifi"] {
             assert!(pilot.signature.contains(&key));
         }
+        assert!(!pilot.signature.contains(&"cat_scale"));
     }
 
     #[test]
     fn test_flying_j_has_enhanced_amenities() {
         let flying_j = classify_brand("Flying J Travel Center").unwrap();
-        for key in [
-            "showers",
-            "cat_scale",
-            "laundry",
-            "premium_wifi",
-            "game_room",
-        ] {
+        for key in ["showers", "laundry", "premium_wifi", "game_room"] {
             assert!(flying_j.signature.contains(&key));
         }
+    }
+
+    #[test]
+    fn test_wall_drug_is_a_landmark_without_a_big_rig_ban() {
+        let brand = classify_brand("Wall Drug").unwrap();
+        assert_eq!(brand.key, "wall_drug");
+        assert_eq!(brand.tier, "landmark");
+        assert!(!brand.bans_big_rigs);
+        assert!(brand.signature.contains(&"coffee"));
+        assert!(brand.signature.contains(&"ice_water"));
+        let text = spoken_amenities("Wall Drug", "");
+        assert!(text.contains("Wall Drug"));
+        assert!(text.contains("landmark"));
+        assert!(text.contains("five-cent coffee"));
+        assert!(text.contains("free ice water"));
+        assert!(!text.contains("big rigs"));
     }
 }

@@ -5,6 +5,7 @@
 use crate::sim_support::*;
 use ff_core::data::world_models::{CorridorDetail, Leg, Route, StateMileage};
 use ff_core::sim::trip::{Trip, TripOptions};
+use ff_core::sim::trip_models::TripEventKind;
 use ff_core::sim::vehicle::TruckState;
 use ff_core::sim::weather::WeatherSystem;
 
@@ -60,9 +61,18 @@ fn test_long_synthetic_approach_steps_down_45_25_15() {
     // is an access road -- 45 wide out, 25 for the last two miles, 15 at the
     // gate. A blanket 25 for six-plus miles was a crawl no city posts.
     let w = world();
+    // Madison Cold Storage became estimated-near-city @2.1 mi after far-pin
+    // regeocode, and the 2026-09-16 route sweep gave Kenosha Dry Warehouse
+    // a real 0.8-mile chain. Payson Quarry went with the 2026-09-20 stand-in
+    // cut -- Payson has no surveyed freight site at all, so it holds one
+    // company yard now. Port Saint Lucie is the same case this test needs: a
+    // facility no sweep can route, whose 3.4-mile approach stays synthetic.
     let route = w
-        .facility_approach_route("madison_wi_us", "Madison Cold Storage")
-        .expect("Madison Cold Storage has an approach route");
+        .facility_approach_route(
+            "port_saint_lucie_fl_us",
+            "Port Saint Lucie Grocery Distribution Center",
+        )
+        .expect("the distribution centre has an approach route");
     assert!(route.miles() > 3.0); // long synthetic approach (clamped to Josh's band)
     let mut truck = TruckState::default();
     truck.transmission.automatic = true;
@@ -106,4 +116,68 @@ fn test_long_synthetic_approach_steps_down_45_25_15() {
         .find(|z| z.reason == "facility access road")
         .expect("an access-road zone");
     assert_eq!(arterial.end_mi, access.start_mi); // steps down, never overlaps up
+}
+
+#[test]
+fn test_a_relayed_pickup_turns_through_the_shippers_streets() {
+    // A relayed load joins the corridor to the shipper's street chain as one
+    // drive. Each street of the chain was called a highway change: seven
+    // "Keep right for ... toward Indianapolis" lines into Indianapolis Dry
+    // Warehouse, three of them left turns (owner drive, 2026-10-10).
+    let world = world();
+    let corridor = world
+        .supported_route("anderson_in_us", "indianapolis_in_us", None)
+        .unwrap()
+        .expect("Anderson to Indianapolis is on the network");
+    let approach = world
+        .facility_approach_route("indianapolis_in_us", "Indianapolis Dry Warehouse")
+        .unwrap();
+    let route = corridor.then(&approach);
+    let join = corridor.legs.len();
+    let trip = Trip::new(
+        route,
+        TruckState::default(),
+        WeatherSystem::new("great_lakes", Some(1), None, None, true),
+        TripOptions {
+            seed: Some(2),
+            world: Some(world),
+            ..Default::default()
+        },
+    );
+    let on_streets: Vec<_> = trip
+        .navigation_cues
+        .iter()
+        .filter(|cue| cue.at_mi >= trip.leg_starts[join] - 0.01)
+        .collect();
+    assert!(
+        !on_streets.iter().any(|cue| cue.kind == "maneuver"),
+        "{:?}",
+        on_streets.iter().map(|c| &c.near_text).collect::<Vec<_>>()
+    );
+    let turns: Vec<(&str, &str)> = on_streets
+        .iter()
+        .filter(|cue| cue.kind == "local_turn")
+        .map(|cue| (cue.near_text.as_str(), cue.direction.as_str()))
+        .collect();
+    assert_eq!(
+        turns.first().map(|t| t.0),
+        Some("Continue onto South Meridian Street, then a quarter mile on it."),
+        "{turns:?}"
+    );
+    assert!(
+        turns.contains(&("Turn left onto Mechanic Street.", "left")),
+        "{turns:?}"
+    );
+    assert_eq!(turns.len(), approach.legs.len(), "{turns:?}");
+
+    // Reaching the city is not a passage through it toward itself.
+    let mut trip = trip;
+    trip.position_mi = trip.leg_starts[join] + 0.01;
+    trip.events.clear();
+    trip.check_cities();
+    assert!(
+        messages_of(&trip.events, TripEventKind::CityReached).is_empty(),
+        "{:?}",
+        trip.events
+    );
 }

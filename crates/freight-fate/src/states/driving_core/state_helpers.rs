@@ -19,6 +19,8 @@ use super::{hos_mut_of, profile_mut_of, profile_of, set_engine_running, DOCKING_
 
 /// Resting advances game time, so deadlines keep counting.
 ///
+/// A running engine idles through the wait and burns fuel for it, as it
+/// does at the pickup and the dock; every sleep shuts it down first.
 /// `duty_status` (a `hos::DUTY_STATUSES` name) records the rest on the
 /// logbook; `note` defaults to "".
 pub fn advance_rest_clock(
@@ -29,6 +31,10 @@ pub fn advance_rest_clock(
     note: &str,
 ) {
     let start_hour = driving.absolute_game_hour(ctx, None);
+    driving
+        .trip
+        .truck
+        .burn_idle_fuel_over_game_time(minutes * 60.0);
     driving.trip.truck.advance_parked_time(minutes);
     driving.trip.game_minutes += minutes;
     driving.trip.weather.update(minutes);
@@ -56,7 +62,18 @@ pub fn secure_truck_for_stopped_menu_at(
     truck.throttle = 0.0;
     truck.brake = 1.0;
     truck.set_parking_brake();
-    driving.cancel_cruise(ctx, false);
+    driving.cancel_cruise_for_parking_brake(ctx);
+    // The parking brake holds the truck now, so every assist lets go of the
+    // service brake. The brake ramp keeps whatever pedal an assist is
+    // holding, so a hold left latched under the menu kept the brakes on
+    // after the driver drove off: 0 mph at full revs with the parking brake
+    // released (Shane, Jerry and Jessie, 2026-09-21).
+    driving.destination_arrival_active = false;
+    driving.destination_assist_brake = 0.0;
+    driving.keeper_snub = 0.0;
+    driving.keeper_corner_braking = false;
+    driving.aeb_brake = 0.0;
+    driving.curve_servo = None;
     true
 }
 
@@ -75,29 +92,19 @@ pub fn shut_down_engine(driving: &mut DrivingState, ctx: &mut GameContext) -> St
     "You shut down the engine. ".to_string()
 }
 
-/// Describe the required keyboard/controller recovery after parked air loss.
-/// (`from_rest_menu` defaults to true in Python.)
-pub fn wake_air_instruction(
-    driving: &DrivingState,
-    ctx: &GameContext,
-    from_rest_menu: bool,
-) -> String {
+/// The truck's state after a rest that left the air bled down: the engine
+/// (when it is off) and the pressure the driver is waiting on.
+pub fn wake_air_instruction(driving: &DrivingState) -> String {
     let truck = &driving.trip.truck;
     if truck.air_ready() {
         return String::new();
     }
-    let road_step = if from_rest_menu {
-        "Choose Back to the road, then press"
+    let psi = truck.air_pressure_psi();
+    if truck.engine_on {
+        format!(" Air {psi:.0} psi.")
     } else {
-        "Press"
-    };
-    format!(
-        " Air pressure {:.0} psi. {road_step} {} to start the engine. At air ready, {} releases \
-         the parking brake.",
-        truck.air_pressure_psi(),
-        ctx.control_hint("engine"),
-        ctx.control_hint("parking_brake")
-    )
+        format!(" Engine off, air {psi:.0} psi.")
+    }
 }
 
 /// The delivery appointment in the receiving city's local time.
@@ -143,9 +150,9 @@ pub fn perform_shoulder_sleep(
     }
     let mut parts = vec![format!(
         "{engine_off}You sleep poorly on the shoulder, woken again and again by passing trucks. \
-         It is {}. Hours of service reset, but you are still tired.{}",
+         It is {}. Driving and duty clocks reset, but you are still tired.{}",
         clock_text(driving.trip.local_hour()),
-        wake_air_instruction(driving, ctx, false)
+        wake_air_instruction(driving)
     )];
     if hos::shoulder_fine_due(driving.trip_seed, anchor_mi) {
         let zone = driving.trip.in_construction_zone();
@@ -157,8 +164,8 @@ pub fn perform_shoulder_sleep(
         );
         let money = {
             let p = profile_mut_of(ctx);
-            p.money -= fine;
-            p.money
+            p.spend(fine);
+            p.money()
         };
         ctx.audio.play("ui/error");
         parts.push(format!(

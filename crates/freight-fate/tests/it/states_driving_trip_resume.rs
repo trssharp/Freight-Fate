@@ -245,18 +245,11 @@ fn test_active_drive_snapshot_restores_paused_speed_control_session() {
     let lines = harness.app.speech().lines();
     let resume_message = lines
         .iter()
-        .find(|line| line.contains("Automatic speed control is paused"))
+        .find(|line| line.contains("Automatic speed control paused."))
         .unwrap_or_else(|| panic!("no paused-cruise line: {lines:#?}"));
+    // Just the state: the target is on Space and Tab, the key in the help.
     assert!(
-        resume_message.contains("open-road target 52 miles per hour"),
-        "{resume_message}"
-    );
-    assert!(
-        resume_message.contains("resume once the truck is rolling"),
-        "{resume_message}"
-    );
-    assert!(
-        resume_message.contains("Press K to cancel it"),
+        !resume_message.contains("open-road target"),
         "{resume_message}"
     );
 }
@@ -278,16 +271,13 @@ fn test_resumed_drive_reports_old_fresh_observation_as_live() {
     let lines = harness.app.speech().lines();
     let resume_message = lines
         .iter()
-        .find(|line| line.starts_with("Resuming your"))
+        .find(|line| line.starts_with("Resuming "))
         .unwrap_or_else(|| panic!("no resume line: {lines:#?}"));
     assert!(
         resume_message.contains("Live weather: rain"),
         "{resume_message}"
     );
-    assert!(
-        resume_message.contains("The observation is 12 minutes old"),
-        "{resume_message}"
-    );
+    assert!(!resume_message.contains("minutes old"), "{resume_message}");
     assert!(
         !resume_message.to_lowercase().contains("updating"),
         "{resume_message}"
@@ -802,6 +792,94 @@ fn test_old_active_trip_gets_deadline_floor_and_model_marker() {
         Some(ACTIVE_TRIP_DEADLINE_MODEL),
         "{saved}"
     );
+}
+
+#[test]
+fn prior_model_active_delivery_repairs_forced_sleep_once() {
+    let mut app = TestApp::new();
+    app.ctx.settings.hos_mode = "realistic".to_string();
+    let mut p = Profile::named("Forced Sleep Migration");
+    p.hos.duty_min = 14.0 * 60.0;
+    p.active_trip = Some(json!({
+        "job": {
+            "cargo": "general",
+            "weight_tons": 14.0,
+            "origin": "San Antonio",
+            "origin_location": "San Antonio freight market",
+            "destination": "Dallas",
+            "distance_mi": 275.0,
+            "pay": 1200.0,
+            "deadline_game_h": 3.2,
+            "market_mult": 1.0,
+        },
+        "route_cities": ["San Antonio", "Dallas"],
+        "trip_seed": 1234,
+        "position_mi": 0.0,
+        "game_minutes": 60.0,
+        "deadline_model": 1,
+    }));
+    let mut already_late = p.active_trip.clone().unwrap();
+    already_late["game_minutes"] = json!(300.0);
+    app.ctx.profile = Some(p);
+
+    enter_world(&mut app.ctx, false);
+    let saved = app
+        .ctx
+        .profile
+        .as_ref()
+        .unwrap()
+        .active_trip
+        .clone()
+        .unwrap();
+    let repaired = saved["job"]["deadline_game_h"].as_f64().unwrap();
+    assert!(repaired > 11.0);
+    assert_eq!(saved["job"]["deadline_covers_rest"], true);
+    assert_eq!(saved["deadline_model"], ACTIVE_TRIP_DEADLINE_MODEL);
+    let announcement = app.main_lines().join(" ");
+    assert!(
+        announcement.contains("adjusted this saved delivery deadline"),
+        "{announcement}"
+    );
+    assert!(
+        announcement.contains("covers the 10-hour sleep"),
+        "{announcement}"
+    );
+
+    app.clear_speech();
+    let _ = freight_fate::states::main_menu::world_entry_state(&mut app.ctx, false);
+    assert!(!app
+        .main_lines()
+        .join(" ")
+        .contains("adjusted this saved delivery deadline"));
+
+    let mut later = saved.clone();
+    later["game_minutes"] = json!(repaired * 120.0);
+    let resumed = DrivingState::from_snapshot(&mut app.ctx, &later).unwrap();
+    assert_eq!(resumed.job.deadline_game_h, repaired);
+    let late = DrivingState::from_snapshot(&mut app.ctx, &already_late).unwrap();
+    assert_eq!(late.job.deadline_game_h, 3.2);
+    drop(app);
+
+    let mut late_app = TestApp::new();
+    late_app.ctx.settings.hos_mode = "realistic".to_string();
+    let mut late_profile = Profile::named("Already Late Migration");
+    late_profile.hos.duty_min = 14.0 * 60.0;
+    late_profile.active_trip = Some(already_late);
+    late_app.ctx.profile = Some(late_profile);
+    enter_world(&mut late_app.ctx, false);
+    let saved_late = late_app
+        .ctx
+        .profile
+        .as_ref()
+        .unwrap()
+        .active_trip
+        .as_ref()
+        .unwrap();
+    assert_eq!(saved_late["job"]["deadline_game_h"], 3.2);
+    assert!(!late_app
+        .main_lines()
+        .join(" ")
+        .contains("adjusted this saved delivery deadline"));
 }
 
 #[test]

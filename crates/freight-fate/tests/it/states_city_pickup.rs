@@ -12,6 +12,7 @@ use ff_core::models::trailer_yard::{
     preloaded_trailer, DROP_HOOK_MIN, LIVE_LOAD_MIN, TRAILER_SWAP_MIN,
 };
 use freight_fate::app::testing::TestApp;
+use freight_fate::app::GameContext;
 use freight_fate::states::base::{Key, TimedMessageState};
 use freight_fate::states::city::CityMenuState;
 use freight_fate::states::city_pickup::{
@@ -214,10 +215,22 @@ fn test_walking_a_bad_trailer_finds_it_and_offers_the_refusal() {
         .iter()
         .any(|t| t == "Refuse this trailer"));
 
+    app.clear_speech();
     select::<PickupFacilityState>(&mut app, "Walk around the trailer");
-    let said = app.main_lines().last().cloned().unwrap();
-    assert!(said.contains(defect));
-    assert!(said.contains(&unit.number));
+    // What the walk-around found comes first; the badge for finding it after.
+    let lines = app.main_lines();
+    let found = lines
+        .iter()
+        .position(|line| line.contains("Take it and the write-up"))
+        .unwrap_or_else(|| panic!("no walk-around line: {lines:?}"));
+    assert!(lines[found].contains(defect), "{lines:?}");
+    assert!(lines[found].contains(&unit.number));
+    assert!(
+        lines[found + 1..]
+            .iter()
+            .any(|line| line.starts_with("New achievement!")),
+        "{lines:?}"
+    );
     // Only once the driver has actually looked does refusing become an option.
     assert!(labels::<PickupFacilityState>(&app)
         .iter()
@@ -312,15 +325,17 @@ fn test_pickup_save_and_departure_keep_speed_control_session() {
     );
 
     assert!(with_state::<PickupFacilityState, _>(&app, |p, _| p.speed_control_armed));
-    assert!(app.main_lines().iter().any(|line| line
-        .contains("Automatic speed control is paused; open-road target 47 miles per hour")));
+    assert!(app
+        .main_lines()
+        .iter()
+        .any(|line| line.contains("Speed control paused, target 47 miles per hour.")));
 
     with_state_mut::<PickupFacilityState, _>(&mut app, |p, ctx| p.status(ctx));
     assert!(app
         .main_lines()
         .last()
         .unwrap()
-        .contains("open-road target 47 miles per hour"));
+        .contains("target 47 miles per hour"));
 
     key(&mut app, Key::Return); // check in
     let snapshot = profile(&app).active_trip.clone().unwrap();
@@ -373,7 +388,7 @@ fn test_owner_operator_route_menu_lists_routes_and_starts_one() {
     assert!(is::<RouteSelectState>(&app));
     let rows = labels::<RouteSelectState>(&app);
     assert!(rows[0].starts_with("Route 1:"));
-    assert!(rows[0].contains("Fuel-capable stops:"));
+    assert!(rows[0].contains("Fuel stops:"));
     assert_eq!(rows.last().unwrap(), "Back to pickup facility");
     // W speaks a forecast rather than moving the cursor.
     let index_before = index::<RouteSelectState>(&app);
@@ -389,7 +404,8 @@ fn test_owner_operator_route_menu_lists_routes_and_starts_one() {
     key(&mut app, Key::Home);
     key(&mut app, Key::Return);
     assert!(is::<DrivingState>(&app));
-    assert!(app
+    // The route screen named the destination; the drive does not repeat it.
+    assert!(!app
         .main_lines()
         .iter()
         .any(|line| line.contains("Navigation set for")));
@@ -594,6 +610,62 @@ fn test_speed_control_stays_paused_until_departure() {
     assert_eq!(keeper, None);
 }
 
+/// Roll into the pickup with adaptive cruise set to 55, stop at the gate the
+/// way `stop` does, load, and depart: the loaded run starts with the same
+/// session and the same 55 (tester report, 2026-09-28).
+fn cruise_survives_the_pickup(
+    assist: bool,
+    stop: impl FnOnce(&mut DrivingState, &mut GameContext),
+) {
+    let mut app = TestApp::new();
+    app.ctx.settings.destination_approach_assist = assist;
+    accept_pickup_drive(&mut app);
+    with_state_mut::<DrivingState, _>(&mut app, |d, ctx| {
+        d.trip.truck.start_engine();
+        d.trip.truck.set_air_ready(false);
+        d.engage_cruise(ctx, 55.0, false);
+        d.trip.position_mi = d.trip.total_miles();
+        d.trip.finished = true;
+        d.trip.truck.velocity_mps = 0.0;
+        d.trip.truck.parking_brake = false;
+        d.update_frame(ctx, 1.0 / 60.0);
+        stop(d, ctx);
+    });
+    app.ctx.run_deferred();
+    finish_timed_state(&mut app);
+    let session = with_state::<PickupFacilityState, _>(&app, |p, _| {
+        (p.speed_control_armed, p.speed_control_target_mph)
+    });
+    assert_eq!(session, (true, Some(55.0)));
+
+    key(&mut app, Key::Return); // check in
+    key(&mut app, Key::Return); // load, or drop and hook
+    finish_timed_state(&mut app);
+    select::<PickupFacilityState>(&mut app, "Depart for destination");
+    let session = with_state::<DrivingState, _>(&app, |d, _| {
+        (d.speed_control_armed, d.speed_control_target_mph)
+    });
+    assert_eq!(session, (true, Some(55.0)));
+}
+
+#[test]
+fn test_cruise_setting_survives_the_pickup_with_the_stopping_assist() {
+    cruise_survives_the_pickup(true, |d, ctx| {
+        // The assist holds at the entrance; Enter continues in.
+        d.update_frame(ctx, 1.0 / 60.0);
+        d.open_ready_facility_arrival(ctx);
+    });
+}
+
+#[test]
+fn test_cruise_setting_survives_setting_the_parking_brake_at_the_pickup() {
+    cruise_survives_the_pickup(false, |d, ctx| {
+        // The gate asks for the parking brake, then T opens the facility.
+        d.toggle_parking_brake(ctx);
+        d.update_frame(ctx, 1.0 / 60.0);
+    });
+}
+
 #[test]
 fn test_arming_by_hand_at_the_gate_still_works() {
     let mut app = TestApp::new();
@@ -787,6 +859,31 @@ fn test_a_shut_down_load_says_nothing_about_fuel() {
     assert!(!loaded_line.contains("idling"), "{loaded_line}");
 }
 
+/// Checked in with the engine running, then shut down for the load: the dock
+/// hour burns nothing, and the report says the idling came before the
+/// shutdown -- a bare "burned idling" after loading read as the engine having
+/// run through the load (tester report, 2026-09-28).
+#[test]
+fn test_shutting_down_after_check_in_stops_the_idle_before_the_load() {
+    let mut app = TestApp::new();
+    pickup_running(&mut app);
+    select::<PickupFacilityState>(&mut app, "Check in at shipping office");
+    select::<PickupFacilityState>(&mut app, SHUT_DOWN);
+    let before_load = with_state::<PickupFacilityState, _>(&app, |p, _| p.truck.fuel_gal);
+    select::<PickupFacilityState>(&mut app, "Load cargo at dock");
+    finish_timed_state(&mut app);
+
+    let (engine_on, after_load) =
+        with_state::<PickupFacilityState, _>(&app, |p, _| (p.truck.engine_on, p.truck.fuel_gal));
+    assert!(!engine_on);
+    assert_eq!(after_load, before_load);
+    let loaded_line = app.main_lines().last().unwrap().to_lowercase();
+    assert!(
+        loaded_line.contains("burned idling before you shut down"),
+        "{loaded_line}"
+    );
+}
+
 #[test]
 fn test_departing_with_the_engine_off_names_the_start_control() {
     let mut app = TestApp::new();
@@ -940,7 +1037,7 @@ fn test_accepting_job_starts_drivable_pickup_leg() {
     let dispatch: Vec<String> = app
         .main_lines()
         .into_iter()
-        .filter(|text| text.contains("Dispatch accepted from"))
+        .filter(|text| text.starts_with("Accepted."))
         .collect();
     assert!(!dispatch.is_empty());
     assert!(dispatch.last().unwrap().contains("Deadhead"));
@@ -956,8 +1053,18 @@ fn test_pickup_facility_waits_for_full_stop() {
     // speed above the gate's stop threshold exercises the same branch.
     arrive_at_pickup(&mut app, 6.0);
     assert!(is::<DrivingState>(&app));
-    let last = app.event_lines().last().cloned().unwrap_or_default();
-    assert!(last.contains("Pickup ahead"), "{last}");
+    // Found by its own text rather than taken as the last line: 6 m/s is over
+    // the corner's advise speed now that corners are priced from their angle,
+    // so the corner call legitimately lands after this one. What this case is
+    // about is what the pickup cue SAYS.
+    let lines = app.event_lines();
+    let last = lines
+        .iter()
+        .rev()
+        .find(|line| line.contains("Pickup ahead"))
+        .cloned()
+        .unwrap_or_default();
+    assert!(last.contains("Pickup ahead"), "{lines:?}");
     assert!(last.to_lowercase().contains("stop at the gate"), "{last}");
 
     // Inside the creep band (DELIVERY_PARK_MPH) but not stopped. The creep
@@ -975,7 +1082,7 @@ fn test_pickup_facility_waits_for_full_stop() {
     assert!(
         events
             .iter()
-            .any(|line| line.contains("Stop, set the parking brake with P")),
+            .any(|line| line.contains("Stop and set the parking brake.")),
         "{events:?}"
     );
 

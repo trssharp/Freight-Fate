@@ -73,7 +73,9 @@ impl DrivingState {
         // The switch alone is not the offense; the bark is. The vehicle already
         // knows whether the retarder is genuinely retarding (stage selected,
         // engine on, off the fuel, in gear), so ask it rather than re-deriving.
-        let barking = self.trip.truck.jake_retard_torque_nm() > 0.0
+        // Force at the wheels, not torque at the crank: with the clutch in,
+        // the jake retards nothing and the game plays no bark for it.
+        let barking = self.trip.truck.jake_brake_force() > 0.0
             && self.trip.truck.speed_mph() >= JAKE_ZONE_MIN_MPH;
         // Cruise and the curve assist raise the retarder themselves and release
         // it themselves -- and inside a zone they have just released it above,
@@ -110,7 +112,7 @@ impl DrivingState {
             }
             self.jake_zone_grace_used.insert(city.clone());
             self.jake_violation_deadline_s = Some(JAKE_ZONE_GRACE_S);
-            self.speak_jake_zone_warning(ctx, &city);
+            self.speak_jake_zone_warning(ctx);
             return;
         }
         let remaining = self.jake_violation_deadline_s.unwrap_or(0.0) - dt;
@@ -374,18 +376,8 @@ impl DrivingState {
         }
         self.assist_zone_cue_key = Some(city.to_string());
         let spoken = ctx.world.spoken_city(city, Some(false));
-        let message = if cruise_owns {
-            format!(
-                "No engine brake zone in {spoken}. Cruise is holding the engine brake off and \
-                 using the brakes."
-            )
-        } else {
-            format!(
-                "No engine brake zone in {spoken}. The curve assist is using the brakes instead \
-                 of the engine brake."
-            )
-        };
-        ctx.audio.play_with("ui/notify", 0.6, 0.0);
+        let message = format!("No engine brake zone, {spoken}.");
+        ctx.play_event_cue(Some(SpeechCategory::Confirmation), "ui/notify", 0.6, 0.0);
         // ROUTE, not the ambient default: an assist silently switching how it
         // is braking is a consequence, not colour, same class as the
         // adaptive-cruise easing line (automation-handoff sweep, 2026-08-20,
@@ -441,20 +433,11 @@ impl DrivingState {
     }
 
     /// The warning that always precedes the first fine -- the audio sign.
-    pub fn speak_jake_zone_warning(&mut self, ctx: &mut GameContext, city: &str) {
+    pub fn speak_jake_zone_warning(&mut self, ctx: &mut GameContext) {
         ctx.audio.play("ui/warning");
         ctx.controller.rumble.alert();
-        let message = if self.terse_speech(ctx) {
-            "No engine brake zone. Switch it off.".to_string()
-        } else {
-            let spoken = ctx.world.spoken_city(city, Some(false));
-            let hint = ctx.control_hint("engine_brake");
-            format!(
-                "No engine brake zone in {spoken}. Switch it off with {hint} or you will be fined."
-            )
-        };
         ctx.say_event_with(
-            message,
+            "No engine brake zone. Switch it off.",
             SayEvent::new().category(SpeechCategory::Navigation),
         );
     }
@@ -468,11 +451,11 @@ impl DrivingState {
         let hours = crate::states::driving_rest_states::record_hours(ctx, self);
         {
             let profile = profile_mut_of(ctx);
-            profile.money -= fine; // can go negative; never a game over
-                                   // A municipal noise ordinance is not an FMCSA serious violation,
-                                   // so it never moves the suspension ladder -- but it is still a
-                                   // citation on the record, and the next citation of any kind costs
-                                   // more for it.
+            profile.spend(fine); // can go negative; never a game over
+                                 // A municipal noise ordinance is not an FMCSA serious violation,
+                                 // so it never moves the suspension ladder -- but it is still a
+                                 // citation on the record, and the next citation of any kind costs
+                                 // more for it.
             profile.driving_record.record_citation_at(fine, hours);
             profile.driving_record.note(
                 ff_core::models::enforcement::RECORD_CITATION,
@@ -484,16 +467,7 @@ impl DrivingState {
         }
         ctx.audio.play("ui/error");
         ctx.controller.rumble.alert();
-        let message = if self.terse_speech(ctx) {
-            format!("Engine brake citation: {} dollars.", fmt_grouped(fine, 0))
-        } else {
-            let spoken = ctx.world.spoken_city(city, Some(false));
-            format!(
-                "A local officer cites you for engine braking in {spoken}, {} dollars under the \
-                 town noise rules, paid on the spot.",
-                fmt_grouped(fine, 0)
-            )
-        };
+        let message = format!("Engine brake citation: {} dollars.", fmt_grouped(fine, 0));
         ctx.say_event_with(message, SayEvent::new().category(SpeechCategory::Money));
     }
 }
