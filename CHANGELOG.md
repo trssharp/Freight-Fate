@@ -4,6 +4,8 @@
 
 ### Changed
 
+- **Route status starts with your location or arrival information instead of saying "Route status."**
+
 - **The exit blinker keeps clicking until you take, cancel, or miss the exit.**
 
 - **Canceling an exit stops its countdown and lane guidance until you signal again.**
@@ -1397,6 +1399,16 @@
 
 ### Fixed
 
+- **Quiet-mode confirmation notes on the main say path get the same room as event ones.** With Game sounds step back for speech on, cruise and stop confirmations that become earcons at quiet no longer play against the full road bed. This is the mix stepping back under the cue, not Gameplay cues volume getting quieter.
+
+- **Driving out of a station's range now says so and retunes the radio.**
+  The old station used to keep playing at full volume while the drivers
+  board named a station you were not hearing.
+
+- **Automatic speed control comes back on its own when a hazard leaves you
+  below 20 miles per hour.** The speed keeper builds speed and hands to
+  adaptive cruise; it used to stay paused with nothing said.
+
 - **The manual says what ignoring a trooper's lights costs.** A forced stop
   and a serious violation; a felony only if you choose to run.
 
@@ -1628,9 +1640,10 @@
 - **Closing the game hands your screen reader back right away.** Quitting
   drops whatever was left unsaid after the sentence already being spoken.
 
-- **Losing a radio station lands on a live station, not on silence.** The
-  radio retunes to AFN Humphreys The Eagle and says so, while streamer-safe
-  mode still lands on the silent channel.
+- **A radio stream that will not play lands on a live station, not on
+  silence.** The radio tries the next station on the same band, then AFN
+  Humphreys The Eagle, and says so; streamer-safe mode still lands on the
+  silent channel.
 
 - **The drivers list names the truck you are actually in.** A company
   driver's line and Discord now show the assigned truck, not the old yard
