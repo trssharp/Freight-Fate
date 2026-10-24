@@ -22,6 +22,8 @@
 - **Job details now say the hours and fuel a run needs.** Trip hours, your driving time left, and your fuel level and range, before you accept.
 - **Truck stops and parking lots say whether they sell fuel.** One without pumps says No fuel ahead and again when you pull in.
 - **The low fuel warning names the next fuel stop and how far it is.** With none before your destination, it says so.
+- **Interstates 35 and 94 into Minneapolis now pass a Mall of America billboard.** It says where the mall is: Bloomington, just south of the city.
+- **The Mall of America in Bloomington is now a delivery stop in Minneapolis.** It takes store and restaurant freight and ships none.
 
 - **Leaving with a load now tells you your driving time left and fuel.** It adds a break, a sleep or a short tank only when the run needs one.
 
@@ -211,6 +213,7 @@
 
 ### Fixed
 
+- **An exit ramp's speed sign now holds only through its bend.** Past the bend, the assists let the truck pick up speed toward the end of the ramp.
 - **Some exit ramps no longer hold the truck far under their posted speed.** A ramp signed 15 miles per hour was being driven at 9.
 - **The co-driver no longer drives into work zone barrels or waits forever at a red light on an exit ramp.** They also brake when descent control can't hold a grade.
 - **Updates now install into folders with a percent or dollar sign in the name.** Before, the update could be copied somewhere else.
