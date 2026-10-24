@@ -26,7 +26,7 @@
 # (IOS_DISTRIBUTION_P12_BASE64, IOS_DISTRIBUTION_P12_PASSWORD) in a throwaway
 # keychain. The App Store Connect key (ASC_KEY_ID, ASC_ISSUER_ID,
 # ASC_KEY_P8_BASE64) finds that certificate on the team and reuses its App
-# Store profile (tools/ios_signing.py). No run creates or revokes a
+# Store profile (`cargo tools ios-signing`). No run creates or revokes a
 # certificate, so Apple sends no "certificate revoked" mail after an upload.
 #
 # Build number: continues the number sequence already in TestFlight. The run
@@ -77,9 +77,6 @@ concurrency:
   group: ios-testflight
   cancel-in-progress: false
 
-env:
-  PYTHON_VERSION: "3.12"
-
 jobs:
   testflight:
     name: Build, sign and (optionally) upload to TestFlight
@@ -88,7 +85,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       HOMEBREW_NO_AUTO_UPDATE: "1"
-      # tools/build_ios.py's MINIMUM_IOS.
+      # `cargo tools build-ios`'s MINIMUM_IOS.
       IPHONEOS_DEPLOYMENT_TARGET: "14.0"
       # The bundled SDL2 source declares a cmake_minimum_required older than
       # CMake 4 accepts.
@@ -108,23 +105,25 @@ jobs:
             echo "::error::This run is on '${GITHUB_REF_NAME}', not dev. Dispatch it from dev once the changes are merged, or set allow_other_ref to build this branch on purpose."
             exit 1
           fi
-          # The bundle id every step uses is the one tools/build_ios.py stamps.
-          bundle_id="$(python3 -c "import sys; sys.path.insert(0, 'tools'); import ios_signing; print(ios_signing.BUNDLE_ID)")"
-          echo "BUNDLE_ID=$bundle_id" >> "$GITHUB_ENV"
-          echo "Bundle id: $bundle_id"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.2.0
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install the pinned Rust toolchain and the iOS target
         run: |
           rustup show
           rustup target add aarch64-apple-ios
 
+      - name: Build the release tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build -p ff-tools --no-default-features --locked
+          echo "FF_TOOLS=$PWD/target/debug/ff-tools" >> "$GITHUB_ENV"
+          # The bundle id every step uses is the one the iOS build stamps.
+          bundle_id="$(target/debug/ff-tools build-ios --bundle-id)"
+          echo "BUNDLE_ID=$bundle_id" >> "$GITHUB_ENV"
+          echo "Bundle id: $bundle_id"
+
       - name: Cache cargo registry and target directory
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: ios-testflight
           cache-on-failure: true
@@ -209,7 +208,7 @@ jobs:
             exit 1
           fi
           echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
-          # The public certificate, for tools/ios_signing.py to find on the team.
+          # The public certificate, for `ios-signing` to find on the team.
           security find-certificate -a -Z -p "$keychain" | awk -v id="$identity" '
             /^SHA-1 hash:/ { keep = ($3 == id) }
             keep' | sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' \
@@ -227,7 +226,7 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
           set -euo pipefail
-          python3 tools/ios_signing.py prepare --out "$SIGNING_DIR" \
+          "$FF_TOOLS" ios-signing prepare --out "$SIGNING_DIR" \
             --bundle-id "$BUNDLE_ID" --cert "$SIGNING_DIR/distribution.cert.pem"
           # Install the profile where Xcode tools look for it.
           profile_uuid="$(security cms -D -i "$SIGNING_DIR/profile.mobileprovision" | plutil -extract UUID raw -o - -)"
@@ -243,12 +242,12 @@ jobs:
           BUILD_NUMBER_INPUT: ${{ inputs.build_number }}
         run: |
           set -euo pipefail
-          python3 tools/ios_signing.py check-app --bundle-id "$BUNDLE_ID"
+          "$FF_TOOLS" ios-signing check-app --bundle-id "$BUNDLE_ID"
           if [ -n "$BUILD_NUMBER_INPUT" ]; then
             build_number="$BUILD_NUMBER_INPUT"
             echo "Build number set by hand: $build_number"
           else
-            build_number="$(python3 tools/ios_signing.py next-build --bundle-id "$BUNDLE_ID" \
+            build_number="$("$FF_TOOLS" ios-signing next-build --bundle-id "$BUNDLE_ID" \
               --run-number "${{ github.run_number }}")"
           fi
           echo "BUILD_NUMBER=$build_number" >> "$GITHUB_ENV"
@@ -260,7 +259,7 @@ jobs:
         run: |
           set -euo pipefail
           build_number="$BUILD_NUMBER"
-          uv run python tools/build_ios.py --device --ipa \
+          "$FF_TOOLS" build-ios --device --ipa \
             --build-number "$build_number" \
             --sign-identity "$SIGN_IDENTITY" \
             --provisioning-profile "$SIGNING_DIR/profile.mobileprovision"
@@ -315,7 +314,7 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
           set -euo pipefail
-          python3 tools/ios_signing.py distribute --bundle-id "$BUNDLE_ID" \
+          "$FF_TOOLS" ios-signing distribute --bundle-id "$BUNDLE_ID" \
             --build-number "$BUILD_NUMBER" --group Friends | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Remove the signing material
@@ -326,7 +325,7 @@ jobs:
         shell: bash
         run: |
           SIGNING_DIR="${SIGNING_DIR:-$RUNNER_TEMP/ios-signing}"
-          python3 tools/ios_signing.py cleanup --out "$SIGNING_DIR" || true
+          "$FF_TOOLS" ios-signing cleanup --out "$SIGNING_DIR" || true
           if [ -n "${SIGN_KEYCHAIN:-}" ]; then
             security delete-keychain "$SIGN_KEYCHAIN" || true
           fi

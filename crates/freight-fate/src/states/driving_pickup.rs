@@ -3,7 +3,9 @@
 
 use serde_json::Value;
 
-use ff_core::speech_pacing::{EventPriority, SpeechCategory};
+use ff_core::speech_pacing::SpeechCategory;
+
+use crate::speech::EventPriority;
 
 use crate::app::{GameContext, SayEvent};
 use crate::states::base::TimedMessageState;
@@ -87,7 +89,7 @@ impl DrivingState {
         ctx.say_event_with(
             message,
             SayEvent::queued()
-                .priority(EventPriority::Route)
+                .priority(EventPriority::Important)
                 .category(SpeechCategory::Navigation),
         );
         if speed_control_paused {
@@ -103,7 +105,7 @@ impl DrivingState {
         ctx.say_event_with(
             "Automatic speed control paused for pickup.",
             SayEvent::queued()
-                .priority(EventPriority::Route)
+                .priority(EventPriority::Important)
                 .category(SpeechCategory::Confirmation),
         );
     }

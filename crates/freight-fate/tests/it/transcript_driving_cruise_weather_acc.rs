@@ -468,8 +468,15 @@ fn test_adaptive_cruise_follows_the_lane_being_entered_mid_change() {
     harness.clear_speech();
     press(&mut harness, Key::K, None);
     assert_eq!(harness.read_drive(|d| d.lane.lane), 0);
+    // A tap waits while the lane is taken (issue #356), so this case starts
+    // the change itself to read the lead mid-change.
     harness.with_drive(|d, ctx| d.tap_lane_change(ctx, 1));
-    assert_eq!(harness.read_drive(|d| d.lane_change_target), Some(1));
+    assert_eq!(harness.read_drive(|d| d.lane_change_target), None);
+    assert!(said_any(&harness, "Left lane blocked by a"));
+    harness.with_drive(|d, _| {
+        d.lane_change_target = Some(1);
+        d.lane_change_timer = 3.0;
+    });
 
     frames(&mut harness, 10, DT);
 

@@ -1,7 +1,9 @@
 //! The frame loop itself (`DrivingUpdateMixin.update`), the safety-call
 //! re-speak, and the retarder transcript trace.
 
-use ff_core::speech_pacing::{EventPriority, SpeechCategory};
+use ff_core::speech_pacing::SpeechCategory;
+
+use crate::speech::EventPriority;
 
 use crate::app::{GameContext, SayEvent, TRANSCRIPT_TARGET};
 use crate::audio::CH_BRAKE;
@@ -121,6 +123,10 @@ impl DrivingState {
                 self.begin_departure_chain(ctx, true);
             }
         }
+        // Chosen at the shipper: the co-driver pulls out of the dock.
+        if let Some(mode) = self.pending_team.take() {
+            self.hand_wheel_to_co_driver(ctx, mode);
+        }
         // A pace change from the pause menu waits for the truck to stop.
         self.update_pace_change(ctx, dt);
         let tuning = tuning_for_time_scale(self.trip.time_scale);
@@ -149,16 +155,16 @@ impl DrivingState {
         self.brake_lockout_cue_timer = (self.brake_lockout_cue_timer - dt).max(0.0);
         // Controller triggers/clutch are analog held positions blended in below;
         // the keyboard keys keep their ramped behavior so both devices work.
-        let pad_on = ctx.controller.active();
+        let pad_on = self.pad_live(ctx);
         let pad_throttle = if pad_on {
             ctx.controller.throttle()
         } else {
             0.0
         };
         let pad_brake = if pad_on { ctx.controller.brake() } else { 0.0 };
-        let key_up = ctx.bindings.pressed(&ctx.input, Action::Accelerate);
-        let mut key_down = ctx.bindings.pressed(&ctx.input, Action::Brake);
-        let b_held = ctx.bindings.pressed(&ctx.input, Action::EmergencyBrake);
+        let key_up = self.held(ctx, Action::Accelerate);
+        let mut key_down = self.held(ctx, Action::Brake);
+        let b_held = self.held(ctx, Action::EmergencyBrake);
         // A latched brake reads as held right here, so everything
         // downstream -- the reverse gesture, cruise cancel, the hazard's
         // brake answer -- sees one truth. Microsleeps stay on the raw
@@ -220,7 +226,7 @@ impl DrivingState {
                 ctx.say_event_with(
                     "Jake off.",
                     SayEvent::queued()
-                        .priority(EventPriority::Route)
+                        .priority(EventPriority::Important)
                         .category(SpeechCategory::Confirmation),
                 );
             }
@@ -243,7 +249,7 @@ impl DrivingState {
                 ctx.say_event_with(
                     "Jake off.",
                     SayEvent::queued()
-                        .priority(EventPriority::Route)
+                        .priority(EventPriority::Important)
                         .category(SpeechCategory::Confirmation),
                 );
             }
@@ -288,6 +294,11 @@ impl DrivingState {
             .keeper_snub
             .max(self.aeb_brake)
             .max(self.destination_assist_brake)
+            .max(if self.chain_stop.is_some() {
+                self.chain_stop_brake
+            } else {
+                0.0
+            })
             .max(ramp_terminal_brake)
             .max(decel_lane_brake)
             .max(self.curve_servo.as_ref().map_or(0.0, |servo| servo.brake))
@@ -320,7 +331,7 @@ impl DrivingState {
             ctx.say_event_with(
                 "Cruise off.",
                 SayEvent::queued()
-                    .priority(EventPriority::Route)
+                    .priority(EventPriority::Important)
                     .category(SpeechCategory::Confirmation),
             );
         }
@@ -431,14 +442,18 @@ impl DrivingState {
                 SayEvent::new().category(SpeechCategory::Confirmation),
             );
         }
-        if self.trip.truck.transmission.automatic && self.trip.truck.speed_mph().abs() > 1.0 {
+        if self.trip.truck.transmission.automatic
+            && self.trip.truck.speed_mph().abs() > 1.0
+            && !self.co_driver_driving()
+        {
             self.drove_automatic = true;
         }
 
         // The clutch is fixed on Shift, read as the key itself: the held-key
         // tracker sees the key before any modifier flag, and the harness holds
         // it the same way.
-        let clutch_pressed = ctx.input.is_pressed(Key::LShift) || ctx.input.is_pressed(Key::RShift);
+        let clutch_pressed = !self.co_driver_driving()
+            && (ctx.input.is_pressed(Key::LShift) || ctx.input.is_pressed(Key::RShift));
         let mut clutch_val: f64 = if clutch_pressed { 1.0 } else { 0.0 };
         if pad_on {
             clutch_val = clutch_val.max(ctx.controller.clutch());
@@ -485,6 +500,9 @@ impl DrivingState {
         // while the assist's own bookkeeping said 0.40. Every earlier fix to
         // this assist tuned a number against a pedal the truck never felt.
         self.update_destination_approach_assist(ctx);
+        // Facility stopping assistance's roadside chain stops, for the same
+        // reason: the brake it holds has to reach the physics.
+        self.update_chain_stop_assist(ctx, braking_key || emergency || hand_accelerating);
         // Curve assistance's approach servo, for the same reason: its
         // pedal has to be set where the physics will see it, and after cruise
         // and the keeper so the max it applies is the one that stands.
@@ -660,6 +678,7 @@ impl DrivingState {
         self.update_pull_over(ctx, dt, braking || emergency);
         self.update_brake_heat_cue(ctx, dt);
         self.update_traction_cues(ctx);
+        self.update_chain_reminder(ctx);
         self.update_chain_law(ctx);
         self.update_chain_checkpoint_hold(ctx);
         self.update_chain_carry(ctx);
@@ -714,6 +733,10 @@ impl DrivingState {
         live::set_arrival_menu_open(self.arrival_menu_open);
         live::set_gate_stop_prompted(self.arrival_full_stop_said);
         live::set_on_ramp(self.ramp_mi.is_some());
+        live::set_posted_limit_mph(match self.trip.entered_zone.as_ref() {
+            Some(zone) => zone.limit_mph,
+            None => self.trip.corridor_limit_at(self.trip.position_mi),
+        });
         live::set_ramp_holding(
             self.ramp_mi.is_some()
                 && !self.ramp_terminal_done

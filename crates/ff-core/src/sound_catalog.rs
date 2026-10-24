@@ -68,7 +68,7 @@ const LANE: SoundCategory = SoundCategory {
                     .hold_s(2.0),
             ],
             "Not a sound of its own: it is the engine you are always hearing, \
-             leaning to one side. Steer toward the lean, unless you have set \
+             leaning to one side. Steer toward the engine, unless you have set \
              the Steering guide row to steer away from it. It leans the way \
              the wheel should go, so it points into a bend before you reach \
              it and away from the edge you are drifting toward. This is the \
@@ -836,6 +836,11 @@ pub const SELF_EXPLANATORY: &[(&str, &str)] = &[
         "Pavement seams: texture, not a decision.",
     ),
     ("vehicle/truck_door", "A door."),
+    (
+        "cab/*",
+        "The driver window, the wind through it and the fan, right after \
+         the key that set them, which says what changed.",
+    ),
     ("vehicle/fuel_pump", "A fuel pump, at a fuel pump."),
     ("vehicle/reverse", "A backup beeper while backing up."),
     ("vehicle/horn", "The player is holding the horn key."),

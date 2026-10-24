@@ -218,7 +218,7 @@ fn class_rank(class: &str) -> Option<u8> {
 /// `(is connector, why)` for one curve, from its map-matched reading alone --
 /// `tools/bake_curve_connectors.py::classify`.
 ///
-/// The bake itself stays Python (`tools/` is out of the port's scope), but the
+/// The bake was a Python tool, retired with the rest of `tools/`, but the
 /// RULE lives here, because it is what every `connector_source` in the shipped
 /// data means and the only way those rows can be re-judged without re-baking.
 ///

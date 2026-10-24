@@ -98,12 +98,13 @@ fn the_struct_carries_the_persisted_fields_in_python_order() {
     // thresholds (2026-10-08), facility_streets (2026-10-11) and language
     // (2026-10-12) and automatic_jake (2026-10-14) were added on the Rust side;
     // lane_centering_assist was retired for 1.9, and the three Mastodon
-    // sharing fields on 2026-10-15.
-    assert_eq!(Settings::FIELD_NAMES.len(), 94);
+    // sharing fields on 2026-10-15; visual_display (2026-10-15) and
+    // radio_cab_speakers (2026-10-18).
+    assert_eq!(Settings::FIELD_NAMES.len(), 96);
     assert_eq!(Settings::FIELD_NAMES[0], "online_services");
-    assert_eq!(Settings::FIELD_NAMES[78], "settings_layout_notice_from");
+    assert_eq!(Settings::FIELD_NAMES[79], "settings_layout_notice_from");
     let pairs = Settings::default().ordered_values();
-    assert_eq!(pairs.len(), 94);
+    assert_eq!(pairs.len(), 96);
     for ((name, _), field) in pairs.iter().zip(Settings::FIELD_NAMES) {
         assert_eq!(name, field);
     }
@@ -139,7 +140,7 @@ fn the_defaults_match_the_python_dataclass() {
         "sfx_volume": 0.8, "music_volume": 0.5, "synth_music": false, "music_seed": 48213,
         "radio_volume": 0.25, "radio_enabled": true,
         "radio_station_id": "route_playlist", "radio_streamer_safe": false,
-        "radio_shuffle_playlists": false,
+        "radio_shuffle_playlists": false, "radio_cab_speakers": true,
         "weather_volume": 0.65, "engine_volume": 0.55, "ui_volume": 0.9,
         "duck_audio_for_speech": false, "driving_speech": "standard", "chatter_parks": true,
         "chatter_rivers": true, "chatter_passes": true, "chatter_museums": true,
@@ -159,14 +160,14 @@ fn the_defaults_match_the_python_dataclass() {
         "touch_still_hold_ms": 500.0, "touch_rotate_degrees": 30.0, "touch_parking_brake_mph": 1.0,
         "steering_guide_inverted": false, "assist_preset_chosen": false,
         "facility_streets": true,
-        "language": "auto"
+        "language": "auto", "visual_display": true
     }"#,
     )
     .unwrap();
     let Value::Object(expected) = expected else {
         unreachable!()
     };
-    assert_eq!(expected.len(), 94);
+    assert_eq!(expected.len(), 96);
     for (name, value) in s.ordered_values() {
         assert_eq!(Some(&value), expected.get(name), "{name}");
     }
@@ -222,7 +223,7 @@ fn the_file_text_is_what_json_dump_wrote() {
          \"touch_deep_swipe_factor\": 3.0,\n  \"touch_still_hold_ms\": 500.0,\n  \
          \"touch_rotate_degrees\": 30.0,\n  \"touch_parking_brake_mph\": 1.0,\n  \
          \"steering_guide_inverted\": false,\n  \"assist_preset_chosen\": false,\n  \"facility_streets\": true,\n  \"language\": \"auto\",\n  \
-         \"steering_assist\": \"off\"\n}"
+         \"visual_display\": true,\n  \"steering_assist\": \"off\"\n}"
     ));
     assert!(text.contains("\n  \"time_scale\": 10.0,\n"));
     assert!(text.contains("\n  \"radio_volume\": 0.25,\n"));
@@ -992,6 +993,8 @@ fn test_radio_defaults_are_full_dial_and_quiet() {
     assert!(!s.radio_streamer_safe);
     // A playlist file plays in its own order unless the player asks otherwise.
     assert!(!s.radio_shuffle_playlists);
+    // The radio plays through the cab's speakers unless the player picks clean.
+    assert!(s.radio_cab_speakers);
 }
 
 #[test]
@@ -1356,3 +1359,62 @@ fn missing_touch_gesture_fields_use_additive_defaults() {
 // `test_the_driving_mode_row_explains_the_retired_pacing` is live in `crates/freight-fate/tests/states_main_menu_settings.rs`.
 
 // `test_lane_keeping_row_explains_its_rename_to_returning_players` is live in `crates/freight-fate/tests/states_main_menu_settings.rs`.
+
+#[test]
+fn test_chains_fold_into_the_existing_assists_with_no_new_setting() {
+    // Facility stopping assistance does the chain work: off, on, on.
+    let field = DRIVING_ASSIST_FIELDS
+        .iter()
+        .position(|f| *f == "destination_approach_assist")
+        .expect("a preset field");
+    for (preset, want) in [("realistic", false), ("balanced", true), ("all", true)] {
+        let values = driving_assist_preset(preset).expect("a preset");
+        assert_eq!(values.len(), 9);
+        assert_eq!(values[field], Flag(want), "{preset}");
+    }
+    // Stop planning owns the no-chains reminder, outside the presets.
+    let mut settings = Settings::default();
+    for preset in ["realistic", "balanced", "all"] {
+        assert!(settings.apply_driving_assistance_preset(preset));
+        settings.hos_planning_hints = !settings.hos_planning_hints;
+        assert_eq!(settings.refresh_driving_assistance_preset(), preset);
+    }
+    assert_eq!(SETTINGS_VERSION, 3);
+    assert_eq!(DRIVING_ASSIST_FIELDS.len(), 9);
+}
+
+#[test]
+fn a_co_driver_drives_on_every_assist_and_the_file_keeps_the_players() {
+    let mut s = Settings::default();
+    s.apply_driving_assistance_preset("realistic");
+    let before = s.to_file_text();
+    s.hand_assists_to_co_driver();
+    assert!(s.lane_is_automated());
+    assert!(s.curve_speed_assist && s.destination_approach_assist);
+    // Saving while the co-driver drives writes the player's own choice.
+    assert_eq!(s.to_file_text(), before);
+    // A second handover does not stash the co-driver's values over the
+    // player's.
+    s.hand_assists_to_co_driver();
+    s.take_assists_back();
+    assert_eq!(s.lane_keeping, "off");
+    assert_eq!(s.driving_assistance_preset, "realistic");
+    assert_eq!(s.to_file_text(), before);
+    s.take_assists_back();
+    assert_eq!(s.to_file_text(), before);
+}
+
+#[test]
+fn an_assist_changed_during_the_co_drivers_shift_keeps_the_change() {
+    let mut s = Settings::default();
+    s.apply_driving_assistance_preset("realistic");
+    let own_aeb = s.automatic_emergency_braking;
+    s.hand_assists_to_co_driver();
+    assert_eq!(s.lane_keeping, "full");
+    // The player sets partial lane keeping from the pause settings.
+    s.lane_keeping = "partial".to_string();
+    s.take_assists_back();
+    assert_eq!(s.lane_keeping, "partial", "the player's change stands");
+    assert_eq!(s.automatic_emergency_braking, own_aeb);
+    assert!(!s.destination_approach_assist, "untouched fields come back");
+}

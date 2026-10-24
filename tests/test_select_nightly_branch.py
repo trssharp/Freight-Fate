@@ -58,5 +58,6 @@ def test_explicit_build_keeps_its_ref_without_dev(repository, event):
 
 def test_broken_checkout_is_not_treated_as_a_missing_branch(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
     with pytest.raises(subprocess.CalledProcessError):
         select_branch("schedule")

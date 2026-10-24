@@ -536,6 +536,7 @@ fn test_copying_the_summary_reaches_the_clipboard() {
         copied.starts_with("Freight Fate: Delivery complete."),
         "{copied}"
     );
+    assert!(copied.ends_with("\n\n#FreightFateRuns"), "{copied}");
 }
 
 #[test]

@@ -1,7 +1,7 @@
 //! Templates: a catalog line with `{name}` holes, matched against a finished
 //! English line to recover what filled each hole.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use aho_corasick::{AhoCorasick, MatchKind};
 
@@ -187,7 +187,7 @@ impl Template {
     /// What filled each hole, if `line` is this template filled in.
     pub fn captures<'a>(&self, line: &'a str) -> Option<HashMap<&str, &'a str>> {
         let mut out = Vec::new();
-        if match_from(&self.segs, line, 0, &mut out) {
+        if match_from(&self.segs, line, 0, &mut out, &mut HashSet::new()) {
             let mut map = HashMap::new();
             for (name, value) in out {
                 // A name used twice must hold the same text both times.
@@ -205,18 +205,45 @@ impl Template {
 }
 
 /// Backtracking match of `segs` against `line[pos..]`.
+///
+/// Whether the rest of a template matches from a position does not depend
+/// on how the line got there, so `failed` remembers every (segments left,
+/// position) that cannot match and the search never tries one twice. The
+/// first match found is the same one; without it a template of several
+/// comma-separated holes tried every way of cutting a long line at its
+/// commas, seconds per line.
 fn match_from<'s, 'a>(
     segs: &'s [Seg],
     line: &'a str,
     pos: usize,
     out: &mut Vec<(&'s str, &'a str)>,
+    failed: &mut HashSet<(usize, usize)>,
+) -> bool {
+    let key = (segs.len(), pos);
+    if failed.contains(&key) {
+        return false;
+    }
+    let matched = match_here(segs, line, pos, out, failed);
+    if !matched {
+        failed.insert(key);
+    }
+    matched
+}
+
+fn match_here<'s, 'a>(
+    segs: &'s [Seg],
+    line: &'a str,
+    pos: usize,
+    out: &mut Vec<(&'s str, &'a str)>,
+    failed: &mut HashSet<(usize, usize)>,
 ) -> bool {
     let Some((first, rest)) = segs.split_first() else {
         return pos == line.len();
     };
     match first {
         Seg::Lit(text) => {
-            line[pos..].starts_with(text.as_str()) && match_from(rest, line, pos + text.len(), out)
+            line[pos..].starts_with(text.as_str())
+                && match_from(rest, line, pos + text.len(), out, failed)
         }
         Seg::Hole(name) => {
             let Some((next, after)) = rest.split_first() else {
@@ -239,7 +266,7 @@ fn match_from<'s, 'a>(
                     for at in splits {
                         let depth = out.len();
                         out.push((name, &line[pos..at]));
-                        if match_from(rest, line, at, out) {
+                        if match_from(rest, line, at, out, failed) {
                             return true;
                         }
                         out.truncate(depth);
@@ -260,7 +287,7 @@ fn match_from<'s, 'a>(
                 for &at in ends.iter().rev() {
                     let depth = out.len();
                     out.push((name, &line[pos..at]));
-                    if match_from(after, line, at + next_text.len(), out) {
+                    if match_from(after, line, at + next_text.len(), out, failed) {
                         return true;
                     }
                     out.truncate(depth);
@@ -276,7 +303,7 @@ fn match_from<'s, 'a>(
                 let at = from + found;
                 let depth = out.len();
                 out.push((name, &line[pos..at]));
-                if match_from(after, line, at + next_text.len(), out) {
+                if match_from(after, line, at + next_text.len(), out, failed) {
                     return true;
                 }
                 out.truncate(depth);

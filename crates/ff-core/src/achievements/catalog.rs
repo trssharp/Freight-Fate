@@ -17,7 +17,7 @@ use super::{Achievement, AchievementCategory};
 /// sha256 over every category and achievement field, as the generator
 /// computed it from the Python catalog (see `catalog_digest` in the
 /// tests for the exact framing).
-pub const CATALOG_DIGEST: &str = "aa7f9274bb76ddb7cf7a1f8e96ba74ded9ab87f3e4e6bf30e84ca176d46dc318";
+pub const CATALOG_DIGEST: &str = "dbb4c7c4fa714cd9f049fda5ec04886cf63ba9ac54f307780a0067357361bd00";
 
 /// What a locked, hidden achievement speaks in place of its real name and
 /// description. Keeps a hidden badge's surprise -- the joke, the calendar
@@ -70,7 +70,7 @@ pub const CATEGORIES: [AchievementCategory; 7] = [
 
 /// Every badge, in the Python catalog's order (the achievements menu and
 /// the cloud validator's allow-list both walk it in this order).
-pub const ACHIEVEMENTS: [Achievement; 182] = [
+pub const ACHIEVEMENTS: [Achievement; 184] = [
     Achievement {
         id: "first_dispatch",
         name: "Breaker, Breaker",
@@ -474,7 +474,7 @@ pub const ACHIEVEMENTS: [Achievement; 182] = [
     Achievement {
         id: "hundred_deliveries",
         name: "Just Keep Rollin' On",
-        description: "A hundred deliveries. No fuss, just load after load until the number got serious.",
+        description: "A hundred deliveries, load after load, until the number got serious.",
         category: "career",
         inspiration: "Lynyrd Skynyrd - Call Me the Breeze",
         hidden: false,
@@ -482,7 +482,7 @@ pub const ACHIEVEMENTS: [Achievement; 182] = [
     Achievement {
         id: "ten_thousand_miles",
         name: "Ten Thousand Down the Line",
-        description: "Ten thousand miles. The white-line fever isn't a symptom now. It's the job.",
+        description: "Ten thousand miles. The white-line fever is just the job now.",
         category: "career",
         inspiration: "Merle Haggard - White Line Fever",
         hidden: false,
@@ -818,7 +818,7 @@ pub const ACHIEVEMENTS: [Achievement; 182] = [
     Achievement {
         id: "twenty_five_deliveries",
         name: "Twenty-Five and Rolling Steady",
-        description: "Twenty-five deliveries. Not a rookie, not a veteran, just more road than most.",
+        description: "Twenty-five deliveries, somewhere between rookie and veteran, with more road than most.",
         category: "career",
         inspiration: "Ellie Turner - A Little Farther Down The Line",
         hidden: false,
@@ -826,7 +826,7 @@ pub const ACHIEVEMENTS: [Achievement; 182] = [
     Achievement {
         id: "two_hundred_deliveries",
         name: "Two Hundred and Playing for Keeps",
-        description: "Two hundred deliveries. Not a phase anymore. It's a body of work.",
+        description: "Two hundred deliveries. That's a body of work.",
         category: "career",
         inspiration: "Emily Nenni - Long Game",
         hidden: false,
@@ -1418,7 +1418,7 @@ pub const ACHIEVEMENTS: [Achievement; 182] = [
     Achievement {
         id: "coffee_regular",
         name: "One More Cup for the Road",
-        description: "Twenty-five breaks taken right. It's not the coffee. It's the sitting down.",
+        description: "Twenty-five breaks taken right. The sitting down did more than the coffee.",
         category: "working_day",
         inspiration: "Bob Dylan - One More Cup of Coffee",
         hidden: false,
@@ -1525,6 +1525,22 @@ pub const ACHIEVEMENTS: [Achievement; 182] = [
         description: "A load during Truck Driver Appreciation Week. Doughnuts at the window and a thank-you from dispatch.",
         category: "hidden",
         inspiration: "Andrew Gold - Thank You for Being a Friend",
+        hidden: true,
+    },
+    Achievement {
+        id: "meridian_classmate",
+        name: "The Classmate Came Back",
+        description: "Lou turned up as your co-driver, back from Meridian Freight Lines with a story nobody quite believes.",
+        category: "hidden",
+        inspiration: "Thin Lizzy - The Boys Are Back in Town",
+        hidden: true,
+    },
+    Achievement {
+        id: "trainer_ride_along",
+        name: "Teacher in the Sleeper",
+        description: "Ray, who ran your training class, rode one load with you to see how you turned out.",
+        category: "hidden",
+        inspiration: "Jethro Tull - Teacher",
         hidden: true,
     },
 ];

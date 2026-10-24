@@ -15,7 +15,6 @@ use ff_core::models::business::LEASED_OWNER_OPERATOR;
 use ff_core::models::economy::MOTEL_COST;
 use ff_core::sim::hos::HosClock;
 use ff_core::sim::trip_models::RoadStop;
-use ff_core::speech_pacing::EventSpeechPacer;
 
 use super::text::leading_percent;
 
@@ -49,7 +48,7 @@ pub fn fuel_rescue_farming() -> Outcome {
                     !rig.drive.truck().engine_on && rig.drive.truck().fuel_gal >= 25.0
                 }),
             );
-            rig.advance_clock(EventSpeechPacer::REPEAT_WINDOW_S + 1.0);
+            rig.advance_clock(crate::app::FF_PACER.repeat_window_s + 1.0);
         }
         let rescues = rig.said("Roadside rescue");
         if rescues != 3 {
@@ -104,7 +103,7 @@ pub fn fuel_rescue_farming() -> Outcome {
             DT,
             Some(&|rig: &Rig| !rig.drive.truck().engine_on && rig.drive.truck().fuel_gal >= 25.0),
         );
-        rig2.advance_clock(EventSpeechPacer::REPEAT_WINDOW_S + 1.0);
+        rig2.advance_clock(crate::app::FF_PACER.repeat_window_s + 1.0);
     }
     let money = rig2.app.ctx.profile.as_ref().map_or(0.0, |p| p.money());
     if (money - (100.0 - 1500.0)).abs() > 0.01 {

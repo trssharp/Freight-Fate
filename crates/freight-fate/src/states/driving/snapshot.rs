@@ -13,6 +13,7 @@ use ff_core::sim::hos::HosClock;
 
 use crate::app::GameContext;
 use crate::states::driving_core::*;
+use crate::states::driving_events::stop_plan::StopPlanPurpose;
 
 use super::DrivingState;
 
@@ -215,6 +216,10 @@ impl DrivingState {
             json!(self.trip.truck.preventable_damage_pct),
         );
         out.insert(
+            "equipment_event_logged".to_string(),
+            json!(self.equipment_event_logged),
+        );
+        out.insert(
             "cargo_damage_pct".to_string(),
             json!(self.trip.truck.cargo_damage_pct),
         );
@@ -254,6 +259,21 @@ impl DrivingState {
             "chain_checkpoint_hold".to_string(),
             json!(self.chain_checkpoint_hold),
         );
+        // [area, level] pairs; absent on older saves, which re-roll the same
+        // seeded staffing and find nothing cited.
+        let mut cited: Vec<(i64, i64)> = self.chain_law_cited.iter().copied().collect();
+        cited.sort_unstable();
+        out.insert("chain_law_cited".to_string(), json!(cited));
+        let mut written_up: Vec<&String> = self.written_up.iter().collect();
+        written_up.sort_unstable();
+        out.insert("written_up".to_string(), json!(written_up));
+        let mut staffed: Vec<(i64, i64, bool)> = self
+            .chain_checkpoint_staffed
+            .iter()
+            .map(|(&(area, level), &on)| (area, level, on))
+            .collect();
+        staffed.sort_unstable();
+        out.insert("chain_checkpoint_staffed".to_string(), json!(staffed));
         out.insert(
             "chain_wear_pct".to_string(),
             json!(self.trip.truck.chain_wear_pct),
@@ -309,6 +329,10 @@ impl DrivingState {
             "selected_stop_break".to_string(),
             json!(self.selected_stop_break),
         );
+        out.insert(
+            "selected_stop_purpose".to_string(),
+            json!(self.selected_stop_purpose.map(StopPlanPurpose::save_key)),
+        );
         // Kept for a save opened by an older build, which knows only the name.
         out.insert(
             "planned_stop".to_string(),
@@ -318,6 +342,9 @@ impl DrivingState {
                 Value::String(planned_stop_label)
             },
         );
+        if let Some(team) = &self.team {
+            out.insert("team".to_string(), team.snapshot(ctx));
+        }
         Value::Object(out)
     }
 
@@ -439,6 +466,7 @@ impl DrivingState {
         state.out_of_service_creep_s = f(data, "out_of_service_creep_s", 0.0);
         state.worst_damage_band = i(data, "worst_damage_band", state.damage_band as i64) as i32;
         state.trip.truck.preventable_damage_pct = f(data, "preventable_damage_pct", 0.0);
+        state.equipment_event_logged = b(data, "equipment_event_logged", false);
         state.trip.truck.cargo_damage_pct = f(data, "cargo_damage_pct", 0.0);
         state.cargo_cue_at = f(data, "cargo_cue_at", 0.0);
         state.cargo_coaching_said = b(data, "cargo_coaching_said", false);
@@ -455,6 +483,26 @@ impl DrivingState {
         // Chains stay on the drives across a save; absent on older saves.
         state.trip.truck.chains_on = b(data, "chains_on", false);
         state.chain_checkpoint_hold = b(data, "chain_checkpoint_hold", false);
+        state.chain_law_cited = data
+            .get("chain_law_cited")
+            .and_then(|v| serde_json::from_value::<Vec<(i64, i64)>>(v.clone()).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        // Absent on older saves: nothing written up yet.
+        state.written_up = data
+            .get("written_up")
+            .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        state.chain_checkpoint_staffed = data
+            .get("chain_checkpoint_staffed")
+            .and_then(|v| serde_json::from_value::<Vec<(i64, i64, bool)>>(v.clone()).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(area, level, on)| ((area, level), on))
+            .collect();
         // The chain meter rides with the drive: the profile only catches up
         // at a stop, so a set that snapped (or wore) since then came back as
         // it was at the last stop. An older save keeps the profile's value.
@@ -474,6 +522,11 @@ impl DrivingState {
             .and_then(|value| serde_json::from_value(value).ok())
             .unwrap_or_default();
         state.drove_automatic = b(data, "drove_automatic", false);
+        // A team load resumes with the player at the wheel.
+        state.team = data
+            .get("team")
+            .and_then(Value::as_object)
+            .and_then(|team| crate::states::driving_team::TeamDrive::from_snapshot(ctx, team));
         // "speeding_strikes" was a required snapshot field until the silent
         // at-delivery speeding charge was removed. Snapshots written before
         // that still carry it; the key is simply no longer consulted.
@@ -516,6 +569,12 @@ impl DrivingState {
         };
         state.selected_stop_break =
             state.selected_stop_key.is_some() && b(data, "selected_stop_break", false);
+        state.selected_stop_purpose = state
+            .selected_stop_key
+            .as_ref()
+            .and(data.get("selected_stop_purpose"))
+            .and_then(Value::as_str)
+            .and_then(StopPlanPurpose::from_save_key);
         let tolls: Vec<Value> = data
             .get("toll_charges")
             .and_then(Value::as_array)
@@ -546,6 +605,8 @@ impl DrivingState {
             }
         }
         state.departure_checked = true;
+        // Everything behind the resume point was heard before the save.
+        state.settle_enforcement_at(state.trip.position_mi);
         let air_brake = data.get("air_brake").cloned().unwrap_or(Value::Null);
         state
             .trip

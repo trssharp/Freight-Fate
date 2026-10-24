@@ -11,7 +11,7 @@
 //! setting follow a distinct family, `1.9-tester-YYYYMMDD`, so a 1.9 tester is
 //! never offered a 1.8 nightly and a 1.8 snapshot never picks a 1.9 tester.
 //! The packaged build carries a `build_info.json` next to the executable
-//! (written by `tools/build_release.py`) recording its tag, channel, and build
+//! (written by `cargo tools build-release`) recording its tag, channel, and build
 //! date; that is how a snapshot knows a newer snapshot exists even though the
 //! project version number has not changed.
 //!
@@ -210,6 +210,31 @@ pub fn is_frozen() -> bool {
     is_frozen_in(&UpdaterEnv::current())
 }
 
+/// Whether a value of the `AGNOW` variable means the game runs on AG Now
+/// (agnow.brynify.me). AG Now sets `AGNOW=1` in every session it launches
+/// and updates the game with its own script; it also drops any program a
+/// game downloads into its own folder when the session ends, so an in-game
+/// update there costs the download and changes nothing.
+pub fn agnow_value_set(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|v| {
+        let v = v.to_string_lossy();
+        let v = v.trim();
+        !v.is_empty() && v != "0"
+    })
+}
+
+/// True when this copy was launched by AG Now.
+pub fn managed_by_agnow() -> bool {
+    agnow_value_set(std::env::var_os("AGNOW").as_deref())
+}
+
+/// Whether this copy may check for, download and apply its own updates:
+/// not on iPhone and iPad ([`SELF_UPDATES`]) and not on AG Now
+/// ([`managed_by_agnow`]), where something else does the updating.
+pub fn self_updates() -> bool {
+    SELF_UPDATES && !managed_by_agnow()
+}
+
 /// The folder holding the executable (and `_internal`).
 /// Undo `fs::canonicalize`'s Windows verbatim prefix (`\\?\C:\...`).
 ///
@@ -267,10 +292,6 @@ pub fn install_target_in(env: &UpdaterEnv) -> PathBuf {
         }
     }
     root
-}
-
-pub fn install_target() -> PathBuf {
-    install_target_in(&UpdaterEnv::current())
 }
 
 /// Read build_info.json from the install folder. Returns `None` when
@@ -361,7 +382,7 @@ pub fn resolve_channel(setting: &str, build: Option<&BuildInfo>) -> String {
 
 // -- release discovery ------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UpdateInfo {
     /// release tag to install
     pub tag: String,
@@ -375,6 +396,20 @@ pub struct UpdateInfo {
     pub asset_size: i64,
     /// Lowercase hex SHA-256 GitHub publishes for the asset; "" when unknown.
     pub asset_sha256: String,
+    /// The smaller download that skips this install's unchanged sound packs,
+    /// when the archive's index shows they match (see [`slim`]).
+    pub slim: Option<SlimUpdate>,
+}
+
+impl UpdateInfo {
+    /// Bytes the player will download: only the non-pack ranges when the
+    /// smaller download applies.
+    pub fn download_size(&self) -> i64 {
+        match &self.slim {
+            Some(slim) => i64::try_from(slim.fetch_len()).unwrap_or(self.asset_size),
+            None => self.asset_size,
+        }
+    }
 }
 
 /// `_api_get`: one GitHub API request on the updater's tier.
@@ -525,24 +560,54 @@ pub fn pick_asset(
     };
     let assets = release.get("assets").and_then(Value::as_array)?;
     for asset in assets {
-        let name = asset.get("name").and_then(Value::as_str).unwrap_or("");
+        let name = asset_name(asset);
         if name.ends_with(suffix) {
-            let url = asset
-                .get("browser_download_url")
-                .and_then(Value::as_str)?
-                .to_string();
-            let size = asset
-                .get("size")
-                .map(|v| match v {
-                    Value::Number(n) => n.as_f64().map(|f| f as i64).unwrap_or(0),
-                    Value::String(s) => s.trim().parse().unwrap_or(0),
-                    _ => 0,
-                })
-                .unwrap_or(0);
-            return Some((name.to_string(), url, size));
+            let url = asset_url(asset)?;
+            return Some((name.to_string(), url, asset_size(asset)));
         }
     }
     None
+}
+
+fn asset_name(asset: &Value) -> &str {
+    asset.get("name").and_then(Value::as_str).unwrap_or("")
+}
+
+/// The release asset named exactly `name`.
+fn asset_named<'a>(release: &'a Value, name: &str) -> Option<&'a Value> {
+    release
+        .get("assets")?
+        .as_array()?
+        .iter()
+        .find(|asset| asset_name(asset) == name)
+}
+
+fn asset_url(asset: &Value) -> Option<String> {
+    asset
+        .get("browser_download_url")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// An asset's size in bytes, whether listed as a number or a string; 0
+/// when missing.
+fn asset_size(asset: &Value) -> i64 {
+    match asset.get("size") {
+        Some(Value::Number(n)) => n.as_f64().map(|f| f as i64).unwrap_or(0),
+        Some(Value::String(s)) => s.trim().parse().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+/// The SHA-256 GitHub records for an asset (its `digest`,
+/// `"sha256:<hex>"`), or "" when the release predates digests.
+fn asset_digest(asset: &Value) -> String {
+    asset
+        .get("digest")
+        .and_then(Value::as_str)
+        .and_then(|d| d.strip_prefix("sha256:"))
+        .unwrap_or("")
+        .to_ascii_lowercase()
 }
 
 static NIGHTLY: Lazy<Regex> = Lazy::new(|| Regex::new(r"^nightly-(\d{8})$").unwrap());
@@ -615,25 +680,18 @@ fn pick_update_asset(release: &Value, env: &UpdaterEnv) -> Option<(String, Strin
     asset
 }
 
-/// The SHA-256 GitHub records for the asset named `name` (its `digest`,
-/// `"sha256:<hex>"`), or "" when the release predates digests.
+/// The SHA-256 GitHub records for the asset named `name`, or "".
 fn asset_sha256(release: &Value, name: &str) -> String {
-    release
-        .get("assets")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .find(|a| a.get("name").and_then(Value::as_str) == Some(name))
-        .and_then(|a| a.get("digest").and_then(Value::as_str))
-        .and_then(|d| d.strip_prefix("sha256:"))
-        .unwrap_or("")
-        .to_ascii_lowercase()
+    asset_named(release, name)
+        .map(asset_digest)
+        .unwrap_or_default()
 }
 
 fn update_from_release(release: &Value, title: &str, env: &UpdaterEnv) -> Option<UpdateInfo> {
     let (name, url, size) = pick_update_asset(release, env)?;
     Some(UpdateInfo {
         asset_sha256: asset_sha256(release, &name),
+        slim: None,
         tag: tag_name(release),
         title: title.to_string(),
         notes: flatten_markdown(release.get("body").and_then(Value::as_str)),
@@ -1094,25 +1152,28 @@ pub fn check_for_update(
     current_version: &str,
     build: Option<&BuildInfo>,
 ) -> Result<Option<UpdateInfo>, NetError> {
-    check_for_update_with(
-        channel,
-        current_version,
-        build,
-        &UpdaterEnv::current(),
-        &api_get,
-    )
+    let env = UpdaterEnv::current();
+    let mut found = check_for_update_with(channel, current_version, build, &env, &api_get)?;
+    if let Some(info) = found.as_mut() {
+        slim::resolve(info, &env);
+    }
+    Ok(found)
 }
 
 mod apply;
 mod notes;
+pub mod slim;
+mod zip_index;
+
+pub use slim::SlimUpdate;
 
 pub use notes::flatten_markdown;
 
 pub use apply::{
     apply_and_restart, apply_and_restart_with, can_auto_apply, download, extract, extract_with,
-    extracted_root, is_translocated, macos_bundle_swappable, make_staging_dir, run_bounded,
-    stage_update, stage_update_with, stash_for_manual_install, stream_to_file, write_apply_script,
-    DownloadError, DOWNLOAD_IDLE_TIMEOUT, UNPACK_TIMEOUT,
+    extracted_root, is_translocated, macos_bundle_swappable, make_staging_dir, quote_for_script,
+    run_bounded, stage_update, stage_update_with, stash_for_manual_install, stream_to_file,
+    write_apply_script, DownloadError, DOWNLOAD_IDLE_TIMEOUT, UNPACK_TIMEOUT,
 };
 
 #[cfg(test)]

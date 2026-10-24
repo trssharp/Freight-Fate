@@ -2,7 +2,9 @@
 //! spring-brake announcements, the direction-change gesture, the over-rev
 //! warning, the horn's protection valve, and the idle settle a menu needs.
 
-use ff_core::speech_pacing::{EventPriority, SpeechCategory};
+use ff_core::speech_pacing::SpeechCategory;
+
+use crate::speech::EventPriority;
 
 use crate::app::{GameContext, SayEvent};
 use crate::states::driving::DrivingState;
@@ -39,7 +41,7 @@ impl DrivingState {
         self.refresh_live_facts();
         let opts = |reason: u8| {
             SayEvent::queued()
-                .priority(EventPriority::Route)
+                .priority(EventPriority::Important)
                 .key("air_brake_lockout")
                 .category(SpeechCategory::Status)
                 .valid(move || live::move_lockout() == reason)
@@ -155,7 +157,7 @@ impl DrivingState {
             ctx.say_event_with(
                 message,
                 SayEvent::queued()
-                    .priority(EventPriority::Route)
+                    .priority(EventPriority::Important)
                     .category(SpeechCategory::Status),
             );
             // air_ready is retired as an award (folded into "first_day" at
@@ -235,7 +237,7 @@ impl DrivingState {
                     ctx.say_event_with(
                         "Forward gear selected.",
                         SayEvent::queued()
-                            .priority(EventPriority::Route)
+                            .priority(EventPriority::Important)
                             .category(SpeechCategory::Confirmation),
                     );
                     return false;
@@ -320,7 +322,7 @@ impl DrivingState {
             ctx.say_event_with(
                 "Horn cut out, low air pressure.",
                 SayEvent::queued()
-                    .priority(EventPriority::Route)
+                    .priority(EventPriority::Important)
                     .category(SpeechCategory::Status),
             );
         }

@@ -117,7 +117,7 @@ pub static HELP_PAGES: &[(&str, &[&str])] = &[
     (
         "Exits, ramps, and arrival",
         &[
-            "{{rest}} plans a nearby sleep-capable stop while rolling. With hours-planning hints on, it plans the recommended break or sleep stop. Press again to cancel the plan.",
+            "While rolling, {{rest}} asks what the stop is for: fuel, a break, sleep, fuel and sleep, or food. With hours-planning hints on, a break or sleep plan takes the recommended stop. Press {{rest}} again to cancel the plan.",
             "{{take_exit}} separately signals for the announced exit or cancels the signal. Planning a stop does not signal for it.",
             "Unless lane keeping is on full, move to the right lane, then steer right into the exit lane when it opens.",
             "Keep road speed until the exit lane. Brake to the announced exit speed before its curve. Full lane keeping makes the lane moves for you.",
@@ -153,7 +153,7 @@ pub static HELP_PAGES: &[(&str, &[&str])] = &[
         &[
             "The hours clock permits eleven driving hours after ten hours off, inside a fourteen-hour duty window. A thirty-minute break is due after eight cumulative driving hours.",
             "Any thirty consecutive non-driving minutes satisfy that break, including loading or inspection. They do not necessarily reset the duty window.",
-            "Both hours modes use these limits. Relaxed changes enforcement pressure. Warnings come at two hours, one hour, and thirty minutes left.",
+            "Both hours modes use these limits. Relaxed changes enforcement pressure. One warning comes before each limit: one hour left in the Relaxed driving mode, two hours in Standard, and two hours, one hour and thirty minutes in Real time. None comes for a limit the trip ends inside.",
             "{{hos_wheel}} reads time used, {{hos_break}} the break, and {{hos_drive}} the shift limits and reachable rest. Check again as traffic or weather changes.",
             "Ten-hour sleep is the simplest reset. Supported sleeper parking offers two, three, seven, or eight hours for an eight-plus-two or seven-plus-three split.",
             "The long split pauses the duty window. The short half counts until the pair completes. A nap that leaves the window running tells you when it closes.",
@@ -242,7 +242,7 @@ pub static HELP_PAGES: &[(&str, &[&str])] = &[
             "Gameplay holds driving assistance, difficulty and hours, world and traffic, and controls. Audio, Speech, Updates, Problem reports, and Online have separate choices where supported. F1 explains the selected setting.",
             "Realistic leaves lane keeping off. Balanced adds partial lane keeping and facility stops. All assists adds full lane keeping and a fifty-five mile per hour descent ceiling. Adjusting assistance yourself changes the preset name to Custom.",
             "Presets leave driving pace, legal hours, transmission, world sources, latching brake, and cue volumes as they are.",
-            "Relaxed pacing gives more response time and gentler consequences. Standard moves driving time and distance twice as fast. Real time follows the computer clock at real speed.",
+            "Relaxed pacing passes about ten minutes of road and clock each real minute, with more response time and gentler consequences. Standard moves twice as fast. Real time follows the computer clock at real speed.",
             "Change pacing mid-drive from pause; it begins when the truck next stops. Legal hours and time remaining on a deadline stay intact.",
             "Choose simulated or available live weather, traffic, and parking separately from online sharing. Fuel prices can use the weekly national diesel average with regional differences or simulated regional prices.",
             "Adjust music, radio, engine, weather, and gameplay cues separately if one covers another. Game sounds step back for speech lowers engine, weather, and radio to half volume while the road voice speaks.",

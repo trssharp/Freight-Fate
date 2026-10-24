@@ -79,46 +79,10 @@ pub const ESSENTIAL_MAPPINGS: [&str; 4] = [
     "rightshoulder",
 ];
 
-/// `SDL_GameControllerButton`, the buttons any recognized pad is mapped onto.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ControllerButton {
-    A,
-    B,
-    X,
-    Y,
-    Back,
-    Guide,
-    Start,
-    LeftStick,
-    RightStick,
-    LeftShoulder,
-    RightShoulder,
-    DPadUp,
-    DPadDown,
-    DPadLeft,
-    DPadRight,
-    Misc1,
-    Paddle1,
-    Paddle2,
-    Paddle3,
-    Paddle4,
-    Touchpad,
-    RightStickUp,
-    RightStickDown,
-    RightStickLeft,
-    RightStickRight,
-}
-
-/// `SDL_GameControllerAxis`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ControllerAxis {
-    LeftX,
-    LeftY,
-    RightX,
-    RightY,
-    TriggerLeft,
-    TriggerRight,
-}
+/// `SDL_GameControllerButton` and `SDL_GameControllerAxis`, plus the four
+/// right-stick directions [`ControllerManager`] turns into buttons. Hearken's
+/// types, so bindings and names are shared.
+pub use hearken::input::{ControllerAxis, ControllerButton};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ControllerAction {

@@ -3,7 +3,7 @@
 //!
 //! This is deliberately NOT built on the headless playtest harness. The
 //! harness runs the game's own states, but not the game's own runtime: it
-//! fakes the pacer clock, records audio instead of running BASS, captures
+//! fakes the pacer clock, records audio instead of running the sound device, captures
 //! speech instead of speaking, and never executes the real startup path --
 //! which is exactly where bugs like the deaf-for-sixteen-seconds menu live.
 //! Here the agent connects to the game itself: the real window loop, real
@@ -1061,7 +1061,9 @@ fn boot(
         ));
     }
     eprintln!("Agent sandbox: {}", dir.display());
-    let mut guard = crate::single_instance::SingleInstanceGuard::new();
+    let mut guard = crate::single_instance::SingleInstanceGuard::new(
+        crate::single_instance::SINGLE_INSTANCE_MUTEX_NAME,
+    );
     if !guard.acquire() {
         match holder::judge(holder::read(&holder::path()), pid_alive, std::process::id()) {
             HolderVerdict::DeadRecord { .. } => {

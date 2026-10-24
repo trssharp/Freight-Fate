@@ -26,7 +26,7 @@ Who gets an uploaded build is the testers input:
 - testers=internal: only the Internal group gets it, for a build you want to
   try yourself first. Send it to Friends later in App Store Connect
   (TestFlight, the build, Groups) or with
-  `python3 tools/ios_signing.py distribute --build-number N`.
+  `cargo tools ios-signing distribute --build-number N`.
 
 The whats_new input is the "What to Test" note testers read in the TestFlight
 app. Leave it empty and the note is the branch and commit, which means nothing
@@ -56,8 +56,8 @@ summary, and sends them to TestFlight as the build's release notes.
 
 ## Identity: where the numbers come from
 
-- Bundle id: net.orinks.freightfate, set only in tools/build_ios.py (BUNDLE_ID).
-  The workflow and tools/ios_signing.py read it from there. The app record must
+- Bundle id: net.orinks.freightfate, set only in cargo tools build-ios (BUNDLE_ID).
+  The workflow and cargo tools ios-signing read it from there. The app record must
   use the same bundle id.
 - Version (CFBundleShortVersionString): the project version in pyproject.toml
   cut to three numbers, so 1.9.0.dev0 is 1.9.0. To ship a new version, change
@@ -107,12 +107,12 @@ first time, and reuses it after that.
 
 1. Writes the App Store Connect key into a temporary folder and hides it from the logs.
 2. Imports the stored certificate and key into a throwaway keychain.
-3. tools/ios_signing.py finds that certificate on the team by its serial number,
+3. cargo tools ios-signing finds that certificate on the team by its serial number,
    registers the bundle id if it is new, and reuses the active App Store
    provisioning profile that names the certificate. Only when there is none
    does it make one, which later runs then reuse. The profile is installed.
 4. Checks that the app record exists and finds the next build number.
-5. Runs tools/build_ios.py --device --ipa, which builds with Rust, signs and
+5. Runs cargo tools build-ios --device --ipa, which builds with Rust, signs and
    packages FreightFate.ipa.
 6. Only when upload is true, uploads it to TestFlight and waits for Apple to
    finish processing. The export compliance answer ("no non-exempt encryption")
@@ -129,7 +129,7 @@ Each failure prints one plain error line naming the fix.
 
 - App record missing: "There is no App Store Connect app record for bundle id
   net.orinks.freightfate". Its bundle id must match the one in
-  tools/build_ios.py. Nothing was built.
+  cargo tools build-ios. Nothing was built.
 - Version too low: TestFlight has a higher version than pyproject.toml; raise it.
 - Key without permission (HTTP 403): "The App Store Connect API key is not
   allowed to do this". Give the key App Manager or Admin access.

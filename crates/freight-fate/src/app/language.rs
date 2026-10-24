@@ -68,18 +68,19 @@ pub fn translated_count(code: &str) -> usize {
         .map_or(0, |catalog| catalog.len())
 }
 
-/// The `(code, name)` of every catalog that `l10n::LANGUAGES` does not
-/// list: a language a translator added as a file alone, either built in
-/// from `lang/` or dropped into `dir`'s `lang/` folder. The name is the
-/// file's `X-Language-Autonym` header, else its `X-Language-Name`, else the
-/// code itself.
-pub fn added_languages(dir: &Path) -> Vec<(String, String)> {
+/// The `(code, name, autonym)` of every catalog that `l10n::LANGUAGES`
+/// does not list: a language a translator added as a file alone, either
+/// built in from `lang/` or dropped into `dir`'s `lang/` folder. The name is
+/// the file's `X-Language-Name` header and the autonym its
+/// `X-Language-Autonym`; either stands in for a missing other, and the code
+/// for both.
+pub fn added_languages(dir: &Path) -> Vec<(String, String, String)> {
     added_languages_in(Some(dir))
 }
 
 /// [`added_languages`], with no data folder to look in when `dir` is `None`.
-fn added_languages_in(dir: Option<&Path>) -> Vec<(String, String)> {
-    let mut found: Vec<(String, String)> = Vec::new();
+fn added_languages_in(dir: Option<&Path>) -> Vec<(String, String, String)> {
+    let mut found: Vec<(String, String, String)> = Vec::new();
     let mut consider = |code: &str, text: &str| {
         let plausible = !code.is_empty()
             && code
@@ -87,14 +88,18 @@ fn added_languages_in(dir: Option<&Path>) -> Vec<(String, String)> {
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
         if !plausible
             || l10n::LANGUAGES.iter().any(|lang| lang.code == code)
-            || found.iter().any(|(known, _)| known == code)
+            || found.iter().any(|(known, _, _)| known == code)
         {
             return;
         }
-        let name = po::header_field(text, "X-Language-Autonym")
-            .or_else(|| po::header_field(text, "X-Language-Name"))
-            .unwrap_or_else(|| code.to_string());
-        found.push((code.to_string(), name));
+        let name = po::header_field(text, "X-Language-Name");
+        let autonym = po::header_field(text, "X-Language-Autonym");
+        let (name, autonym) = match (name, autonym) {
+            (Some(name), Some(autonym)) => (name, autonym),
+            (Some(one), None) | (None, Some(one)) => (one.clone(), one),
+            (None, None) => (code.to_string(), code.to_string()),
+        };
+        found.push((code.to_string(), name, autonym));
     };
     for (code, text) in BUILT_IN {
         consider(code, text);
@@ -127,8 +132,8 @@ fn register_added_languages() {
     static DONE: OnceLock<()> = OnceLock::new();
     DONE.get_or_init(|| {
         let added = added_languages_in(data_dir_if_allowed().as_deref());
-        for (code, name) in &added {
-            log::info!("Offering {name} ({code}) from its translation file");
+        for (code, _, autonym) in &added {
+            log::info!("Offering {autonym} ({code}) from its translation file");
         }
         l10n::add_languages(added);
     });
@@ -196,7 +201,7 @@ impl GameContext {
         register_added_languages();
         let code = l10n::resolve(setting, system_locale().as_deref());
         if code != self.translator.language() {
-            self.translator = load_translator(code, &data_dir());
+            self.translator = std::sync::Arc::new(load_translator(code, &data_dir()));
         }
     }
 

@@ -194,8 +194,11 @@ impl TrafficStopState {
         // A warning for a first, marginal stop, or for a well-regarded driver
         // who pulled over promptly and wasn't egregiously over; otherwise a
         // ticket.
-        let warning =
-            (first && self.over < 15.0) || (rep >= 70.0 && self.signaled && self.over < 20.0);
+        let new_driver =
+            d.new_driver_warning(ctx) && !self.warned && !enforcement::is_serious_speed(self.over);
+        let warning = new_driver
+            || (first && self.over < 15.0)
+            || (rep >= 70.0 && self.signaled && self.over < 20.0);
         let over_text = ctx.settings.speed_text(self.over);
         let limit_text = ctx.settings.speed_text(self.limit);
         if warning {
@@ -403,6 +406,15 @@ impl EnforcementStopState {
                 let tail = self.suspended_exit_text(ctx, d);
                 self.outcome_text.push_str(&tail);
             }
+            return;
+        }
+        if d.new_driver_warning(ctx)
+            && !self.warned
+            && !self.out_of_service
+            && !self.inspection_on_stop
+        {
+            self.fine = 0.0;
+            self.outcome_text = "The officer lets you go with a warning.".to_string();
             return;
         }
         d.ticket_fines_paid += self.fine;

@@ -114,6 +114,8 @@ pub fn chain_law_citation_balance() -> Outcome {
         seed,
         ..RigOptions::default()
     });
+    // What a citation costs, not the new-driver warning.
+    rig.app.seasoned_driver();
     let mut findings: Vec<String> = Vec::new();
     rig.drive.trip.chain_law_areas = vec![(10.0, 14.0)];
     rig.drive.weather_mut().forced = Some(WeatherKind::Ice); // surface ice -> Level 2

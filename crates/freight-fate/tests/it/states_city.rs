@@ -180,6 +180,50 @@ fn test_accepting_assignment_starts_pickup_drive() {
     );
 }
 
+/// A company tractor the last run left unsafe goes through the carrier's
+/// shop before the next load, on the clock, instead of out to the patrols.
+#[test]
+fn test_carrier_shop_repairs_a_damaged_company_tractor_at_dispatch() {
+    use ff_core::models::carrier_fleet::slip_seat_pool;
+    use freight_fate::states::city_garage::TERMINAL_REPAIR_MIN;
+
+    let mut app = TestApp::new();
+    new_hire(&mut app, "Shop Visit");
+    {
+        let p = profile_mut(&mut app);
+        let drawn = p.truck.clone();
+        let pool: Vec<String> = slip_seat_pool(p).iter().map(|k| k.to_string()).collect();
+        for key in pool.iter().chain(std::iter::once(&drawn)) {
+            p.truck = key.clone();
+            p.set_truck_damage_pct(55.0);
+        }
+        p.truck = drawn;
+    }
+    let hours_before = profile(&app).game_hours;
+    let jobs = JobBoard::seeded(app.ctx.world, 7).offers(
+        "Chicago",
+        &[] as &[&str],
+        OfferOptions {
+            level: 1,
+            ..OfferOptions::default()
+        },
+    );
+
+    push_board(&mut app, jobs);
+    key(&mut app, Key::Return);
+
+    assert!(is::<DrivingState>(&app));
+    assert_eq!(profile(&app).truck_damage_pct(), 0.0);
+    assert!(
+        (profile(&app).game_hours - hours_before - TERMINAL_REPAIR_MIN / 60.0).abs() < 1e-9,
+        "the shop visit is an hour on the clock"
+    );
+    assert!(app
+        .main_lines()
+        .iter()
+        .any(|l| l.contains("The carrier shop repaired 55 percent damage first")));
+}
+
 #[test]
 fn test_senior_company_driver_gets_browsable_board() {
     let mut app = TestApp::new();
@@ -480,6 +524,74 @@ fn test_f1_on_dispatch_job_opens_structured_detail_view() {
     assert!(!joined.contains("Route details happen after pickup"));
     assert_eq!(rows[rows.len() - 2], "Accept this dispatch");
     assert_eq!(rows[rows.len() - 1], "Back to dispatch board");
+}
+
+#[test]
+fn test_job_details_say_the_hours_and_fuel_the_run_needs() {
+    // A player asked to hear before the trip how much shift time is left
+    // and how full the tank is (player report, 2026-10-17).
+    let mut app = TestApp::new();
+    senior_job_board(&mut app);
+    key(&mut app, Key::F1);
+    let rows = labels::<JobDetailState>(&app);
+    let trip = rows.iter().find(|r| r.starts_with("Trip hours: about "));
+    assert!(trip.is_some(), "{rows:?}");
+    assert!(
+        rows.iter().any(|r| r.starts_with("Driving time left: ")),
+        "{rows:?}"
+    );
+    let fuel = rows
+        .iter()
+        .find(|r| r.starts_with("Fuel: "))
+        .expect("a fuel line");
+    assert!(fuel.contains(" percent, about "), "{fuel}");
+    assert!(fuel.contains(" of range."), "{fuel}");
+}
+
+#[test]
+fn test_team_load_details_plan_the_co_driver_instead_of_sleeps() {
+    // A team load's deadline leaves no room for the solo driver's 10-hour
+    // sleeps; naming them planned a run the deadline could not fit (player
+    // report, 2026-10-20).
+    let mut app = TestApp::new();
+    career(&mut app, "Team Detail", "Buffalo");
+    profile_mut(&mut app).career.xp = *LEVEL_XP.last().unwrap();
+    let mut job = JobBoard::seeded(app.ctx.world, 7)
+        .offers(
+            "Buffalo",
+            &["refrigerated", "heavy_haul", "high_value"],
+            OfferOptions::level(5),
+        )
+        .into_iter()
+        .max_by(|a, b| a.distance_mi.total_cmp(&b.distance_mi))
+        .expect("an offer");
+    assert!(job.distance_mi > 700.0, "{} miles", job.distance_mi);
+    job.team = true;
+    push_board(&mut app, vec![job]);
+    key(&mut app, Key::F1);
+    let rows = labels::<JobDetailState>(&app);
+    let trip = rows
+        .iter()
+        .find(|r| r.starts_with("Trip hours: about "))
+        .expect("a trip line");
+    assert!(
+        trip.ends_with("with the co-driver taking turns instead of 10-hour sleeps."),
+        "{trip}"
+    );
+}
+
+#[test]
+fn test_job_details_leave_hours_out_with_hours_of_service_off() {
+    let mut app = TestApp::new();
+    senior_job_board(&mut app);
+    app.ctx.settings.hos_mode = "off".to_string();
+    key(&mut app, Key::F1);
+    let rows = labels::<JobDetailState>(&app);
+    assert!(
+        !rows.iter().any(|r| r.starts_with("Trip hours:")),
+        "{rows:?}"
+    );
+    assert!(rows.iter().any(|r| r.starts_with("Fuel: ")), "{rows:?}");
 }
 
 #[test]

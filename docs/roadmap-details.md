@@ -9864,6 +9864,14 @@ Deliver -> Earn and level up -> Repeat
       scale bypass stops, damage-triggered stops, and felony failure-to-stop
       load cancellation shipped; future repeat-offender dispatch hooks remain)
 - [ ] Special event jobs (oversize loads, urgent medical freight)
+- [ ] Fueling you can hear fill: a pump sound that rises with the level in
+      the tank, so topping up and filling an empty tank sound different
+      (issue 338).
+- [ ] Hearing the road surface through the tires: concrete, asphalt,
+      rumble strips and gravel shoulders each with their own sound (issue
+      338).
+- [ ] Eating at a restaurant along the route instead of the same rest-stop
+      meal (issue 395).
 - [ ] Trailer types with handling differences
 - [ ] **In-game driving school (owner-approved 2026-07-14; skeleton
       SHIPPED 2026-07-15).** Landed: the Driving school terminal item, the
@@ -9974,7 +9982,11 @@ Deliver -> Earn and level up -> Repeat
 - [ ] International expansion, beginning with research into Canada and the
       United Kingdom: country profiles need driving side, units, currency,
       local trucking terms, hours-of-service rules, weather fallbacks, legal
-      routing, and border-crossing behavior before routes can ship.
+      routing, and border-crossing behavior before routes can ship. Europe
+      as one map, with the United Kingdom inside it, is written up in issue
+      195 (a 633-city target and a first batch of about 160); a career
+      belongs to one map, chosen at creation. The locale questions a second
+      map raises are in issue 196.
 
 ### In-cab radio (1.8 / 1.9 candidate)
 

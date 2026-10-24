@@ -767,6 +767,7 @@ fn test_scale_bypass_does_not_overwrite_active_pull_over() {
 fn test_unsafe_damage_in_patrol_starts_safety_stop() {
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, Some(1.0));
+    app.seasoned_driver();
     drive.trip.position_mi = drive.trip.total_miles() / 2.0;
     drive.trip.truck.damage_pct = 70.0;
     drive.trip.truck.velocity_mps = mph_to_mps(35.0);
@@ -1007,6 +1008,7 @@ fn test_leaving_the_zone_before_stopping_does_not_undo_the_doubling() {
 fn test_a_non_speeding_stop_escalates_with_priors() {
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, Some(1.0));
+    app.seasoned_driver();
     app.ctx
         .profile
         .as_mut()

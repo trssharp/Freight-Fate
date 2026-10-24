@@ -3,10 +3,11 @@
 //! run out of the origin's gate, and the acceleration lane that ends it; and
 //! a road stop's streets from its exit ramp to its lot.
 
+use crate::speech::EventPriority;
 use ff_core::data::world_models::Route;
 use ff_core::sim::trip_models::RoadStop;
 use ff_core::sim::weather::WeatherSystem;
-use ff_core::speech_pacing::{EventPriority, SpeechCategory};
+use ff_core::speech_pacing::SpeechCategory;
 use ff_core::units::spoken_feet_or_meters;
 
 use crate::app::{GameContext, SayEvent};
@@ -165,7 +166,7 @@ impl DrivingState {
         if with_corner {
             self.turn_grace_s = self.turn_grace_seconds(ctx, &message);
         }
-        let mut opts = SayEvent::queued().priority(EventPriority::Route);
+        let mut opts = SayEvent::queued().priority(EventPriority::Important);
         opts.category = Some(SpeechCategory::Navigation);
         ctx.say_event_with(message, opts);
         self.mark_start_cue_said();
@@ -470,7 +471,7 @@ impl DrivingState {
                 first.local_cue.trim_end_matches('.').to_string()
             };
             let distance = self.trip.distance_text(route.miles());
-            let mut opts = SayEvent::queued().priority(EventPriority::Route);
+            let mut opts = SayEvent::queued().priority(EventPriority::Important);
             opts.category = Some(SpeechCategory::Navigation);
             ctx.say_event_with(
                 format!("{street}. {distance} to the {merge_highway} on-ramp."),
@@ -567,7 +568,7 @@ impl DrivingState {
             );
         }
         ctx.audio.play_with("vehicle/signal_tone", 0.6, -0.6);
-        let mut opts = SayEvent::queued().priority(EventPriority::Route);
+        let mut opts = SayEvent::queued().priority(EventPriority::Important);
         opts.category = Some(SpeechCategory::Navigation);
         ctx.say_event_with(
             format!("Up the ramp onto {merge_highway}. {lane_text} of acceleration lane."),
@@ -649,7 +650,7 @@ impl DrivingState {
             "Lane ended.".to_string()
         };
         ctx.audio.play_with("vehicle/signal_tone", 0.6, -0.6);
-        let mut opts = SayEvent::queued().priority(EventPriority::Route);
+        let mut opts = SayEvent::queued().priority(EventPriority::Important);
         opts.category = Some(SpeechCategory::Navigation);
         ctx.say_event_with(message, opts);
     }

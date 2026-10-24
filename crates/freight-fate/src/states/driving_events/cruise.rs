@@ -171,9 +171,7 @@ impl DrivingState {
             };
         }
         let effects = self.trip.weather.effects();
-        if (effects.grip < 1.0 || effects.visibility_mi < 8.0)
-            && effects.safe_speed_mph < effective_mph
-        {
+        if effects.is_adverse() && effects.safe_speed_mph < effective_mph {
             effective_mph = effects.safe_speed_mph;
             exit_note = format!(" in the {}", self.trip.weather.current.value());
         }

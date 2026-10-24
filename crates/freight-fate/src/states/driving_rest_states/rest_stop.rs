@@ -33,6 +33,7 @@ use crate::states::driving_rest_states::loyalty::LoyaltyRewardsState;
 use crate::states::driving_rest_states::rest_preview::{sleep_preview, SleepChoice};
 
 mod cat_scale;
+mod chains;
 
 const REST_STOP_INTRO_HELP: &str =
     "Select a choice. Sleep reads a preview; select again to sleep. Breaks and sleep move the clock and the deadline.";
@@ -43,6 +44,10 @@ pub enum RestFocus {
     Default,
     Break,
     Sleep,
+    /// The fuel row, for a stop planned for fuel.
+    Fuel,
+    /// The food and coffee row, for a stop planned for food.
+    Food,
 }
 
 /// Which wear meter a road shop is selling a job on.
@@ -105,16 +110,19 @@ impl RestStopState {
 
     fn place_cursor(&mut self, ctx: &GameContext) {
         if self.preferred_rest != RestFocus::Default {
-            let preferred_row = if self.preferred_rest == RestFocus::Break {
-                "Take a 30-minute break"
-            } else {
-                "Sleep 10 hours"
+            let focus = self.preferred_rest;
+            let wanted = |text: &str| match focus {
+                RestFocus::Break => text == "Take a 30-minute break",
+                // The fuel row's label carries the gallons and the price.
+                RestFocus::Fuel => text.starts_with("Refuel ") || text.starts_with("Fuel: "),
+                RestFocus::Food => text == "Food and coffee break",
+                RestFocus::Sleep | RestFocus::Default => text == "Sleep 10 hours",
             };
             let index = self
                 .menu
                 .items
                 .iter()
-                .position(|item| item.text(self, ctx) == preferred_row)
+                .position(|item| wanted(&item.text(self, ctx)))
                 .unwrap_or(0);
             self.menu.index = index;
             // This is an arrival hint, not a permanent focus policy.
@@ -184,6 +192,12 @@ impl RestStopState {
         if !parking_text.is_empty() {
             parts.push(format!("{parking_text}."));
         }
+        if self.stop.fuel_callout() == Some(false) {
+            // Said on arrival too: a driver who pulled in low needs to know
+            // before the menu, not by finding no Refuel row (issue #272).
+            // Only where pumps could be expected, as in the stop callout.
+            parts.push("No fuel here.".to_string());
+        }
         // Check real-time parking availability if enabled
         if ctx.settings.real_parking && d.trip.parking_provider.is_some() {
             if let Some(availability) = check_parking_availability(d) {
@@ -233,6 +247,9 @@ impl RestStopState {
         }
         if self.has_cat_scale() {
             items.push(self.cat_scale_item(ctx, d));
+        }
+        if self.sells_chains(ctx, d) {
+            items.push(self.chains_item(ctx));
         }
         if has("food") {
             items.push(

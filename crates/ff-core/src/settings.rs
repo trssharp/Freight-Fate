@@ -14,11 +14,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::pyfmt::{fmt_f, fmt_grouped, round_py_int};
+use crate::pyfmt::{fmt_f, round_py_int};
 use crate::speech_pacing::{disposition_for, Disposition, SpeechCategory, DEFAULT_DRIVING_SPEECH};
-use crate::units::{
-    distance_unit, hud_speed, spoken_distance, spoken_gap, to_distance, MILES_TO_KM,
-};
+use crate::units::{to_distance, MILES_TO_KM};
 
 /// How score readouts balance the descriptive band and the numeric score.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,8 +37,11 @@ impl From<ScoreDisplay> for Value {
     }
 }
 
+mod assists;
 mod migrate;
 pub mod paths;
+mod units;
+pub use assists::AssistStash;
 #[cfg(test)]
 mod tests;
 
@@ -295,6 +296,12 @@ macro_rules! settings_fields {
             /// instance by the loader.)
             #[serde(skip)]
             pub lane_keeping_unreadable: bool,
+            /// The player's own assists while a co-driver has the wheel.
+            /// The co-driver drives on every assist; the player's choice is
+            /// kept here, written to disk in their place, and put back when
+            /// they take the wheel again. Never saved itself.
+            #[serde(skip)]
+            pub co_driver_stash: Option<Box<AssistStash>>,
         }
 
         impl Default for Settings {
@@ -302,6 +309,7 @@ macro_rules! settings_fields {
                 Self {
                     $( $name: ($default).into(), )*
                     lane_keeping_unreadable: false,
+                    co_driver_stash: None,
                 }
             }
         }
@@ -553,6 +561,11 @@ settings_fields! {
     /// lists and is being used for MP3 collections (Hailey, drivers board,
     /// 2026-09-18).
     radio_shuffle_playlists: bool = false => bool_truthy,
+    /// The radio's sound while driving: on plays it through the cab's door
+    /// speakers in the small cab, and the open driver window brightens it;
+    /// off plays it clean, exactly as the station sends it (owner,
+    /// 2026-10-18).
+    radio_cab_speakers: bool = true => bool_strict,
     weather_volume: f64 = 0.65 => level,
     engine_volume: f64 = 0.55 => level,
     ui_volume: f64 = 0.9 => level,
@@ -716,6 +729,11 @@ settings_fields! {
     /// before the setting existed loads as English, so an update never
     /// changes the language a player already hears.
     language: String = "auto" => str_plain,
+    /// Whether the game window draws the road view, dashboard, menus and
+    /// captions for sighted and low-vision players. Off leaves the window a
+    /// plain dark fill that is never redrawn, which saves the battery for a
+    /// player who only listens. Speech and sound are the same either way.
+    visual_display: bool = true => bool_strict,
 }
 
 impl Settings {
@@ -767,76 +785,6 @@ impl Settings {
         lane_keeping_label_for(&self.lane_keeping).unwrap_or_else(|| {
             lane_keeping_label_for(LANE_KEEPING_FALLBACK).expect("fallback label")
         })
-    }
-
-    /// The preset fields' current values, in DRIVING_ASSIST_FIELDS order.
-    pub fn assist_values(&self) -> [AssistValue; 9] {
-        [
-            Flag(self.automatic_emergency_braking),
-            Flag(self.lane_departure_warning),
-            Flag(self.stop_and_go_assist),
-            Mode(static_mode(&self.descent_speed_control)),
-            Flag(self.exit_speed_assist),
-            Flag(self.destination_approach_assist),
-            Flag(self.curve_speed_assist),
-            Flag(self.route_transition_assist),
-            Mode(static_mode(&self.lane_keeping)),
-        ]
-    }
-
-    /// `getattr(settings, field)` for one preset field.
-    pub fn assist_value(&self, field: &str) -> Option<AssistValue> {
-        DRIVING_ASSIST_FIELDS
-            .iter()
-            .position(|name| *name == field)
-            .map(|index| self.assist_values()[index])
-    }
-
-    /// `setattr(settings, field, value)` for one preset field; `false` when
-    /// `field` is not a preset field or `value` is the wrong shape for it.
-    pub fn set_assist_value(&mut self, field: &str, value: AssistValue) -> bool {
-        match (field, value) {
-            ("automatic_emergency_braking", Flag(v)) => self.automatic_emergency_braking = v,
-            ("lane_departure_warning", Flag(v)) => self.lane_departure_warning = v,
-            ("stop_and_go_assist", Flag(v)) => self.stop_and_go_assist = v,
-            ("descent_speed_control", Mode(v)) => self.descent_speed_control = v.to_string(),
-            ("exit_speed_assist", Flag(v)) => self.exit_speed_assist = v,
-            ("destination_approach_assist", Flag(v)) => self.destination_approach_assist = v,
-            ("curve_speed_assist", Flag(v)) => self.curve_speed_assist = v,
-            ("route_transition_assist", Flag(v)) => self.route_transition_assist = v,
-            ("lane_keeping", Mode(v)) => self.lane_keeping = v.to_string(),
-            _ => return false,
-        }
-        true
-    }
-
-    /// Set every preset field to the named preset's values. `false` (and no
-    /// change) for a name that is not a preset -- Python raised `KeyError`.
-    pub fn apply_driving_assistance_preset(&mut self, preset: &str) -> bool {
-        let Some(values) = driving_assist_preset(preset) else {
-            return false;
-        };
-        for (field, value) in DRIVING_ASSIST_FIELDS.iter().zip(values.iter()) {
-            self.set_assist_value(field, *value);
-        }
-        self.driving_assistance_preset = preset.to_string();
-        true
-    }
-
-    /// Re-derive the preset row from the real fields: the one preset whose
-    /// mapping matches exactly, or "custom".
-    pub fn refresh_driving_assistance_preset(&mut self) -> &'static str {
-        let values = self.assist_values();
-        let mut matches = DRIVING_ASSIST_PRESETS
-            .iter()
-            .filter(|(_, mapping)| *mapping == values)
-            .map(|(name, _)| *name);
-        let name = match (matches.next(), matches.next()) {
-            (Some(only), None) => only,
-            _ => "custom",
-        };
-        self.driving_assistance_preset = name.to_string();
-        name
     }
 
     /// How the player's rung delivers this category of information.
@@ -912,79 +860,6 @@ impl Settings {
     pub fn set_all_chatter(&mut self, enabled: bool) {
         for field in CHATTER_FIELDS {
             self.set_chatter_field(field, enabled);
-        }
-    }
-
-    // -- unit formatting ---------------------------------------------------------
-
-    pub fn speed_text(&self, mph: f64) -> String {
-        if self.imperial_units {
-            format!("{} per hour", spoken_distance(mph, "mile"))
-        } else {
-            format!(
-                "{} per hour",
-                spoken_distance(mph * MILES_TO_KM, "kilometer")
-            )
-        }
-    }
-
-    /// `speed_text`'s bare number, for the terse slot grammar where the
-    /// frame carries the unit ("Limit 65.").
-    pub fn speed_value(&self, mph: f64) -> String {
-        let value = if self.imperial_units {
-            mph
-        } else {
-            mph * MILES_TO_KM
-        };
-        round_py_int(value).to_string()
-    }
-
-    /// Spoken distance in the player's unit. `precise` keeps one decimal for
-    /// short spans ("1.2 miles ahead") where whole numbers would read as
-    /// zero or lie by half a mile.
-    pub fn distance_text(&self, miles: f64, precise: bool) -> String {
-        distance_text_for(miles, self.imperial_units, precise)
-    }
-
-    /// Colloquial short range for pacenote-style calls: quarter-mile steps
-    /// under a mile ("half a mile"), 100-meter steps under a kilometer ("400
-    /// meters"), the normal precise form beyond.
-    pub fn short_distance_text(&self, miles: f64) -> String {
-        short_distance_text_for(miles, self.imperial_units)
-    }
-
-    /// A spoken distance kept to one decimal, for close-range cues.
-    pub fn gap_text(&self, miles: f64) -> String {
-        spoken_gap(miles, self.imperial_units)
-    }
-
-    /// Speed for the visual HUD, in the short written form.
-    pub fn hud_speed_text(&self, mph: f64) -> String {
-        hud_speed(mph, self.imperial_units)
-    }
-
-    /// A bare converted distance, for readouts that name the unit once after
-    /// two numbers ("12 of 400 miles").
-    pub fn distance_value(&self, miles: f64, decimals: usize, grouped: bool) -> String {
-        let value = to_distance(miles, self.imperial_units);
-        if grouped {
-            fmt_grouped(value, decimals)
-        } else {
-            fmt_f(value, decimals)
-        }
-    }
-
-    /// The player's distance unit, to pair with `distance_value`.
-    pub fn distance_unit_text(&self, plural: bool) -> &'static str {
-        distance_unit(self.imperial_units, plural)
-    }
-
-    /// A per-mile rate as a rate in the player's own distance unit.
-    pub fn per_distance(&self, per_mile: f64) -> f64 {
-        if self.imperial_units {
-            per_mile
-        } else {
-            per_mile / MILES_TO_KM
         }
     }
 }
@@ -1073,7 +948,7 @@ pub fn acc_gap_seconds(name: &str) -> Option<f64> {
 /// A mode field's value as the static str the preset tables use, or a
 /// marker no preset matches when it holds something outside the tables
 /// (only possible between the raw copy and the value checks in `from_dict`).
-fn static_mode(value: &str) -> &'static str {
+pub(crate) fn static_mode(value: &str) -> &'static str {
     for mode in DESCENT_SPEED_CONTROL_MODES {
         if mode == value {
             return mode;

@@ -50,15 +50,15 @@ fn cycle_index(options: &[&str], current: &str, d: i64, fallback_index: usize) -
     (i + d).rem_euclid(options.len() as i64) as usize
 }
 
-/// The Language row's value: the language's own name, after "automatic"
-/// when the row follows the system.
+/// The Language row's value: the language's English name with its own
+/// name after it, after "automatic" when the row follows the system.
 pub(super) fn language_label(s: &Settings) -> String {
     let resolved = l10n::resolve(&s.language, language::system_locale().as_deref());
-    let name = l10n::language(resolved).map_or("English", |lang| lang.autonym);
+    let name = l10n::language(resolved).map_or_else(|| "English".to_string(), |lang| lang.label());
     if s.language == l10n::AUTO || s.language.is_empty() {
         format!("automatic, {name}")
     } else {
-        name.to_string()
+        name
     }
 }
 
@@ -518,6 +518,12 @@ impl SettingsCategoryState {
         self.announce(ctx);
     }
 
+    pub(super) fn toggle_radio_cab_speakers(&mut self, ctx: &mut GameContext, _d: i64) {
+        ctx.settings.radio_cab_speakers = !ctx.settings.radio_cab_speakers;
+        save_settings(&ctx.settings);
+        self.announce(ctx);
+    }
+
     pub(super) fn toggle_duck_for_speech(&mut self, ctx: &mut GameContext, _d: i64) {
         ctx.settings.duck_audio_for_speech = !ctx.settings.duck_audio_for_speech;
         save_settings(&ctx.settings);
@@ -537,6 +543,13 @@ impl SettingsCategoryState {
     pub(super) fn toggle_haptics(&mut self, ctx: &mut GameContext, _d: i64) {
         ctx.settings.haptics_enabled = !ctx.settings.haptics_enabled;
         ctx.apply_haptics();
+        self.announce(ctx);
+    }
+
+    /// The window picks the change up on its next frame.
+    #[cfg(feature = "visuals")]
+    pub(super) fn toggle_visual_display(&mut self, ctx: &mut GameContext, _d: i64) {
+        ctx.settings.visual_display = !ctx.settings.visual_display;
         self.announce(ctx);
     }
 

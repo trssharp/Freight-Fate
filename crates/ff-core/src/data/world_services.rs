@@ -87,17 +87,23 @@ fn first_of_a_bare_list(text: &str) -> String {
     out
 }
 
-/// Maneuver direction baked in a local segment cue, or "".
-fn local_cue_direction(cue: &str) -> &'static str {
+/// Maneuver direction baked in a local segment cue: "left", "right",
+/// "ahead", or "" for a directionless legacy cue ("Turn onto"). The one
+/// reader of a cue's side, shared by the earcon and the reversed chain, so
+/// the two can never disagree about which way a corner goes.
+///
+/// The maneuver is the cue's opening words, never a word anywhere in it:
+/// read as a substring, "Continue onto North Brighton Boulevard" was a right
+/// turn and chimed in the right ear for a street that runs straight on
+/// (player report, 2026-10-14).
+pub fn cue_direction(cue: &str) -> &'static str {
     let lowered = cue.trim().to_lowercase();
-    if lowered.starts_with("turn left") {
-        "left"
-    } else if lowered.starts_with("turn right") {
-        "right"
-    } else if lowered.starts_with("continue") {
-        "ahead"
-    } else {
-        ""
+    let mut words = lowered.split_whitespace();
+    match (words.next(), words.next()) {
+        (Some("continue" | "start"), _) => "ahead",
+        (Some(_), Some("left")) => "left",
+        (Some(_), Some("right")) => "right",
+        _ => "",
     }
 }
 
@@ -159,7 +165,7 @@ fn reversed_local_legs(city: &str, legs: &[std::sync::Arc<Leg>]) -> Vec<Leg> {
         let inbound = (i > 0).then(|| &legs[legs.len() - i]);
         let cue = match inbound {
             None => format!("Start on {}.", src.highway),
-            Some(inbound) => match local_cue_direction(&inbound.local_cue) {
+            Some(inbound) => match cue_direction(&inbound.local_cue) {
                 "left" => format!("Turn right onto {}.", src.highway),
                 "right" => format!("Turn left onto {}.", src.highway),
                 "ahead" => format!("Continue onto {}.", src.highway),

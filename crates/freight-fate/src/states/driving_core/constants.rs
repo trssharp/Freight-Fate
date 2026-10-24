@@ -10,10 +10,23 @@ use ff_core::sim::trip_models::{
 };
 
 pub const HAZARD_SAFE_MPH: f64 = 25.0;
+// Weather that spans the road (a gust, fog, a squall) is braked for down to
+// the speed the weather is safe at, this far under it, and never higher than
+// the second figure: assumed values, a margin a driver keeps rather than a
+// measurement.
+pub const HAZARD_WEATHER_MARGIN_MPH: f64 = 5.0;
+pub const HAZARD_SPANNING_MAX_MPH: f64 = 45.0;
 // A fixed object in your lane -- debris, a stopped vehicle -- cannot be
 // rolled over at 25: clearing it by brake alone means coming nearly to a
 // stop and easing around. A lane change remains the no-time-lost answer.
 pub const HAZARD_CREEP_MPH: f64 = 8.0;
+// An animal struck at 65 mph, in truck damage points. Assumed, not
+// measured: a deer or a dog dents the bumper and grille of a tractor built
+// to shrug it off; an elk or a cow can take out the radiator. Scaled by the
+// truck's speed in `animal_outcome`.
+pub const ANIMAL_STRIKE_LARGE_PCT: f64 = 6.0;
+pub const ANIMAL_STRIKE_DEER_PCT: f64 = 3.0;
+pub const ANIMAL_STRIKE_SMALL_PCT: f64 = 1.0;
 pub const MPH_PER_MPS: f64 = 2.23694;
 
 // Roadside mechanic: a field patch, not a garage restoration.
@@ -61,6 +74,9 @@ pub const LIMP_CAP_RAMP_MPH_PER_S: f64 = 2.0;
 pub const CHAIN_INSTALL_MIN: f64 = 30.0;
 pub const CHAIN_INSTALL_NIGHT_MULT: f64 = 1.6;
 pub const CHAIN_REMOVE_MIN: f64 = 10.0;
+/// Stop planning's no-chains reminder plays this far before a chain-law
+/// corridor in season: a reminder, well before the 1-mile chain-law cue.
+pub const CHAIN_REMINDER_LEAD_MI: f64 = 15.0;
 // A broken chain is one cross link or one chain, not the whole set, and it
 // is fixed on the shoulder: Caltrans tells drivers to carry "chain repair
 // links", and Washington requires two spare chains for this case (WAC
@@ -112,6 +128,14 @@ pub const ROAD_TIRE_COST_PER_PCT: f64 = 60.0; // everyone else marks tire work u
 pub const ROAD_TIRE_MIN: f64 = 75.0;
 pub const ROAD_BRAKE_COST_PER_PCT: f64 = 55.0; // road-shop premium over the garage's 40
 pub const ROAD_BRAKE_MIN: f64 = 120.0;
+/// A chain set bought on the road: the terminal garage's 750 dollars plus
+/// the third road shops add to tire work (60 a percent against the
+/// garage's 45). ASSUMED; truck stops on chain corridors stock sets, and
+/// nobody publishes a single price.
+pub const ROAD_CHAIN_SET_COST: f64 = 1000.0;
+/// Paying at the counter and stowing the set in the side box, on duty.
+/// ASSUMED, as the terminal garage's 10 minutes.
+pub const ROAD_CHAIN_BUY_MIN: f64 = 10.0;
 pub const FUEL_STOP_MIN: f64 = 20.0; // fueling is on-duty-not-driving work
 /// Fraction of tank remaining that fires the once-per-threshold low-fuel cue.
 /// Re-arms only after a refill climbs back above this line.
@@ -160,7 +184,6 @@ pub const EXIT_COUNTDOWN_MILESTONES_MI: [f64; 3] = [2.0, 1.0, 0.5];
 // one-mile mark, so it is not a new number.
 pub const EXIT_APPROACH_QUIET_MI: f64 = EXIT_COUNTDOWN_MILESTONES_MI[1];
 // The pacenote cue tone leans hard toward the curve's side of the field.
-pub const PACENOTE_CUE_PAN: f64 = 0.85;
 pub const EXIT_COMMIT_WINDOW_MI: f64 = 0.4; // generous gore-window grace after the marker
 /// Where the exit lane opens: the length of its taper ahead of the gore, in
 /// miles. DERIVED: a parallel deceleration lane's taper runs 15:1 to 25:1
@@ -209,7 +232,6 @@ pub const RAMP_MAX_MPH: f64 = TRIP_RAMP_MAX_MPH;
 // gap between a flat 40 and a flat 45; now it is the gap itself, applied to
 // whatever number the ramp earns.
 pub const RAMP_CRUISE_HEADROOM_MPH: f64 = 5.0;
-pub const RAMP_CRUISE_TARGET_MPH: f64 = RAMP_MAX_MPH - RAMP_CRUISE_HEADROOM_MPH;
 // Ceiling on the light throttle exit speed assistance uses to HOLD that target
 // once it has slowed the truck to it. Deliberately small: the assist is keeping
 // a truck rolling to its own gore, not driving it.
@@ -303,7 +325,6 @@ pub const RAMP_ASSIST_DECEL_RELEASE_MPS2: f64 = 0.35;
 // stopped, and the brake it uses. Gentler than the ramp figure -- an approach
 // is a street chain with a gate at the end, and the point is that the stop is
 // comfortable rather than a grab.
-pub const APPROACH_ASSIST_DECEL_MPS2: f64 = 0.9;
 // Seconds of road the arrival shed starts EARLY, so the brake has time to
 // build before the stop profile binds. Not a change to where the truck
 // stops -- the profile still aims at the arrival point -- only to when it
@@ -312,7 +333,6 @@ pub const APPROACH_ASSIST_DECEL_MPS2: f64 = 0.9;
 // same budget, because a truck already down to street speed needs the
 // pressure built, not a driver reaction.
 pub const APPROACH_ASSIST_REACTION_S: f64 = 3.0;
-pub const APPROACH_ASSIST_BRAKE: f64 = 0.4;
 pub const RAMP_ASSIST_FULL_DECEL_MPS2: f64 = 3.0;
 pub const RAMP_ASSIST_HOLD_MI: f64 = 60.0 / 5280.0;
 // How far the demand has to fall below the pedal the assist is already holding
@@ -769,8 +789,6 @@ pub const OVERSPEED_URGENT_MPH: f64 = 20.0;
 // Travel this far still moving after the lights come on and it counts as
 // ignoring the stop -- a heavier fine and a bigger reputation hit.
 pub const PULL_OVER_IGNORE_MI: f64 = 2.0;
-pub const FAILURE_TO_STOP_WARNING_MI: f64 = 0.8;
-pub const FAILURE_TO_STOP_FINAL_WARNING_MI: f64 = 1.5;
 // The staged warnings run on real seconds, not trip miles: compression could
 // burn two miles before the first warning had a chance to speak.
 pub const PULL_OVER_FIRST_WARNING_S: f64 = 8.0;

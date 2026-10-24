@@ -19,11 +19,12 @@
 //! compression a distance alone is unbeatable. HOS, the clock, and fuel keep
 //! running through every loop; the lost time is the consequence, never a fine.
 
+use crate::speech::EventPriority;
 use ff_core::sim::trip_models::{
     APPROACH_DECEL_MPS2, APPROACH_REACTION_S, FACILITY_ACCESS_TAIL_MI, FACILITY_GATE_LIMIT_MPH,
     FACILITY_GATE_ZONE_MI, METERS_PER_MILE, MPH_PER_MPS,
 };
-use ff_core::speech_pacing::{EventPriority, SpeechCategory};
+use ff_core::speech_pacing::SpeechCategory;
 
 use crate::app::{GameContext, SayEvent};
 use crate::states::driving::DrivingState;
@@ -214,7 +215,7 @@ impl DrivingState {
         ctx.say_event_with(
             message,
             SayEvent::queued()
-                .priority(EventPriority::Route)
+                .priority(EventPriority::Important)
                 .category(SpeechCategory::Navigation),
         );
     }
@@ -286,6 +287,15 @@ impl DrivingState {
     /// those apply. Shared by the missed facility gate and the missed
     /// destination exit, whose loops are the same maneuver.
     pub fn charge_scripted_loop(&mut self, ctx: &mut GameContext, minutes: f64) {
+        self.charge_scripted_hours(ctx, minutes);
+        self.trip
+            .truck
+            .burn_idle_fuel_over_game_time(minutes * 60.0);
+    }
+
+    /// The hours and fatigue half of `charge_scripted_loop`, for a scripted
+    /// drive that burns its own fuel (the chain checkpoint turn back).
+    pub fn charge_scripted_hours(&mut self, ctx: &mut GameContext, minutes: f64) {
         // A turnaround is driving time on every commercial reposition.
         hos_mut_of(ctx).drive(minutes);
         let fatigue_mult = tuning_for_time_scale(self.trip.time_scale).fatigue_rate;
@@ -301,9 +311,6 @@ impl DrivingState {
                         * p.fatigue_buff_rate(now_h),
             );
         }
-        self.trip
-            .truck
-            .burn_idle_fuel_over_game_time(minutes * 60.0);
     }
 
     /// `_handle_missed_facility_gate()`: the scripted loop-back through the

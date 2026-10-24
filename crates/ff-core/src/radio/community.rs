@@ -13,7 +13,7 @@
 //! sign) is dropped, so folding accepted stations into a release never puts
 //! one on the dial twice.
 //!
-//! Accepted stations also ship: `tools/fold_community_stations.py` copies the
+//! Accepted stations also ship: `cargo tools fold-community-stations` copies the
 //! site's list into `data/radio_community.json` as each build is cut, so a
 //! first launch, an offline one, or a copy with the orinks.net services off
 //! still has every station accepted up to its build. That file is the third

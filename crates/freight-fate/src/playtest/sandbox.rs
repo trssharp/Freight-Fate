@@ -59,7 +59,7 @@ pub fn real_saves() -> PathBuf {
     game_root().join("saves")
 }
 
-/// Where a live playtest announces itself for `tools/playtest_watch.py`.
+/// Where a live playtest announces itself for `cargo tools playtest-watch`.
 pub fn session_file() -> PathBuf {
     game_root().join("logs").join("playtest-session.json")
 }
@@ -389,7 +389,7 @@ pub fn describe(sandbox: &Path) -> String {
     lines.join("\n")
 }
 
-/// Announce a live playtest so `tools/playtest_watch.py` can follow it.
+/// Announce a live playtest so `cargo tools playtest-watch` can follow it.
 ///
 /// Both launchers write this -- the sandbox one and playtest_road's -- because
 /// the watcher's job is the same either way, and the one thing it cannot work

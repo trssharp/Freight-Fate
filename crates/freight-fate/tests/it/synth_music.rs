@@ -1,7 +1,7 @@
 //! Synthesized music: the settings rows, menu and Roadhouse rotations, and
 //! the fallback when a piece is not ready.
 
-use crate::audio_support::{bass_rig, sine_wav};
+use crate::audio_support::{hearken_rig, sine_wav};
 use crate::states_main_menu_support::*;
 use ff_core::data::world::get_world;
 use ff_core::models::jobs::{Job, CARGO_CATALOG};
@@ -374,7 +374,7 @@ fn switching_back_to_original_restores_the_soundtrack() {
     assert_eq!(app.ctx.music_rotation_track(), Some(original[0].as_str()));
 }
 
-/// The smallest ProTracker MOD BASS will load: one 64-row pattern playing a
+/// The smallest ProTracker MOD BASS would load: one 64-row pattern playing a
 /// 32-sample square wave on channel 1, row 0. 1084 + 1024 + 32 bytes; it
 /// runs 64 rows at speed 6 and 125 BPM, 7.68 seconds.
 fn tiny_mod() -> Vec<u8> {
@@ -394,15 +394,23 @@ fn tiny_mod() -> Vec<u8> {
 }
 
 #[test]
-fn a_tracker_module_plays_as_music_and_reports_its_length() {
+fn a_tracker_module_is_refused_and_leaves_the_channel_quiet() {
+    // BASS played tracker modules; Hearken has no tracker player, so a
+    // module track is refused outright rather than handed to a decoder, and
+    // a playlist file of one fails so the playlist skips it.
     use freight_fate::audio::Audio;
-    let Some(mut r) = bass_rig() else { return };
+    let mut r = hearken_rig();
     ff_core::assets_pack::register_generated_sound("music/hand_made/test/tiny", tiny_mod(), "mod");
     r.engine.play_music_with("hand_made/test/tiny", 0);
-    assert!(r.engine.music_playing());
-    let len = r.engine.music_length_s().expect("module length");
-    assert!(len > 0.5 && len < 30.0, "{len}");
-    eprintln!("tiny module ran on BASS: {len:.2} s");
+    assert!(!r.engine.music_playing());
+    assert_eq!(r.engine.music_length_s(), None);
+    assert!(r.rec.played().is_empty(), "{:?}", r.rec.played());
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("tiny.mod");
+    std::fs::write(&path, tiny_mod()).unwrap();
+    let path = path.to_str().unwrap().to_string();
+    let err = r.engine.play_music_file(&path).unwrap_err();
+    assert_eq!(err.message, format!("could not decode {path}"));
 }
 
 /// Callers look a track's length up once, right after starting it, while
@@ -410,26 +418,45 @@ fn a_tracker_module_plays_as_music_and_reports_its_length() {
 #[test]
 fn the_length_is_the_new_tracks_while_the_old_one_fades() {
     use freight_fate::audio::Audio;
-    let Some(mut r) = bass_rig() else { return };
+    let mut r = hearken_rig();
     ff_core::assets_pack::register_generated_sound(
         "music/hand_made/test/two_s",
         sine_wav(2.0, 2),
         "wav",
     );
     ff_core::assets_pack::register_generated_sound(
-        "music/hand_made/test/tiny_b",
-        tiny_mod(),
-        "mod",
+        "music/hand_made/test/seven_s",
+        sine_wav(7.68, 2),
+        "wav",
     );
+    // What the device reads off each clip.
+    r.rec.set_length("hand_made/test/two_s", 2.0);
+    r.rec.set_length("hand_made/test/seven_s", 7.68);
     r.engine.play_music_with("hand_made/test/two_s", 0);
     let a = r.engine.music_length_s().expect("wav length");
     assert!((a - 2.0).abs() < 0.01, "{a}");
-    r.engine.play_music_with("hand_made/test/tiny_b", 2000);
-    let b = r.engine.music_length_s().expect("module length");
+    r.engine.play_music_with("hand_made/test/seven_s", 2000);
+    let b = r.engine.music_length_s().expect("second length");
     assert!(
         (b - 7.68).abs() < 0.05,
-        "reported {b}, not the module's 7.68 s"
+        "reported {b}, not the new track's 7.68 s"
     );
+}
+
+/// The lengths the test above stubs on the recorder are the ones Hearken
+/// decodes from the same bytes, with no recorder in the way.
+#[test]
+fn the_stubbed_track_lengths_are_the_decoded_ones() {
+    for (seconds, channels) in [(2.0, 2), (7.68, 2), (3.5, 1)] {
+        let info = freight_fate::audio::probe_clip(sine_wav(seconds, channels).into())
+            .expect("a WAV Hearken decodes");
+        let length = info.length_s.expect("a WAV knows its length");
+        assert!(
+            (length - seconds).abs() < 0.01,
+            "decoded {length} s from a {seconds} s clip"
+        );
+        assert_eq!(info.sample_rate, 44_100);
+    }
 }
 
 // -- the dial in Synthesized mode ---------------------------------------------------------

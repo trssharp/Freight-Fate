@@ -262,6 +262,8 @@ fn gameplay_subcategory_rows(category: &str) -> &'static [&'static str] {
             "Automatic direction changes",
             "Controller",
             "Haptics",
+            #[cfg(feature = "visuals")]
+            "Visual display",
             "Keyboard shortcuts",
             "Controller buttons",
             "Back",
@@ -448,6 +450,11 @@ fn test_every_gameplay_setting_stays_reachable_after_the_split() {
     assert!(reachable("controls", "Automatic direction changes"));
     assert!(reachable("controls", "Controller"));
     assert!(reachable("controls", "Haptics"));
+    // Only a build with the visual display has a row to turn it off.
+    assert_eq!(
+        reachable("controls", "Visual display"),
+        cfg!(feature = "visuals")
+    );
     assert!(reachable("assistance", "Speed keeper"));
     assert!(!reachable("controls", "Speed keeper"));
     assert!(reachable("difficulty", "Driving mode"));
@@ -1276,4 +1283,55 @@ fn the_controller_row_names_the_connected_controller() {
     );
     app.ctx.settings.controller_enabled = false;
     assert_eq!(controller_row(&mut app), "Controller: disabled");
+}
+
+#[cfg(feature = "visuals")]
+#[test]
+fn visual_display_row_toggles_says_its_state_and_persists() {
+    let mut app = TestApp::new();
+    assert!(app.ctx.settings.visual_display, "on for a fresh install");
+    open_settings_category(&mut app, "Controls");
+    move_to::<Cat>(&mut app, "Visual display");
+    assert_eq!(current_label::<Cat>(&app), "Visual display: on");
+    app.clear_speech();
+    key(&mut app, Key::Right);
+    assert_eq!(current_label::<Cat>(&app), "Visual display: off");
+    assert!(
+        app.main_lines()
+            .iter()
+            .any(|l| l.contains("Visual display: off")),
+        "{:?}",
+        app.main_lines()
+    );
+    assert!(!Settings::load().visual_display);
+    key(&mut app, Key::Left);
+    assert!(Settings::load().visual_display);
+}
+
+#[test]
+fn test_the_assist_help_says_what_chain_work_costs_and_that_nothing_is_bought() {
+    let mut app = TestApp::new();
+    open_settings_category(&mut app, "Driving assistance");
+    let facility = cat_rows(&mut app, "assistance")
+        .into_iter()
+        .find(|(label, _)| label.starts_with("Facility stopping assistance"))
+        .map(|(_, help)| help)
+        .expect("a facility stopping row");
+    assert!(
+        facility.contains("may spend on-duty minutes on chains"),
+        "{facility}"
+    );
+    assert!(facility.contains("It never buys chains."), "{facility}");
+    assert!(!facility.contains("money"), "{facility}");
+    open_settings_category(&mut app, "Difficulty and hours of service");
+    let planning = cat_rows(&mut app, "difficulty")
+        .into_iter()
+        .find(|(label, _)| label.starts_with("Hours of service planning hints"))
+        .map(|(_, help)| help)
+        .expect("a stop planning row");
+    assert!(
+        planning.contains("reminds you before a chain-law road"),
+        "{planning}"
+    );
+    assert!(planning.contains("never buys anything"), "{planning}");
 }

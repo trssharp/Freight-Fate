@@ -335,6 +335,7 @@ fn test_a_serious_speeding_ticket_moves_the_ladder_and_says_so() {
 fn test_a_mild_speeding_ticket_is_money_only() {
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, "Jerry");
+    app.seasoned_driver();
     drive.speeding_tickets = 1;
 
     a_traffic_stop(&mut app, &mut drive, true, 11.0, 65.0);
@@ -343,6 +344,38 @@ fn test_a_mild_speeding_ticket_is_money_only() {
     assert_eq!(p.driving_record.serious_in_window(p.game_hours), 0);
     assert_eq!(p.driving_record.citations, 1);
     assert!(drive.record_events.is_empty(), "{:?}", drive.record_events);
+}
+
+#[test]
+fn test_a_new_driver_gets_a_warning_for_mild_speeding() {
+    let mut app = TestApp::new();
+    let mut drive = a_drive(&mut app, "Jerry");
+    drive.speeding_tickets = 1;
+    let money = app.ctx.profile.as_ref().expect("a career").money();
+
+    let stop = a_traffic_stop(&mut app, &mut drive, true, 11.0, 65.0);
+
+    let p = app.ctx.profile.as_ref().expect("a career");
+    assert_eq!(p.driving_record.citations, 0);
+    assert_eq!(p.money(), money);
+    assert!(
+        stop.outcome_text().contains("warning"),
+        "{}",
+        stop.outcome_text()
+    );
+}
+
+#[test]
+fn test_a_new_driver_is_still_cited_for_serious_speeding() {
+    let mut app = TestApp::new();
+    let mut drive = a_drive(&mut app, "Jerry");
+    drive.speeding_tickets = 1;
+
+    a_traffic_stop(&mut app, &mut drive, true, 16.0, 65.0);
+
+    let p = app.ctx.profile.as_ref().expect("a career");
+    assert_eq!(p.driving_record.citations, 1);
+    assert_eq!(p.driving_record.serious_in_window(p.game_hours), 1);
 }
 
 #[test]
@@ -787,6 +820,7 @@ fn test_toggling_the_jake_cannot_farm_warnings_forever() {
     // One grace window per town, not a renewable exemption.
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, "Jerry");
+    app.seasoned_driver();
     // First engagement: warned, then complies before the timer runs out.
     drive
         .jake_zone_grace_used
@@ -846,6 +880,7 @@ fn test_a_settled_stop_is_read_back_as_history_not_as_a_fresh_charge() {
     // silenced: re-reading the stop is the only way back to the detail.
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, "Jerry");
+    app.seasoned_driver();
     let money_before = app.ctx.profile.as_ref().expect("a career").money();
     app.clear_speech();
 

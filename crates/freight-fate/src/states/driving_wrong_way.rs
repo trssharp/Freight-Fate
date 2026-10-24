@@ -130,7 +130,7 @@ impl DrivingState {
                 // a reminder that you are still going backwards down a live
                 // lane is not chatter, however busy the road has got.
                 SayEvent::queued()
-                    .priority(EventPriority::Route)
+                    .priority(EventPriority::Important)
                     .category(SpeechCategory::Safety),
             );
         }

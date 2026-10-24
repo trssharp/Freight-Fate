@@ -179,8 +179,9 @@ fn last(harness: &PlaytestHarness) -> String {
     spoken(harness).last().cloned().unwrap_or_default()
 }
 
+/// T while rolling plans a sleep stop, the purpose these drives are about.
 fn press_t(harness: &mut PlaytestHarness) {
-    harness.press_key(Key::T, Some('t'));
+    harness.plan_stop("Sleep");
 }
 
 /// `driving._update_hours_and_fatigue(dt)`.
@@ -204,7 +205,9 @@ fn test_hos_violation_speech_interrupts_but_threshold_warning_does_not() {
 
     {
         let p = harness.app.ctx.profile.as_mut().expect("a career");
-        p.hos.driving_min = drive_limit - 121.0;
+        // Less left than the drive needs, so the countdown has a reason
+        // to speak.
+        p.hos.driving_min = drive_limit - 31.0;
         p.hos.duty_min = p.hos.driving_min;
         p.hos.since_break_min = 0.0;
     }
@@ -213,7 +216,7 @@ fn test_hos_violation_speech_interrupts_but_threshold_warning_does_not() {
     let calls = harness.app.event_calls();
     let warning = calls
         .iter()
-        .find(|(text, _)| text.starts_with("Hours of service: 2 hours"))
+        .find(|(text, _)| text.starts_with("Hours of service: 30 minutes"))
         .unwrap_or_else(|| panic!("the countdown was never spoken: {calls:?}"));
     assert!(!warning.1, "the countdown must not cut the driver off");
 

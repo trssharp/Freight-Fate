@@ -926,16 +926,6 @@ impl Trip {
         ))
     }
 
-    /// Whether the rig must chain at this milepost under the active law
-    /// (`rig_must_chain`): every level in every state except Colorado
-    /// Level 1, which chains single-drive-axle trucks only.
-    pub fn rig_must_chain_at(&self, mile: f64) -> bool {
-        crate::sim::trip_models::rig_must_chain(
-            self.state_code_at(mile).as_deref(),
-            self.chain_law_level(),
-        )
-    }
-
     /// The truck is on a Colorado chain-carry corridor's mountain run in
     /// carry season (`CO_CHAIN_CARRY_CORRIDORS`), with the career calendar
     /// known. Weather doesn't matter: the rule is to carry, not to chain.
@@ -951,6 +941,104 @@ impl Trip {
             && self.state_code_at(mile).as_deref() == Some("CO")
             && CO_CHAIN_CARRY_CORRIDORS.contains(&highway.as_str())
             && in_co_chain_carry_season(month)
+    }
+
+    /// The chain-law areas on chain corridors (`on_chain_corridor`) of
+    /// chain-control states starting between route miles `from_mi` and
+    /// `to_mi`, in route order, that `keep(state, highway)` accepts.
+    pub fn chain_corridor_areas(
+        &self,
+        from_mi: f64,
+        to_mi: f64,
+        keep: impl Fn(&str, &str) -> bool,
+    ) -> Vec<ChainCorridorAhead> {
+        if self.route.legs.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for &(start, end) in &self.chain_law_areas {
+            if start < from_mi || start > to_mi {
+                continue;
+            }
+            // The grade itself, past the chain-up pullout, names the road.
+            let probe = (start + CHAIN_LAW_LEAD_MI).min(end);
+            let Some(state) = self.state_code_at(probe) else {
+                continue;
+            };
+            if !CHAIN_CONTROL_STATES.contains(&state.as_str()) {
+                continue;
+            }
+            let highway = self.route.legs[self.leg_at_mile(probe).0].highway.clone();
+            if !on_chain_corridor(&state, &highway) || !keep(&state, &highway) {
+                continue;
+            }
+            out.push(ChainCorridorAhead {
+                key: format!("{state}:{highway}:{}", fmt_f(start, 1)),
+                highway,
+                state,
+                start_mi: start,
+                exit_label: self.chain_area_exit_label(start),
+            });
+        }
+        out
+    }
+
+    /// Carry-rule corridors in season anywhere on the route
+    /// (`in_chain_carry_season`): where chains must be aboard whatever the
+    /// weather. Empty without a career calendar.
+    pub fn chain_carry_corridors(&self) -> Vec<ChainCorridorAhead> {
+        use chrono::Datelike;
+        let Some(hours) = self.current_career_hours() else {
+            return Vec::new();
+        };
+        let month = crate::sim::season::calendar_date(hours).month();
+        self.chain_corridor_areas(0.0, self.route.miles(), |state, highway| {
+            in_chain_carry_season(state, highway, month)
+        })
+    }
+
+    /// The first chain-law area within `within_mi` ahead of the truck where
+    /// the posted law chains this rig (`rig_must_chain`): no reminder for
+    /// Colorado or Wyoming Level 1 on a tandem drive, or with no law posted.
+    pub fn upcoming_chain_corridor(&self, within_mi: f64) -> Option<ChainCorridorAhead> {
+        let level = self.chain_law_level();
+        if level <= 0 {
+            return None;
+        }
+        let here = self.position_mi;
+        self.chain_corridor_areas(here, here + within_mi, |state, _| {
+            crate::sim::trip_models::rig_must_chain(Some(state), level)
+        })
+        .into_iter()
+        .next()
+    }
+
+    /// The real exit label of the nearest numbered interchange at or before
+    /// route mile `at` (in travel order) on the same leg, within
+    /// `CHAIN_CORRIDOR_EXIT_LOOKBACK_MI`. Empty when there is none: never
+    /// made up.
+    pub fn chain_area_exit_label(&self, at: f64) -> String {
+        if self.route.legs.is_empty() {
+            return String::new();
+        }
+        let (i, leg_start) = self.leg_at_mile(at);
+        let offset = at - leg_start;
+        let leg = &self.route.legs[i];
+        let forward = self.route.cities.get(i).is_none_or(|city| *city == leg.a);
+        let native = if forward { offset } else { leg.miles - offset };
+        let mut best = (CHAIN_CORRIDOR_EXIT_LOOKBACK_MI, String::new());
+        for ix in leg.interchanges() {
+            let before = if forward {
+                native - ix.at_mi
+            } else {
+                ix.at_mi - native
+            };
+            let label = ix.exit_label();
+            if (0.0..=best.0).contains(&before) && !label.is_empty() {
+                best = (before, label);
+            }
+        }
+        best.1
     }
 
     /// The truck is on a Montana chain-law area (the mountain run) between

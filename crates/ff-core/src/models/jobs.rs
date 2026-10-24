@@ -21,18 +21,20 @@ mod deadline;
 pub mod hos_stops;
 pub mod relay;
 #[cfg(test)]
+mod team_tests;
+#[cfg(test)]
 mod tests;
 
 pub use board::{reachable_cities, JobBoard, OfferOptions};
 pub use deadline::{
-    curve_ceilings, dispatch_deadline_hours, fair_active_deadline, minimum_pay_for_level, plan_hos,
-    remaining_route_hos_plan, required_hours, route_drive_hours, route_drive_hours_over,
-    route_planning_limit, route_required_hours, segment_hours, CurveBand, HosPlan,
-    ACTIVE_TRIP_FAIRNESS_SLACK, DEADLINE_AVG_MPH, DEADLINE_DISPATCH_MIN_SLACK_H,
-    DEADLINE_DISPATCH_SLACK_RANGE, DEADLINE_MIN_SEGMENT_MPH, DEADLINE_PLANNING_SPEED_FACTOR,
-    DEADLINE_SAMPLE_MI, DISPATCH_FLAT_MINIMUM_BY_LEVEL, HOOKUP_FEE,
-    LONG_HAUL_MINIMUM_RATE_BY_LEVEL, SHORT_HAUL_FULL_PREMIUM_MI, SHORT_HAUL_RATE_BY_LEVEL,
-    SHORT_HAUL_TAPER_END_RATE_BY_LEVEL,
+    curve_ceilings, departure_deadline_hours, dispatch_deadline_hours, fair_active_deadline,
+    minimum_pay_for_level, plan_hos, remaining_route_hos_plan, required_hours, route_drive_hours,
+    route_drive_hours_over, route_planning_limit, route_required_hours, segment_hours,
+    team_deadline_hours, team_required_hours, CurveBand, HosPlan, ACTIVE_TRIP_FAIRNESS_SLACK,
+    DEADLINE_AVG_MPH, DEADLINE_DISPATCH_MIN_SLACK_H, DEADLINE_DISPATCH_SLACK_RANGE,
+    DEADLINE_MIN_SEGMENT_MPH, DEADLINE_PLANNING_SPEED_FACTOR, DEADLINE_SAMPLE_MI,
+    DISPATCH_FLAT_MINIMUM_BY_LEVEL, HOOKUP_FEE, LONG_HAUL_MINIMUM_RATE_BY_LEVEL,
+    SHORT_HAUL_FULL_PREMIUM_MI, SHORT_HAUL_RATE_BY_LEVEL, SHORT_HAUL_TAPER_END_RATE_BY_LEVEL,
 };
 
 mod catalog;
@@ -139,6 +141,9 @@ pub struct Job {
     // have needed one). Spoken so the long number reads as the law, not
     // dispatcher generosity.
     pub deadline_covers_rest: bool,
+    /// A team load: booked for a driver and a co-driver taking turns, so its
+    /// deadline allows no 10-hour break and it pays more.
+    pub team: bool,
 }
 
 /// The keyword arguments of `Job.describe`, each with its Python default.
@@ -191,6 +196,7 @@ impl Job {
             origin_spoken: String::new(),
             destination_spoken: String::new(),
             deadline_covers_rest: false,
+            team: false,
         }
     }
 
@@ -276,7 +282,11 @@ impl Job {
             opts.distance_text.to_string()
         };
         let hours = fmt_f(self.deadline_game_h, 0);
-        let deadline = if self.deadline_covers_rest {
+        let deadline = if self.team {
+            format!(
+                "Deadline {hours} hours. Team load: you and a co-driver take turns at the wheel."
+            )
+        } else if self.deadline_covers_rest {
             format!("Deadline {hours} hours, includes a 10-hour rest.")
         } else {
             format!("Deadline {hours} hours.")
@@ -472,6 +482,7 @@ pub fn job_payload(job: &Job) -> Map<String, Value> {
         "bobtail": job.bobtail,
         "assigned": job.assigned,
         "deadline_covers_rest": job.deadline_covers_rest,
+        "team": job.team,
     });
     match value {
         Value::Object(map) => map,
@@ -545,6 +556,7 @@ pub fn job_from_payload(data: &Map<String, Value>) -> Option<Job> {
     job.origin_spoken = str_or(data, "origin_spoken", "");
     job.destination_spoken = str_or(data, "destination_spoken", "");
     job.deadline_covers_rest = data.get("deadline_covers_rest").is_some_and(py_truthy);
+    job.team = data.get("team").is_some_and(py_truthy);
     Some(job)
 }
 

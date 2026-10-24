@@ -213,6 +213,8 @@ impl DrivingState {
         self.refresh_exit_hint(ctx);
         ctx.clear_music_rotation();
         ctx.audio.stop_music_with(800);
+        // Before the radio starts, so the station carries the voicing.
+        self.apply_radio_voicing(ctx);
         self.play_radio_current(ctx);
         let sound = self.trip.weather.effects().sound;
         ctx.audio.set_weather(sound);
@@ -305,6 +307,9 @@ impl DrivingState {
     /// `exit()`: hand the cab back -- horn off, liquid cues stopped, the
     /// radio's dial written to settings, the world's audio silenced.
     pub fn exit_drive(&mut self, ctx: &mut GameContext) {
+        // The drive is over or set aside: the wheel and the logbook are the
+        // player's again before anything is saved.
+        self.take_wheel_back(ctx);
         ctx.audio.horn_stop();
         // The siren's dead-man's switch only ticks from inside update(), so
         // once this state stops running it can never time itself out --
@@ -328,6 +333,9 @@ impl DrivingState {
         self.road_pan_applied = None;
         ctx.audio.stop_world();
         self.forget_stopped_loops();
+        // Off the music channel before anything new starts there; the
+        // station fading out keeps the voicing it started with.
+        ctx.audio.set_radio_voicing(None);
         ctx.audio.stop_music_with(600);
         ctx.apply_volumes();
     }

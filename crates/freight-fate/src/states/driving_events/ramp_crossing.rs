@@ -1,6 +1,7 @@
 //! Working the pedals for a ramp terminal, and crossing it: honour the light
 //! or the sign, or pay for it.
 
+use crate::speech::EventPriority;
 use ff_core::models::enforcement::{
     career_citations, citation_fine, construction_zone_fine_clause, RED_LIGHT_FINE, STOP_SIGN_FINE,
 };
@@ -10,7 +11,7 @@ use ff_core::sim::cross_traffic::{
     yield_crossing_times_s, CrossVehicle, COMBINATION_LENGTH_FT, TRACTOR_LENGTH_FT,
     YIELD_LINE_TO_CROSSROAD_FT,
 };
-use ff_core::speech_pacing::{EventPriority, SpeechCategory};
+use ff_core::speech_pacing::SpeechCategory;
 
 use crate::app::{GameContext, SayEvent};
 use crate::states::driving::DrivingState;
@@ -35,6 +36,19 @@ impl DrivingState {
         self.update_ramp_terminal_assist_with_input(ctx, false);
     }
 
+    /// Whether route-transition assistance has the pedals for the light,
+    /// sign or yield ahead: announced, and not yet crossed.
+    pub(crate) fn terminal_assist_owns(&self, ctx: &GameContext) -> bool {
+        ctx.settings.route_transition_assist
+            && self.terminal_live()
+            && !self.ramp_terminal_done
+            && matches!(
+                self.ramp_control.as_str(),
+                "signal" | "stop" | "yield" | "roundabout"
+            )
+            && self.ramp_light_announced
+    }
+
     /// A live accelerator press overrides this assist, including its red-light hold.
     pub fn update_ramp_terminal_assist_with_input(
         &mut self,
@@ -45,15 +59,7 @@ impl DrivingState {
         // pedal at this servo's last press (`assist_floor`), so a press left
         // behind when the terminal ended -- crossed, run, or the ramp left --
         // held the truck on its brakes for good (merge bench, 2026-09-23).
-        let owns_terminal = ctx.settings.route_transition_assist
-            && self.terminal_live()
-            && !self.ramp_terminal_done
-            && matches!(
-                self.ramp_control.as_str(),
-                "signal" | "stop" | "yield" | "roundabout"
-            )
-            && self.ramp_light_announced;
-        if !owns_terminal {
+        if !self.terminal_assist_owns(ctx) {
             self.ramp_assist_brake = 0.0;
             return;
         }
@@ -684,6 +690,18 @@ impl DrivingState {
         if rng.random() >= SIGNAL_RUN_CATCH_CHANCE {
             return;
         }
+        if self.new_driver_warning(ctx) {
+            ctx.audio.play("ui/warning");
+            ctx.say_event_with(
+                format!(
+                    "A patrol car at the crossroad saw you run {offense} and gives you a warning."
+                ),
+                SayEvent::queued()
+                    .priority(EventPriority::Important)
+                    .category(SpeechCategory::Navigation),
+            );
+            return;
+        }
         let zone = self.trip.in_construction_zone();
         let fine = citation_fine(base_fine, career_citations(profile_of(ctx)), zone, None);
         let money = {
@@ -708,7 +726,7 @@ impl DrivingState {
                 fmt_grouped(money, 0)
             ),
             SayEvent::queued()
-                .priority(EventPriority::Route)
+                .priority(EventPriority::Important)
                 .category(SpeechCategory::Money),
         );
     }

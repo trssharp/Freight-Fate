@@ -67,6 +67,7 @@ pub use state_helpers::*;
 // used without importing it themselves. Kept explicit so a mixin port reads
 // the same way as its Python source; anything else comes from `ff_core`
 // directly.
+pub use crate::speech::EventPriority;
 pub use ff_core::achievements::{add_unique_stat, reset_stat};
 pub use ff_core::data::amenities::classify_brand;
 pub use ff_core::data::buffs::buffs_for_stop;
@@ -121,7 +122,6 @@ pub use ff_core::sim::vehicle::{
 pub use ff_core::sim::weather::{WeatherKind, WeatherSystem};
 pub use ff_core::sim::{hos, trip_models};
 pub use ff_core::sound_catalog::BAR_SOLID_VOLUME;
-pub use ff_core::speech_pacing::EventPriority;
 
 // -- the profile the drive runs on -------------------------------------------------------
 
@@ -232,7 +232,9 @@ pub fn route_event_sound(event: &TripEvent) -> Option<&'static str> {
                     local_turn_sound(event.data.cue.as_ref().map(|c| c.direction.as_str()))
                 }
                 Some("traffic") => Some(traffic_vehicle_sound(event)),
-                Some("toll") => Some("events/toll_charged"),
+                // The toll earcon means the truck was billed, so it plays
+                // once, at the plaza. On the "toll point ahead" warning too,
+                // it sounded twice per plaza (agent drive, 2026-10-17).
                 _ => None,
             }
         }
@@ -453,6 +455,9 @@ pub struct HazardShape {
     pub dodgeable: bool,
     pub in_lane: bool,
     pub lead_mph: Option<f64>,
+    /// What braking alone has to reach, for a thing in the lane a truck
+    /// passes slowly rather than stops for. See `HazardDef::brake_to_mph`.
+    pub brake_to_mph: Option<f64>,
 }
 
 /// One ambient line waiting its turn, and how long it has waited

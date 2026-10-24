@@ -249,6 +249,42 @@ pub fn dispatch_deadline_hours(
     required_hours(miles, route, world, clock) * slack + DEADLINE_DISPATCH_MIN_SLACK_H
 }
 
+/// Honest hours for a team load: the same driving and 30-minute breaks, but
+/// where a solo driver sleeps 10 hours the team changes drivers instead.
+pub fn team_required_hours(miles: f64, route: Option<&Route>, world: Option<&World>) -> f64 {
+    let plan = plan_hos(miles, route, world, None);
+    plan.drive_h
+        + plan.breaks as f64 * 0.5
+        + plan.sleeps as f64 * crate::models::co_driver::TEAM_CHANGE_H
+}
+
+/// [`dispatch_deadline_hours`] for a team load.
+pub fn team_deadline_hours(
+    miles: f64,
+    slack: f64,
+    route: Option<&Route>,
+    world: Option<&World>,
+) -> f64 {
+    team_required_hours(miles, route, world) * slack + DEADLINE_DISPATCH_MIN_SLACK_H
+}
+
+/// The deadline floor a load gets at its loaded departure: the team model
+/// for a team load, the driver's own clock otherwise.
+pub fn departure_deadline_hours(
+    job: &Job,
+    miles: f64,
+    slack: f64,
+    route: Option<&Route>,
+    world: Option<&World>,
+    clock: Option<&HosClock>,
+) -> f64 {
+    if job.team {
+        team_deadline_hours(miles, slack, route, world)
+    } else {
+        dispatch_deadline_hours(miles, slack, route, world, clock)
+    }
+}
+
 /// One-time compatibility floor for jobs saved before route-aware timing.
 ///
 /// Older source snapshots may have a deadline from the old mileage-only model.

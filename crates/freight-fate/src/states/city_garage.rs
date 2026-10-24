@@ -5,6 +5,7 @@ use ff_core::models::business::{is_owner_operator, player_pays_operating_costs};
 use ff_core::models::economy::{damage_severity_mult, Economy, REPAIR_COST_PER_PCT};
 use ff_core::models::profile::{Profile, CHAIN_REPAIR_LINKS_PER_SET};
 use ff_core::pyfmt::{fmt_f, fmt_grouped, round_py_n};
+use ff_core::sim::roadside_inspection::DAMAGE_CITATION_PCT;
 use ff_core::sim::vehicle::COMPONENT_SERVICE_LIMIT_PCT;
 
 use crate::app::GameContext;
@@ -43,6 +44,41 @@ fn record_terminal_duty(ctx: &mut GameContext, start_hour: f64, end_hour: f64, n
         &terminal.name,
         note,
     );
+}
+
+/// Damage at which the carrier's shop takes a company tractor before a load:
+/// the line where a roadside inspector writes it up as unsafe equipment.
+pub const CARRIER_SHOP_DAMAGE_PCT: f64 = DAMAGE_CITATION_PCT;
+
+/// The carrier maintains a company driver's tractor (owner ruling,
+/// 2026-10-18). A slip seat used to go out carrying the last run's damage
+/// until the driver found Repair in the garage, which a new driver may never
+/// open, and patrols kept citing it. Returns the spoken clause, or "".
+pub fn carrier_shop_before_dispatch(ctx: &mut GameContext) -> String {
+    let damage = {
+        let p = profile(ctx);
+        if player_pays_operating_costs(&p.business_status) {
+            return String::new();
+        }
+        p.truck_damage_pct()
+    };
+    if damage < CARRIER_SHOP_DAMAGE_PCT {
+        return String::new();
+    }
+    let (start, end) = {
+        let p = profile_mut(ctx);
+        p.set_truck_damage_pct(0.0);
+        let start = p.game_hours;
+        p.game_hours += TERMINAL_REPAIR_MIN / 60.0;
+        p.hos.on_duty(TERMINAL_REPAIR_MIN);
+        (start, p.game_hours)
+    };
+    record_terminal_duty(ctx, start, end, "carrier shop repair");
+    format!(
+        " The carrier shop repaired {} percent damage first, {} minutes on duty.",
+        fmt_f(damage, 0),
+        fmt_f(TERMINAL_REPAIR_MIN, 0)
+    )
 }
 
 fn save_equipment_change(ctx: &mut GameContext) {

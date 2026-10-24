@@ -116,7 +116,7 @@
     },
     "coffee_regular": {
       "category": "working_day",
-      "description": "Twenty-five breaks taken right. It's not the coffee. It's the sitting down."
+      "description": "Twenty-five breaks taken right. The sitting down did more than the coffee."
     },
     "construction_zone": {
       "category": "working_day",
@@ -328,7 +328,7 @@
     },
     "hundred_deliveries": {
       "category": "career",
-      "description": "A hundred deliveries. No fuss, just load after load until the number got serious."
+      "description": "A hundred deliveries, load after load, until the number got serious."
     },
     "hundred_fifty_cities": {
       "category": "places",
@@ -433,6 +433,10 @@
     "memphis_arrival": {
       "category": "radio_songs",
       "description": "Freight in Memphis, where the river hauls nearly as much as the highway."
+    },
+    "meridian_classmate": {
+      "category": "hidden",
+      "description": "Lou turned up as your co-driver, back from Meridian Freight Lines with a story nobody quite believes."
     },
     "midnight_delivery": {
       "category": "road",
@@ -656,7 +660,7 @@
     },
     "ten_thousand_miles": {
       "category": "career",
-      "description": "Ten thousand miles. The white-line fever isn't a symptom now. It's the job."
+      "description": "Ten thousand miles. The white-line fever is just the job now."
     },
     "texas_triangle": {
       "category": "places",
@@ -694,6 +698,10 @@
       "category": "working_day",
       "description": "Heavy traffic, and you kept a sane following distance. You let the jam breathe."
     },
+    "trainer_ride_along": {
+      "category": "hidden",
+      "description": "Ray, who ran your training class, rode one load with you to see how you turned out."
+    },
     "true_north_run": {
       "category": "road",
       "description": "A delivery that ran hard north. You found a bearing, and it had a dock at the end."
@@ -708,7 +716,7 @@
     },
     "twenty_five_deliveries": {
       "category": "career",
-      "description": "Twenty-five deliveries. Not a rookie, not a veteran, just more road than most."
+      "description": "Twenty-five deliveries, somewhere between rookie and veteran, with more road than most."
     },
     "twenty_five_grand": {
       "category": "career",
@@ -716,7 +724,7 @@
     },
     "two_hundred_deliveries": {
       "category": "career",
-      "description": "Two hundred deliveries. Not a phase anymore. It's a body of work."
+      "description": "Two hundred deliveries. That's a body of work."
     },
     "vegas_arrival": {
       "category": "places",
@@ -861,6 +869,7 @@
     "max_gross_load",
     "max_level",
     "memphis_arrival",
+    "meridian_classmate",
     "midnight_delivery",
     "montana_delivery",
     "month_on_road",
@@ -926,6 +935,7 @@
     "toll_paid",
     "top_reputation",
     "traffic_slowing",
+    "trainer_ride_along",
     "true_north_run",
     "tulsa_arrival",
     "twenty_five_cities",
@@ -1045,6 +1055,7 @@
     "max_gross_load": "Grossed Out at the Scale House",
     "max_level": "Veteran of the Long Haul",
     "memphis_arrival": "However You Got to Memphis",
+    "meridian_classmate": "The Classmate Came Back",
     "midnight_delivery": "The Small Hours Ride Along",
     "montana_delivery": "Under the Biggest Sky",
     "month_on_road": "Thirty Days of Diesel",
@@ -1110,6 +1121,7 @@
     "toll_paid": "Bandit Pays the Toll",
     "top_reputation": "CB Royalty",
     "traffic_slowing": "Bumper-to-Bumper Blues",
+    "trainer_ride_along": "Teacher in the Sleeper",
     "true_north_run": "The Compass Said Keep Going",
     "tulsa_arrival": "Tulsa, Right on Schedule",
     "twenty_five_cities": "Twenty-Five Pins in the Map",
@@ -1575,6 +1587,7 @@
     "macon_ga_us": "Macon, Georgia",
     "madison_wi_us": "Madison, Wisconsin",
     "mammoth_lakes_ca_us": "Mammoth Lakes, California",
+    "manassas_va_us": "Manassas, Virginia",
     "manchester_nh_us": "Manchester, New Hampshire",
     "mankato_mn_us": "Mankato, Minnesota",
     "mansfield_oh_us": "Mansfield, Ohio",

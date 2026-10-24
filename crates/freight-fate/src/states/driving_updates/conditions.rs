@@ -1,16 +1,26 @@
 //! Standing physical conditions: hot brakes, the destination approach
 //! assist, the traction states, and the chain law.
 
+use crate::speech::EventPriority;
 use ff_core::models::enforcement::{chain_law_fine, CHAIN_CARRY_FINE_CO};
-use ff_core::pyfmt::fmt_grouped;
+use ff_core::pyfmt::{fmt_f, fmt_grouped};
 use ff_core::pyrandom::PyRandom;
 use ff_core::sim::vehicle::MIN_STOPPING_DECEL_MPS2;
-use ff_core::speech_pacing::{EventPriority, SpeechCategory};
+use ff_core::speech_pacing::SpeechCategory;
 
 use crate::app::{GameContext, SayEvent};
 use crate::states::driving::DrivingState;
 use crate::states::driving_core::*;
 use crate::states::driving_stops::arrival_servo_brake;
+
+/// One step of waiting out a chain law at a checkpoint.
+pub const CHAIN_WAIT_STEP_MIN: f64 = 30.0;
+/// The longest single wait at a checkpoint: 8 hours.
+pub const CHAIN_WAIT_MAX_MIN: f64 = 480.0;
+/// The pace of the scripted drive back from a chain checkpoint.
+pub const CHAIN_TURN_BACK_MPH: f64 = 45.0;
+/// The shortest turn back: finding a place to turn a rig around.
+pub const CHAIN_TURN_BACK_MIN_MIN: f64 = 5.0;
 
 /// Which number a facility-lane hold is keeping: see
 /// `DrivingState::facility_lane_hold_mph`.
@@ -276,7 +286,7 @@ impl DrivingState {
                 ctx.say_event_with(
                     "Slowing for the entrance.",
                     SayEvent::queued()
-                        .priority(EventPriority::Route)
+                        .priority(EventPriority::Important)
                         .category(SpeechCategory::Confirmation),
                 );
             }
@@ -546,7 +556,7 @@ impl DrivingState {
         ctx.say_event_with(
             format!("Pull ahead {whither}."),
             SayEvent::queued()
-                .priority(EventPriority::Route)
+                .priority(EventPriority::Important)
                 .category(SpeechCategory::Confirmation),
         );
     }
@@ -576,6 +586,7 @@ impl DrivingState {
         self.jake_slip_active = slipping;
         if self.trip.truck.chains_just_snapped {
             self.trip.truck.chains_just_snapped = false;
+            self.chain_assist_snapped = true;
             ctx.say_event_with(
                 "A tire chain broke and is flailing. Slow down and pull over to check it.",
                 SayEvent::new().category(SpeechCategory::Safety),
@@ -603,6 +614,39 @@ impl DrivingState {
             );
         }
         self.chains_fast_active = chains_fast;
+    }
+
+    /// Stop planning's no-chains reminder: before a chain-law area where the
+    /// posted law chains this rig, with no usable chains aboard, say so once.
+    /// No store is named: garages open only from a city terminal, so the
+    /// place to buy chains is the board's pre-acceptance reminder.
+    /// Speech only: it never stops the truck, changes the route or spends.
+    pub fn update_chain_reminder(&mut self, ctx: &mut GameContext) {
+        if !ctx.settings.hos_planning_hints
+            || self.departure_chain
+            || self.stop_chain.is_some()
+            || self.chains_aboard(ctx)
+        {
+            return;
+        }
+        let Some(ahead) = self.trip.upcoming_chain_corridor(CHAIN_REMINDER_LEAD_MI) else {
+            return;
+        };
+        if !self.chain_reminder_said.insert(ahead.key.clone()) {
+            return;
+        }
+        let highway = ahead.highway;
+        let line = if ahead.exit_label.is_empty() {
+            format!("Chain law ahead on {highway}. You have no chains.")
+        } else {
+            let exit = ahead.exit_label;
+            format!("Chain law ahead on {highway} at {exit}. You have no chains.")
+        };
+        // Advice, not a warning: queued behind whatever is speaking.
+        ctx.say_event_with(
+            line,
+            SayEvent::queued().category(SpeechCategory::Navigation),
+        );
     }
 
     /// Warn once per area, then run the deterministic checkpoint.
@@ -636,14 +680,52 @@ impl DrivingState {
             );
         }
         let (start, end) = self.trip.chain_law_areas[area];
-        if self.trip.position_mi < (start + end) / 2.0 || self.chain_law_cited.contains(&key) {
+        if self.trip.position_mi < (start + end) / 2.0 || self.chain_checkpoint_hold {
             return;
         }
-        self.chain_law_cited.insert(key);
-        let mut rng =
-            PyRandom::new_from_str(&format!("{}:chain-law:{area}:{level}", self.trip_seed));
+        // Staffing is rolled once per area and level and kept, so a truck
+        // that turns back and returns meets the same checkpoint; the roll is
+        // seeded, so a reload never re-rolls it either.
         let state = self.trip.state_code_at(self.trip.position_mi);
-        if rng.random() >= chain_law_checkpoint_chance(state.as_deref()) {
+        let trip_seed = self.trip_seed;
+        let staffed = *self.chain_checkpoint_staffed.entry(key).or_insert_with(|| {
+            let mut rng = PyRandom::new_from_str(&format!("{trip_seed}:chain-law:{area}:{level}"));
+            rng.random() < chain_law_checkpoint_chance(state.as_deref())
+        });
+        if !staffed {
+            return;
+        }
+        // A real checkpoint doesn't fine and wave you on: California
+        // prohibits entering a control without devices (13 CCR 1072(h)) and
+        // screening stops every truck. A noncompliant truck is held on the
+        // apron every time it reaches a staffed checkpoint, until its chains
+        // are on or the law lifts (`update_chain_checkpoint_hold`).
+        self.hold_at_chain_checkpoint(ctx);
+        let after = if self.usable_chains_aboard(ctx) {
+            "You can't go on until your chains are on. Put them on from the pause menu."
+        } else {
+            "You can't go on without chains. Wait here until the chain law lifts, or turn back."
+        };
+        // Cited once per area and level: a second stop is a hold, not a
+        // second fine.
+        if !self.chain_law_cited.insert(key) {
+            ctx.audio.play("ui/warning");
+            ctx.say_event_with(
+                format!("Chain checkpoint. The officer stops you again. {after}"),
+                SayEvent::queued()
+                    .priority(EventPriority::Important)
+                    .category(SpeechCategory::Navigation),
+            );
+            return;
+        }
+        if self.new_driver_warning(ctx) {
+            ctx.audio.play("ui/warning");
+            ctx.say_event_with(
+                format!("Chain checkpoint. An officer stops you and gives you a warning. {after}"),
+                SayEvent::queued()
+                    .priority(EventPriority::Important)
+                    .category(SpeechCategory::Navigation),
+            );
             return;
         }
         let zone = self.trip.in_construction_zone();
@@ -671,17 +753,6 @@ impl DrivingState {
             &format!("No chains under a level {level} chain law"),
         );
         ctx.audio.play("ui/error");
-        // A real checkpoint doesn't fine and wave you on: California
-        // prohibits entering a control without devices (13 CCR 1072(h)) and
-        // screening stops every truck. With a set aboard, the truck is held
-        // on the apron until it is on (`update_chain_checkpoint_hold`).
-        let aboard = profile_of(ctx).chains_owned() && self.trip.truck.chain_wear_pct < 100.0;
-        let after = if aboard {
-            self.hold_at_chain_checkpoint(ctx);
-            "You can't go on until your chains are on. Put them on from the pause menu."
-        } else {
-            "You have no chains aboard. Buy a set at the next garage."
-        };
         // A citation is money, not an act-now warning: ROUTE's never-dropped
         // queue instead of an interrupt that could erase one.
         ctx.say_event_with(
@@ -693,7 +764,7 @@ impl DrivingState {
                 fmt_grouped(money, 0)
             ),
             SayEvent::queued()
-                .priority(EventPriority::Route)
+                .priority(EventPriority::Important)
                 .category(SpeechCategory::Money),
         );
     }
@@ -711,6 +782,10 @@ impl DrivingState {
 
     /// Keep a held truck on the apron until its chains are on, or the law
     /// lifts. Releasing the brake to drive off sets it again and says why.
+    /// With no usable set aboard (none, or one worn out on the apron) there
+    /// is nothing to put on, so the line names the two ways out: wait for
+    /// the law to lift, which releases the hold here, or turn back
+    /// (`turn_back_from_chain_checkpoint`).
     pub fn update_chain_checkpoint_hold(&mut self, ctx: &mut GameContext) {
         if !self.chain_checkpoint_hold {
             return;
@@ -722,16 +797,207 @@ impl DrivingState {
                     "Chains on. The officer waves you back onto the highway.",
                     SayEvent::new().category(SpeechCategory::Navigation),
                 );
+            } else {
+                ctx.say_event_with(
+                    "The chain law has lifted. The officer waves you back onto the highway.",
+                    SayEvent::new().category(SpeechCategory::Navigation),
+                );
             }
             return;
         }
         if !self.trip.truck.parking_brake || self.trip.truck.velocity_mps > 0.0 {
             self.hold_at_chain_checkpoint(ctx);
-            ctx.say_event_with(
-                "Held at the chain checkpoint. Put your chains on from the pause menu.",
-                SayEvent::new().category(SpeechCategory::Navigation),
-            );
+            let line = if self.usable_chains_aboard(ctx) {
+                "Held at the chain checkpoint. Put your chains on from the pause menu."
+            } else {
+                "Held at the chain checkpoint. You have no chains. Call dispatch for a set, \
+                 wait here until the chain law lifts, or turn back."
+            };
+            ctx.say_event_with(line, SayEvent::new().category(SpeechCategory::Navigation));
         }
+    }
+
+    /// Held at a checkpoint: wait for the law to lift on the apron, in
+    /// `CHAIN_WAIT_STEP_MIN` steps logged on duty, not driving (the driver is
+    /// with the truck at a checkpoint, not resting). The level is rechecked
+    /// after each step; the wait stops when the law lifts, when the 14-hour
+    /// duty window is used up, or after `CHAIN_WAIT_MAX_MIN`. Returns the
+    /// outcome to speak, or None when the truck is not held.
+    pub fn wait_for_chain_law_to_lift(&mut self, ctx: &mut GameContext) -> Option<String> {
+        if !self.chain_checkpoint_hold {
+            return None;
+        }
+        let duty_limit = ff_core::sim::hos::limits(&ctx.settings.hos_mode).map(|l| l.1);
+        let mut waited = 0.0;
+        loop {
+            if self.trip.chain_law_level() == 0 {
+                self.chain_checkpoint_hold = false;
+                return Some(format!(
+                    "The chain law lifted after {}. The officer waves you back onto the \
+                     highway.",
+                    ff_core::sim::hos::duration_text(waited / 60.0)
+                ));
+            }
+            if duty_limit.is_some_and(|limit| hos_of(ctx).duty_min + CHAIN_WAIT_STEP_MIN > limit) {
+                // Turning back is offered only when the drive back still
+                // fits the hours; otherwise it would just be refused. With
+                // nothing waited yet, no "You waited 0 minutes".
+                let turn_back = self.chain_turn_back_refusal(ctx).is_none();
+                let waited_text = ff_core::sim::hos::duration_text(waited / 60.0);
+                return Some(match (waited > 0.0, turn_back) {
+                    (true, true) => format!(
+                        "You waited {waited_text}, and your 14-hour duty window is nearly used \
+                         up. The chain law still stands. Sleep at the checkpoint from the pause \
+                         menu, or turn back."
+                    ),
+                    (true, false) => format!(
+                        "You waited {waited_text}, and your 14-hour duty window is nearly used \
+                         up. The chain law still stands. Sleep at the checkpoint from the pause \
+                         menu."
+                    ),
+                    (false, true) => "Your 14-hour duty window is nearly used up. The chain law \
+                                      still stands. Sleep at the checkpoint from the pause menu, \
+                                      or turn back."
+                        .to_string(),
+                    (false, false) => "Your 14-hour duty window is nearly used up. The chain \
+                                       law still stands. Sleep at the checkpoint from the pause \
+                                       menu."
+                        .to_string(),
+                });
+            }
+            if waited >= CHAIN_WAIT_MAX_MIN {
+                return Some(format!(
+                    "You waited {}. The chain law still stands. Wait again, or turn back.",
+                    ff_core::sim::hos::duration_text(waited / 60.0)
+                ));
+            }
+            advance_rest_clock(
+                self,
+                ctx,
+                CHAIN_WAIT_STEP_MIN,
+                Some("on_duty_not_driving"),
+                "chain checkpoint",
+            );
+            hos_mut_of(ctx).on_duty(CHAIN_WAIT_STEP_MIN);
+            waited += CHAIN_WAIT_STEP_MIN;
+            // The sky is re-polled by `advance_rest_clock` (live weather
+            // included); the warnings need asking again here, since they are
+            // otherwise only re-read after the truck moves.
+            self.refresh_weather_alerts_here(ctx);
+        }
+    }
+
+    /// After a sleep at the checkpoint: ask again for the warnings and the
+    /// live sky where the truck stands, and release the hold when the law
+    /// lifted overnight. Returns the line to add: the lift, or that the law
+    /// still stands. None when the truck was not held.
+    pub fn recheck_chain_checkpoint_hold_after_rest(
+        &mut self,
+        ctx: &mut GameContext,
+    ) -> Option<&'static str> {
+        if !self.chain_checkpoint_hold {
+            return None;
+        }
+        self.refresh_weather_alerts_here(ctx);
+        self.trip.weather.update(0.0);
+        if self.trip.chain_law_level() > 0 {
+            return Some("The chain law still stands.");
+        }
+        self.chain_checkpoint_hold = false;
+        Some("The chain law lifted overnight. The officer waves you back onto the highway.")
+    }
+
+    /// A set aboard that can still go on: owned and not worn out.
+    pub fn usable_chains_aboard(&self, ctx: &GameContext) -> bool {
+        profile_of(ctx).chains_owned() && self.trip.truck.chain_wear_pct < 100.0
+    }
+
+    /// The last route city at or behind the truck: its index in the route's
+    /// cities and its route mile.
+    pub fn last_route_city_behind(&self) -> (usize, f64) {
+        let here = self.trip.position_mi;
+        let count = self.trip.route.cities.len();
+        (0..count.min(self.trip.leg_starts.len().max(1)))
+            .rev()
+            .map(|i| (i, self.trip.leg_starts.get(i).copied().unwrap_or(0.0)))
+            .find(|&(_, mile)| mile <= here)
+            .unwrap_or((0, 0.0))
+    }
+
+    /// The drive back to the last route city: its miles and driving minutes.
+    pub fn chain_turn_back_drive(&self) -> (f64, f64) {
+        let (_, city_mi) = self.last_route_city_behind();
+        let miles = (self.trip.position_mi - city_mi).max(0.0);
+        let minutes = (miles / CHAIN_TURN_BACK_MPH * 60.0).max(CHAIN_TURN_BACK_MIN_MIN);
+        (miles, minutes)
+    }
+
+    /// Why the drive back from a checkpoint would break the hours, as the
+    /// line to speak, or None when it fits. Gated on the nearest limit, so
+    /// the 8-hour drive before the 30-minute break counts as well as the
+    /// 11-hour driving limit and the 14-hour window.
+    pub fn chain_turn_back_refusal(&self, ctx: &GameContext) -> Option<String> {
+        let (_, minutes) = self.chain_turn_back_drive();
+        let limit = hos_of(ctx).next_limit(&ctx.settings.hos_mode)?;
+        if limit.remaining_min >= minutes {
+            return None;
+        }
+        let drive = ff_core::sim::hos::duration_text(minutes / 60.0);
+        Some(if limit.kind == "break" {
+            format!(
+                "Turning back takes {drive}, more driving than you have before your 30-minute \
+                 break. Wait here, which counts as your break, or sleep at the checkpoint."
+            )
+        } else {
+            format!(
+                "Turning back takes {drive} of driving, more than your hours allow. Wait here \
+                 for the chain law to lift, or sleep at the checkpoint from the pause menu."
+            )
+        })
+    }
+
+    /// Held at a checkpoint with no chains to put on: the scripted drive
+    /// back to the last route city, charged like the facility-gate
+    /// turnaround (hours, fatigue and fuel move with the clock). The hold
+    /// ends, and the truck waits at that city with the parking brake set.
+    /// Returns the line to speak, or None when the truck is not held.
+    pub fn turn_back_from_chain_checkpoint(&mut self, ctx: &mut GameContext) -> Option<String> {
+        if !self.chain_checkpoint_hold {
+            return None;
+        }
+        if let Some(line) = self.chain_turn_back_refusal(ctx) {
+            ctx.audio.play("ui/error");
+            return Some(line);
+        }
+        let (index, city_mi) = self.last_route_city_behind();
+        let (miles, minutes) = self.chain_turn_back_drive();
+        self.trip.game_minutes += minutes;
+        self.charge_scripted_hours(ctx, minutes);
+        // A real drive back: on the odometer, at the highway burn.
+        self.trip.truck.odometer_mi += miles;
+        self.trip.truck.burn_cruise_fuel_over_miles(miles);
+        self.trip.position_mi = city_mi;
+        self.chain_checkpoint_hold = false;
+        let truck = &mut self.trip.truck;
+        truck.velocity_mps = 0.0;
+        truck.throttle = 0.0;
+        truck.set_parking_brake();
+        self.cancel_cruise(ctx, false);
+        let key = self
+            .trip
+            .route
+            .cities
+            .get(index)
+            .cloned()
+            .unwrap_or_default();
+        let city = ctx.world.city(&key).map(|c| c.name.clone()).unwrap_or(key);
+        ctx.audio.play("ui/warning");
+        Some(format!(
+            "You turned back to {city}, {} behind the checkpoint, in {} minutes. The chain law \
+             ahead still stands.",
+            ctx.settings.distance_text(miles, false),
+            fmt_f(minutes, 0)
+        ))
     }
 
     /// Colorado's carry rule: no chains aboard on a carry corridor's
@@ -789,6 +1055,17 @@ impl DrivingState {
         if rng.random() >= CHAIN_LAW_CHECKPOINT_CHANCE {
             return;
         }
+        if self.new_driver_warning(ctx) {
+            ctx.audio.play("ui/warning");
+            ctx.say_event_with(
+                "Chain check. No chains aboard on a mountain corridor in chain season. The \
+                 officer gives you a warning.",
+                SayEvent::queued()
+                    .priority(EventPriority::Important)
+                    .category(SpeechCategory::Navigation),
+            );
+            return;
+        }
         let zone = self.trip.in_construction_zone();
         let fine = citation_fine(
             CHAIN_CARRY_FINE_CO,
@@ -819,7 +1096,7 @@ impl DrivingState {
                 fmt_grouped(money, 0)
             ),
             SayEvent::queued()
-                .priority(EventPriority::Route)
+                .priority(EventPriority::Important)
                 .category(SpeechCategory::Money),
         );
     }

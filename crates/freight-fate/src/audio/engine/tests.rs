@@ -1,179 +1,153 @@
 use super::*;
-use std::any::Any;
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
-/// Records what the engine tells it, and nothing else.
-struct RecordingBackend {
-    buses: Buses,
-    log: Rc<RefCell<Vec<String>>>,
+use hearken::audio::{Call, Recorder, RecordingBackend};
+
+use crate::audio::CH_WEATHER;
+
+/// A facade over a Hearken backend whose device is still opening, the
+/// recorder the device will be, and the switch that lets it open.
+fn engine_with_pending_open() -> (AudioEngine, Recorder, mpsc::Sender<()>) {
+    let (backend, rec) = RecordingBackend::new();
+    let (go, wait) = mpsc::channel::<()>();
+    let hearken = HearkenBackend::deferred_with(move || {
+        let _ = wait.recv();
+        Ok(Box::new(backend) as Box<dyn hearken::audio::Backend>)
+    });
+    let engine = AudioEngine::with_backend(Box::new(hearken));
+    assert!(engine.hearken().unwrap().opening());
+    (engine, rec, go)
 }
 
-impl AudioBackend for RecordingBackend {
-    fn name(&self) -> &'static str {
-        "recording"
-    }
-    fn enabled(&self) -> bool {
-        true
-    }
-    fn buses(&self) -> &Buses {
-        &self.buses
-    }
-    fn buses_mut(&mut self) -> &mut Buses {
-        &mut self.buses
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-    fn play_music(&mut self, track: &str, fade_ms: u32) {
-        self.log
-            .borrow_mut()
-            .push(format!("music {track} {fade_ms}"));
-    }
-    fn start_loop(&mut self, channel: u32, key: &str, volume: f64, _fade_ms: u32) {
-        self.log
-            .borrow_mut()
-            .push(format!("loop {channel} {key} {volume}"));
-    }
-    fn set_engine_voice_classic(&mut self, classic: bool) {
-        self.log
-            .borrow_mut()
-            .push(format!("voice classic={classic}"));
-    }
-    fn set_volumes(&mut self, volumes: &VolumeUpdate) {
-        self.buses.apply(volumes);
-        self.log.borrow_mut().push("volumes".to_string());
+/// Frames pass until the device is in (or has failed).
+fn open(engine: &mut AudioEngine, go: &mpsc::Sender<()>) {
+    let _ = go.send(());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while engine.hearken().unwrap().opening() {
+        assert!(Instant::now() < deadline, "the device never opened");
+        engine.update(0.0);
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
-fn engine_with_pending_probe() -> (
-    AudioEngine,
-    std::sync::mpsc::Sender<Result<bool, bass_sys::safe::BassError>>,
-) {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let mut engine = AudioEngine::with_backend(Box::new(NullBackend::new()));
-    engine.probe = Some(rx);
-    engine.probe_headless = false;
-    (engine, tx)
+/// A short generated clip under `key`, so the test needs no shipped pack.
+fn register(key: &str) {
+    let wav = hearken::synth::wav_bytes(&[0.25; 4_410], 44_100);
+    ff_core::assets_pack::register_generated_sound(key, wav, "wav");
+}
+
+fn played(rec: &Recorder, key: &str) -> Vec<Call> {
+    rec.calls()
+        .into_iter()
+        .filter(|call| matches!(call, Call::Play { key: k, .. } if k == key))
+        .collect()
 }
 
 /// The requests boot makes while the device is still opening -- the menu
-/// theme, the volume settings, the engine voice -- reach the real backend
-/// the moment it arrives, and the null stand-in's "that asset does not
-/// exist" answers do not outlive it.
+/// theme, the volume settings, the engine voice -- reach the device the
+/// moment it opens.
 #[test]
 fn late_backend_hears_what_boot_asked_for() {
-    let (mut engine, _tx) = engine_with_pending_probe();
-    engine.play_music_with("menu_theme", 1500);
+    register("music/test/engine_open_theme");
+    let (mut engine, rec, go) = engine_with_pending_open();
+    engine.play_music_with("test/engine_open_theme", 1500);
     engine.set_volumes(&VolumeUpdate::default().master(0.5));
     engine.set_engine_voice(true);
-    // Cached against the null backend: false. Must not survive the swap.
-    assert!(!engine.has_asset("ui/no_such_cue_for_this_test"));
-    assert!(engine
-        .asset_known
-        .contains_key("ui/no_such_cue_for_this_test"));
+    assert!(played(&rec, "test/engine_open_theme").is_empty());
 
-    let log = Rc::new(RefCell::new(Vec::new()));
-    engine.probe = None;
-    engine.adopt_backend(
-        Box::new(RecordingBackend {
-            buses: Buses::new(),
-            log: Rc::clone(&log),
-        }),
-        false,
-    );
+    open(&mut engine, &go);
 
-    let seen = log.borrow().join("; ");
-    assert!(seen.contains("volumes"), "volumes not replayed: {seen}");
+    let plays = played(&rec, "test/engine_open_theme");
+    assert_eq!(plays.len(), 1, "music not replayed: {:?}", rec.calls());
+    let channel = rec.channel_of("test/engine_open_theme").unwrap();
+    let level = engine.buses().music_level() as f32;
+    assert!((engine.buses().master - 0.5).abs() < 1e-12, "volumes lost");
     assert!(
-        seen.contains("voice classic=true"),
-        "voice not replayed: {seen}"
+        (rec.last_mix(channel).unwrap().gain - level).abs() < 1e-6,
+        "the replayed track fades to the music level"
     );
-    assert!(
-        seen.contains("music menu_theme 1500"),
-        "music not replayed: {seen}"
-    );
-    assert!(
-        engine.asset_known.is_empty(),
-        "stand-in asset answers survived the swap"
-    );
+    assert_eq!(engine.backend().engine_voice_classic(), Some(true));
+    assert!(engine.music_playing());
     assert!(!engine.take_silence_notice());
 }
 
-/// A probe that comes back empty-handed leaves the game on the null
-/// backend and arms the notice, so the main menu can say out loud that
-/// this run has no sound.
+/// A device that comes back empty-handed leaves the game silent and arms
+/// the notice, so the main menu can say out loud that this run has no
+/// sound.
 #[test]
 fn failed_probe_runs_silent_and_says_so() {
-    let (mut engine, tx) = engine_with_pending_probe();
-    tx.send(Err(bass_sys::safe::BassError::NOT_LOADED)).unwrap();
-    engine.update(0.0);
-    assert!(engine.probe.is_none());
-    assert_eq!(engine.backend_name(), "none");
+    let hearken = HearkenBackend::deferred_with(|| Err("no device here".to_string()));
+    let mut engine = AudioEngine::with_backend(Box::new(hearken));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while engine.hearken().unwrap().opening() {
+        assert!(Instant::now() < deadline, "the open never finished");
+        engine.update(0.0);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(engine.backend_name(), "hearken");
+    assert!(engine.hearken().unwrap().no_device());
     assert!(engine.take_silence_notice());
     assert!(!engine.take_silence_notice(), "the notice must speak once");
 }
 
-/// Music stopped before the backend arrives must not come back from the
-/// dead when it does.
+/// Music stopped before the device opens must not come back from the dead
+/// when it does.
 #[test]
 fn stopped_music_is_not_replayed() {
-    let (mut engine, _tx) = engine_with_pending_probe();
-    engine.play_music_with("menu_theme", 1500);
+    register("music/test/engine_open_stopped");
+    let (mut engine, rec, go) = engine_with_pending_open();
+    engine.play_music_with("test/engine_open_stopped", 1500);
     engine.stop_music_with(400);
-    let log = Rc::new(RefCell::new(Vec::new()));
-    engine.probe = None;
-    engine.adopt_backend(
-        Box::new(RecordingBackend {
-            buses: Buses::new(),
-            log: Rc::clone(&log),
-        }),
-        false,
-    );
+    open(&mut engine, &go);
     assert!(
-        !log.borrow().join("; ").contains("music"),
+        played(&rec, "test/engine_open_stopped").is_empty(),
         "stopped music was resurrected"
     );
+    assert!(!engine.music_playing());
 }
 
 /// The main menu sets its ambience once, on entry, which at launch is
-/// before the device has opened. The bed must start when the backend
-/// arrives, not wait for the next screen change to ask again; a bed stopped
-/// in the meantime stays stopped.
+/// before the device has opened. The bed must start when the device opens,
+/// not wait for the next screen change to ask again; a bed stopped in the
+/// meantime stays stopped, and none is started twice.
 #[test]
 fn late_backend_starts_the_loops_boot_left_running() {
-    let (mut engine, _tx) = engine_with_pending_probe();
-    engine.set_ambient(Some("ambient/menu_night_lot"));
-    engine.start_loop_with(CH_WEATHER, "weather/rain", 0.4, 0);
+    for key in [
+        "test/engine_open_ambient",
+        "test/engine_open_rain",
+        "test/engine_open_road",
+    ] {
+        register(key);
+    }
+    let (mut engine, rec, go) = engine_with_pending_open();
+    engine.set_ambient(Some("test/engine_open_ambient"));
+    engine.start_loop_with(CH_WEATHER, "test/engine_open_rain", 0.4, 0);
     engine.set_loop_volume(CH_WEATHER, 0.7);
-    engine.start_loop_with(CH_ROAD, "vehicle/road", 0.5, 0);
+    engine.start_loop_with(CH_ROAD, "test/engine_open_road", 0.5, 0);
     engine.stop_loop_with(CH_ROAD, 0);
 
-    let log = Rc::new(RefCell::new(Vec::new()));
-    engine.probe = None;
-    engine.adopt_backend(
-        Box::new(RecordingBackend {
-            buses: Buses::new(),
-            log: Rc::clone(&log),
-        }),
-        false,
-    );
+    open(&mut engine, &go);
 
-    let seen = log.borrow().join("; ");
+    for key in ["test/engine_open_ambient", "test/engine_open_rain"] {
+        let plays = played(&rec, key);
+        assert_eq!(plays.len(), 1, "{key}: {:?}", rec.calls());
+        assert!(matches!(plays[0], Call::Play { looping: true, .. }));
+    }
+    let rain = rec.channel_of("test/engine_open_rain").unwrap();
+    let buses = engine.buses();
+    let expected =
+        (0.7 * buses.category_volume(super::super::Category::Weather) * buses.master) as f32;
     assert!(
-        seen.contains(&format!("loop {CH_AMBIENT} ambient/menu_night_lot 1")),
-        "menu ambience not started: {seen}"
+        (rec.last_mix(rain).unwrap().gain - expected).abs() < 1e-6,
+        "loop volume change lost"
     );
     assert!(
-        seen.contains(&format!("loop {CH_WEATHER} weather/rain 0.7")),
-        "loop volume change lost: {seen}"
+        played(&rec, "test/engine_open_road").is_empty(),
+        "stopped loop was resurrected"
     );
-    assert!(
-        !seen.contains("vehicle/road"),
-        "stopped loop was resurrected: {seen}"
+    assert_eq!(
+        engine.backend().loop_entry(CH_AMBIENT).map(|e| e.0),
+        Some("test/engine_open_ambient".to_string())
     );
-    assert!(engine.replay_loops.is_empty());
 }

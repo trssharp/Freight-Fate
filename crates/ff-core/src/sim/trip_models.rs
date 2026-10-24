@@ -20,7 +20,10 @@ use crate::speech_text::{typed_name, SpokenMessage};
 
 mod hazards;
 mod ramps;
-pub use hazards::{eligible_hazards, hazard_is_in_lane, hazard_name, HazardDef, OpenSide, HAZARDS};
+pub use hazards::{
+    eligible_hazards, hazard_brake_to_mph, hazard_is_animal, hazard_is_in_lane, hazard_name,
+    HazardDef, OpenSide, ANIMAL_BRAKE_TO_MPH, HAZARDS,
+};
 pub use ramps::{
     acceleration_lane_capability_mph, acceleration_lane_mi, deceleration_lane_mi, exit_ramp_layout,
     merge_traffic_target_mph, ramp_curve_mi, ramp_speed_mph, truck_merge_speed_mph, ExitRampLayout,
@@ -317,7 +320,6 @@ pub fn approach_shed_mi(from_mph: f64, to_mph: f64) -> f64 {
 pub const NIGHT_HAZARD_BONUS: f64 = 0.10; // extra hazard risk after dark
 /// A zone flip that flips back within this distance is boundary noise.
 pub const TIMEZONE_DWELL_MI: f64 = 10.0;
-pub const NIGHT_TRAFFIC_KEEP: f64 = 0.4;
 /// Open road guaranteed between generated slow zones.
 pub const ZONE_MIN_GAP_MI: f64 = 8.0;
 pub const RUSH_HOUR_WINDOWS: [(f64, f64); 2] = [(6.5, 9.0), (16.0, 18.5)];
@@ -599,6 +601,40 @@ pub fn mt_chain_season_id(game_hours: f64) -> i64 {
     (days / 365.0).floor() as i64
 }
 
+/// A chain-law area ahead on a chain corridor in season (`upcoming_chain_corridor`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChainCorridorAhead {
+    /// `"{state}:{highway}:{start_mi to 0.1}"`, one per corridor approach.
+    pub key: String,
+    pub highway: String,
+    pub state: String,
+    /// Route mile the chain-law area (its chain-up pullout) starts at.
+    pub start_mi: f64,
+    /// The nearest numbered interchange at or before the area, or empty.
+    pub exit_label: String,
+}
+
+/// How far before a chain-law area its approach exit is looked for.
+pub const CHAIN_CORRIDOR_EXIT_LOOKBACK_MI: f64 = 5.0;
+
+/// Whether a carry law requires chains aboard on `highway` in `state` in
+/// `month`, whatever the weather: Colorado's carry corridors September 1
+/// to May 31 (CSP chain-law page), Montana October 1 to April 30 (MCA
+/// 61-9-436) and Washington's listed routes November 1 to April 1 (WAC
+/// 204-24-050; April 1 is read at month precision, so April is out).
+/// Everywhere else chains are required only while a chain law is posted
+/// and the rig must chain under it (Caltrans chain controls, NRS 484D.520,
+/// ORS 815.140, Idaho Code 49-948(5), UDOT R920-6, W.S. 31-5-956(e)), so
+/// there is no dry-day season to remind about.
+pub fn in_chain_carry_season(state: &str, highway: &str, month: u32) -> bool {
+    match state {
+        "CO" => CO_CHAIN_CARRY_CORRIDORS.contains(&highway) && in_co_chain_carry_season(month),
+        "MT" => in_mt_chain_carry_season(month),
+        "WA" => !(4..=10).contains(&month),
+        _ => false,
+    }
+}
+
 /// September 1 to May 31: Colorado's chain-carry season.
 pub fn in_co_chain_carry_season(month: u32) -> bool {
     !(6..=8).contains(&month)
@@ -660,7 +696,6 @@ impl RoadsideCallout {
 }
 
 pub const LANDMARK_MIN_SPACING_MI: f64 = 2.0;
-pub const VILLAGE_ENTER_OFF_MI: f64 = 0.5;
 pub const VILLAGE_PASS_OFF_MI: f64 = 1.5;
 pub const VILLAGE_MIN_SPACING_MI: f64 = LANDMARK_MIN_SPACING_MI;
 pub const VILLAGE_PAIR_WINDOW_MI: f64 = 1.5;
@@ -740,11 +775,18 @@ pub struct TripEventData {
     /// that spans the road.
     pub in_lane: Option<bool>,
     /// Which neighbouring lane the call found open, the reading
-    /// `dodgeable` folds in. Set on a vehicle-ahead hazard.
+    /// `dodgeable` folds in. Set on every hazard confined to one lane.
     pub open_side: Option<OpenSide>,
-    /// The vehicle-ahead call as lane keeping on full answers it, by
-    /// passing into `open_side` (see `passing_hazard_call`).
+    /// The call as lane keeping on full answers it, by changing lanes into
+    /// `open_side` (see `passing_hazard_call`): a vehicle ahead, or a thing
+    /// sitting in the lane (owner, 2026-10-19: go around, do not brake).
     pub pass_message: Option<SpokenMessage>,
+    /// An animal on the road. Braking at highway speed does not save it,
+    /// so the automatic braking leaves it alone (owner, 2026-10-19).
+    pub animal: Option<bool>,
+    /// What braking alone has to reach for this hazard, when less than a
+    /// near stop: see `HazardDef::brake_to_mph`.
+    pub brake_to_mph: Option<f64>,
     pub name: Option<String>,
     pub weather: Option<WeatherKind>,
     pub curve: Option<RouteCurve>,
@@ -759,6 +801,9 @@ pub struct TripEventData {
     pub stop: Option<RoadStop>,
     pub suppress_sound: Option<bool>,
     pub limit_change: Option<bool>,
+    /// The posted limit an arrival line names, in mph. Its queued copy is
+    /// worth speaking only while that number still governs the truck.
+    pub limit_mph: Option<f64>,
     pub advance: Option<bool>,
     pub from_zone: Option<TimeZone>,
     pub to_zone: Option<TimeZone>,
@@ -942,6 +987,29 @@ impl RoadStop {
     /// ("cross-dock: Chicago Cross-Dock" -> "Chicago Cross-Dock").
     pub fn spoken_name(&self) -> String {
         typed_name(self.label(), &self.name, ": ")
+    }
+
+    /// Whether a driver can buy fuel here.
+    pub fn sells_fuel(&self) -> bool {
+        self.actions.iter().any(|action| action == "fuel")
+    }
+
+    /// Whether a driver could expect pumps here, so the stop's fuel verdict
+    /// is worth speaking: the fuel types, and truck parking, whose lots are
+    /// often named "Truck Stop" (issue #272, "The 115 Truck Stop"). Nobody
+    /// pulls into a public rest area, a repair shop or a weigh station for
+    /// diesel, so saying "No fuel." at every one would be noise.
+    pub fn fuel_expected(&self) -> bool {
+        matches!(
+            self.stop_type.as_str(),
+            "truck_stop" | "travel_center" | "fuel_station" | "service_plaza" | "truck_parking"
+        )
+    }
+
+    /// The fuel verdict the stop callout speaks: whether the stop sells fuel
+    /// where a driver could expect it to, and nothing elsewhere.
+    pub fn fuel_callout(&self) -> Option<bool> {
+        self.fuel_expected().then(|| self.sells_fuel())
     }
 
     pub fn parking_text(&self) -> String {

@@ -7,8 +7,11 @@
 # Rust workflow builds for Windows and the nightly for desktops only.
 #
 # This is a compile check, not a release. It runs the same `cargo build` that
-# `tools/build_ios.py` does, and stops there: no BASS download, no app bundle,
-# no signing, no secrets, no artifacts.
+# `cargo tools build-ios` does, and stops there: no app bundle, no signing, no
+# artifacts, and no secrets.
+#
+# GitHub's hosted macos-26: this repository is public, so those minutes are
+# free, and the iOS SDK is the image's own Xcode.
 #
 # Not a required check. It is path filtered, and a required check that is
 # path filtered waits forever on a PR that skips it (see rust.yml).
@@ -39,7 +42,7 @@ jobs:
       matrix:
         include:
           # A device build (the TestFlight path) and the Apple Silicon
-          # Simulator build, the two targets tools/build_ios.py knows. They
+          # Simulator build, the two targets `cargo tools build-ios` knows. They
           # run side by side, so the second costs no wall time.
           - target: aarch64-apple-ios
             platform: IOS
@@ -48,7 +51,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       HOMEBREW_NO_AUTO_UPDATE: "1"
-      # tools/build_ios.py's MINIMUM_IOS.
+      # `cargo tools build-ios`'s MINIMUM_IOS.
       IPHONEOS_DEPLOYMENT_TARGET: "14.0"
       # Same escape hatch as the Mac nightly: the bundled SDL2 source
       # declares a cmake_minimum_required older than CMake 4 accepts.
@@ -70,19 +73,19 @@ jobs:
           xcrun --sdk ${{ matrix.platform == 'IOS' && 'iphoneos' || 'iphonesimulator' }} --show-sdk-path
 
       - name: Cache cargo registry and target directory
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: ios-${{ matrix.target }}
           cache-on-failure: true
 
       - name: Build freight-fate for ${{ matrix.target }}
-        # The same command tools/build_ios.py runs. Touching ff_touch.m makes
+        # The same command `cargo tools build-ios` runs. Touching ff_touch.m makes
         # build.rs compile it again even when the cache is warm, and the stamp
         # lets the next step tell this run's object from a cached one.
         run: |
           touch "$RUNNER_TEMP/ios-build-stamp"
           touch crates/freight-fate/ios/ff_touch.m
-          cargo build -p freight-fate --no-default-features --locked --target ${{ matrix.target }}
+          cargo build -p freight-fate --no-default-features --features visuals --locked --target ${{ matrix.target }}
 
       - name: Check ff_touch.m was compiled for ${{ matrix.target }}
         # Fails the job unless this run compiled ff_touch.m into an object

@@ -672,6 +672,7 @@ fn test_zone_violation_warns_before_any_fine() {
 fn test_keeping_the_jake_on_past_the_grace_draws_a_fine() {
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, "Jake");
+    app.seasoned_driver();
     let mile = a_zone_mile(&drive);
     let money = profile_of(&app.ctx).money();
     roll_with_jake(&mut drive, mile);
@@ -840,6 +841,7 @@ fn test_assists_may_not_raise_the_jake_inside_a_zone() {
 fn test_one_citation_per_continuous_engagement() {
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, "Jake");
+    app.seasoned_driver();
     let mile = a_zone_mile(&drive);
     roll_with_jake(&mut drive, mile);
 
@@ -857,6 +859,7 @@ fn test_one_citation_per_continuous_engagement() {
 fn test_fines_escalate_and_cap() {
     let mut app = TestApp::new();
     let mut drive = a_drive(&mut app, "Jake");
+    app.seasoned_driver();
     let mile = a_zone_mile(&drive);
     let money = profile_of(&app.ctx).money();
     roll_with_jake(&mut drive, mile);

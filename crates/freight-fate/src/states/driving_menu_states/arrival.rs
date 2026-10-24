@@ -62,6 +62,12 @@ pub struct ArrivalState {
     announcements: Vec<String>,
     pub summary_lines: Vec<String>,
     pub terminal: HomeTerminal,
+    /// Miles the co-driver drove on this load; 0 when the player drove it.
+    pub(crate) team_miles: f64,
+    /// The road journal's line for a team load.
+    pub team_note: Option<String>,
+    /// The settlement row for the co-driver's share of the pay.
+    pub(crate) team_line: Option<String>,
 }
 
 impl ArrivalState {
@@ -87,6 +93,9 @@ impl ArrivalState {
             announcements: Vec::new(),
             summary_lines: Vec::new(),
             terminal,
+            team_miles: 0.0,
+            team_note: None,
+            team_line: None,
         };
         state.settle(ctx, driving, arrival_hours);
         state
@@ -409,10 +418,7 @@ impl ArrivalState {
                 let p = profile_mut_of(ctx);
                 p.career.reputation = (p.career.reputation - damage_reputation_hit).max(0.0);
             }
-            ff_core::achievements::increment_stat(
-                profile_mut_of(ctx),
-                "preventable_equipment_damage",
-            );
+            d.record_equipment_event(ctx);
             self.summary_parts.push(format!(
                 "Preventable damage, {damage_reason}. Carrier covers the repair. Deductible {} \
                  dollars, safety bonus void. Reputation down {}.",
@@ -490,6 +496,8 @@ impl ArrivalState {
                 ));
             }
         }
+        // A team load: the co-driver's share of their miles comes off here.
+        let team_xp_rate = self.settle_team_share(ctx, d, &business_status, &mut net_pay);
         let settled_pay = net_pay;
         // Owner-ops ARE the carrier: detention, lumpers, washouts, and tolls
         // already sit on the existing ledger. Apply that ledger to the wallet
@@ -562,7 +570,7 @@ impl ArrivalState {
             on_time,
             trip_damage,
             xp_class_multiplier(job.cargo),
-            standing_xp_rate(standing),
+            standing_xp_rate(standing) * team_xp_rate,
         );
         {
             let p = profile_of(ctx);
@@ -657,6 +665,7 @@ impl ArrivalState {
             job_destination: job.destination.clone(),
             distance_mi: job.distance_mi,
             weight_tons: job.weight_tons,
+            team_note: self.team_note.clone(),
         };
         let origin_name = ctx.world.spoken_city(&job.origin, None);
         let destination_name = ctx.world.spoken_city(&job.destination, None);
@@ -944,6 +953,7 @@ impl ArrivalState {
         lines.extend(business_cost_lines);
         lines.extend(charge_lines);
         lines.extend(advance_lines);
+        lines.extend(self.team_line.clone());
         lines.push(format!(
             "Net driver pay: {} dollars.",
             fmt_grouped(net_pay, 0)
@@ -1096,6 +1106,9 @@ impl ArrivalState {
     fn copy_summary(&mut self, ctx: &mut GameContext) {
         let mut parts = vec![format!("Freight Fate: {}.", self.menu.title)];
         parts.extend(self.summary_lines.clone());
+        // A blank line, then the hashtag, the way a social post ends.
+        parts.push(String::new());
+        parts.push("#FreightFateRuns".to_string());
         let text = parts.join("\n");
         if ctx.write_clipboard_text(&text) {
             ctx.audio.play("ui/menu_select");

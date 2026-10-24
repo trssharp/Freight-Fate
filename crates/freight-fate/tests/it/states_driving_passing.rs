@@ -518,3 +518,28 @@ fn a_passing_lane_ending_mid_move_is_announced_once() {
         (1, None)
     );
 }
+
+/// Issue #356: lane keeping was still passing when the driver tapped back
+/// right, and the truck moved into the side of what it was passing. On
+/// full, a tap waits for the lane: it says what is in it and stays put.
+#[test]
+fn a_tap_back_into_the_vehicle_being_passed_waits_for_the_lane() {
+    let mut harness = meet_a_slow_car("Tap Back", "full", 2, 0, &[], false);
+    let mut elapsed = 0.0;
+    while harness.read_drive(|d| d.lane.lane) == 0 && elapsed < 5.0 {
+        frame(&mut harness, DT);
+        elapsed += DT;
+    }
+    assert_eq!(harness.read_drive(|d| d.lane.lane), 1);
+    harness.with_drive(|d, ctx| d.tap_lane_change(ctx, -1));
+    assert!(
+        said_any(&harness, "Right lane blocked by a"),
+        "{:#?}",
+        spoken(&harness)
+    );
+    assert_eq!(harness.read_drive(|d| d.lane_change_target), None);
+    for _ in 0..120 {
+        frame(&mut harness, DT);
+    }
+    assert!(!said_any(&harness, "sideswiped"), "{:#?}", spoken(&harness));
+}

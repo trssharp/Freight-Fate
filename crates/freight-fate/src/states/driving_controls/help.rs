@@ -85,6 +85,9 @@ impl DrivingState {
         let jake3 = n(Action::JakeStage3);
         let auto_jake = n(Action::AutoJake);
         let transmission_mode = n(Action::TransmissionMode);
+        let window = n(Action::DriverWindow);
+        let fan = n(Action::Fan);
+        let climate = n(Action::Climate);
 
         // Each spoken sentence is one whole literal, so a catalog can
         // translate it as a unit. Sentences are joined with a space.
@@ -293,9 +296,8 @@ impl DrivingState {
                 .to_string(),
         );
         lines.push(format!(
-            "{rest} plans the recommended break or sleep stop when hours of service \
-             planning hints are on; otherwise it plans the next sleep-capable stop while \
-             rolling."
+            "While rolling, {rest} plans the next stop for what you choose: fuel, a break, \
+             sleep, fuel and sleep, or food."
         ));
         lines.push(format!("{exit} signals for its exit."));
         lines.push(format!(
@@ -307,6 +309,10 @@ impl DrivingState {
              shoulder-sleep warning instead."
         ));
         lines.push(format!("{horn} horn."));
+        lines.push(format!(
+            "{window} lowers or raises the driver window, {fan} steps the fan, \
+             {climate} switches heat and air conditioning."
+        ));
         lines.push(format!(
             "{engine_brake} engine brake; on an automatic it manages its own stage, and \
              {jake1}, {jake2}, {jake3} take manual control."
@@ -441,9 +447,8 @@ impl DrivingState {
         lines.push(format!(
             "{engine} starts or stops the engine, {fuel} reads fuel, {speed_limit} reads \
              the posted speed limit here and how far over you are, {parking_brake} sets \
-             or releases the parking brake, {rest} plans a recommended break or sleep \
-             stop when hours of service planning hints are on, or the next sleep stop \
-             otherwise; stopped at a stop, it opens its actions."
+             or releases the parking brake, {rest} plans a stop for fuel, a break, sleep or \
+             food while rolling; stopped at a stop, it opens its actions."
         ));
         lines.push(
             "Away from route points while fully stopped, it opens emergency shoulder sleep."

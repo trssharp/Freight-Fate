@@ -5,8 +5,7 @@
 //! Everything that drove `App()` / `DrivingState` (the reception tick, the
 //! fringe renderer, playlist playback, the settings round trip) is the game
 //! crate's; `test_radio_streaming.py` is entirely the BASS backend and has
-//! no pure half. The imported-tier tests that read `tools/` or
-//! `data/radio_stream_health.json` stay Python.
+//! no pure half.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

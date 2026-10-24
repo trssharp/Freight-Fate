@@ -35,8 +35,8 @@ use super::world_models::{
     HomeTerminal, Leg, LocalApproach, LocalGeometry, Location, Route,
 };
 use super::world_parsing::{
-    expand_market_locations, is_legacy_market_name, market_tags_for_city, merge_overlay,
-    parse_location, parse_stop, py_float, py_int_of, py_str,
+    expand_market_locations, flagged_limits_from, is_legacy_market_name, market_tags_for_city,
+    merge_overlay, parse_location, parse_stop, py_float, py_int_of, py_str,
 };
 
 mod builders;
@@ -44,11 +44,6 @@ use builders::{
     build_city_aliases, build_legacy_facility_ids, build_service_city_keys, city_identity,
     py_float_or, validate_city_locations,
 };
-
-/// The `world_data/` tree under the data root (Python `WORLD_DATA_PATH`).
-pub fn world_data_path() -> PathBuf {
-    data_root().join("world_data")
-}
 
 /// Routing cost multiplier for a leg carrying a truck_advisory (see
 /// `shortest_route`). Calibrated, not tasted: carriers accept the ~1.7x
@@ -178,6 +173,10 @@ impl World {
                 .unwrap_or_else(|| text.to_string())
         };
 
+        // Postings tools/screen_limit_artifacts.py found off the leg's highway.
+        let artifacts =
+            read_text_at(&data_dir.join("world_data/us/gameplay/limit_artifacts.jsonl"));
+        let mut flagged_limits = flagged_limits_from(&artifacts.unwrap_or_default());
         let mut legs: Vec<Arc<Leg>> = Vec::with_capacity(data.legs.len());
         for (index, leg) in data.legs.into_iter().enumerate() {
             // Endpoints resolve through the alias table so additive overlays
@@ -241,6 +240,9 @@ impl World {
                     leg_to: leg_to.clone(),
                     from_state,
                     highway: highway.clone(),
+                    flagged_limits: flagged_limits
+                        .remove(&format!("{}:{}", leg.from, leg.to))
+                        .unwrap_or_default(),
                 },
             );
             built.id = index;
@@ -973,9 +975,4 @@ static WORLD: OnceCell<World> = OnceCell::new();
 /// Python import was.
 pub fn get_world() -> &'static World {
     WORLD.get_or_init(|| World::load().expect("the shipped world data loads"))
-}
-
-/// Whether the shared world has been loaded yet.
-pub fn world_is_loaded() -> bool {
-    WORLD.get().is_some()
 }

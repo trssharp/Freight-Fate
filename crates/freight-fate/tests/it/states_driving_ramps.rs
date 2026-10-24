@@ -37,8 +37,8 @@ use ff_core::pyrandom::PyRandom;
 use ff_core::sim::cross_traffic::{CrossTraffic, CrossVehicle};
 use ff_core::sim::trip_models::{RoadStop, TripEvent, TripEventData, TripEventKind, Zone};
 use ff_core::sim::weather::WeatherKind;
-use ff_core::speech_pacing::EventPriority;
 use ff_core::speech_text::SpokenMessage;
+use hearken::speech::EventPriority;
 
 use freight_fate::app::testing::{FakeClock, TestApp};
 use freight_fate::audio::{
@@ -404,6 +404,8 @@ fn test_stop_sign_full_stop_clears() {
 /// before the run.
 fn blow_the_terminal(app: &mut TestApp, control: &str, seed: i64, mph: f64) -> (bool, f64, f64) {
     let mut d = a_drive(app);
+    // What a citation costs, not the new-driver warning.
+    app.seasoned_driver();
     let money_before = app.ctx.profile.as_ref().expect("a career").money();
     d.trip_seed = seed;
     d.cross_bubble = None; // the restored-save case: no bubble built yet
@@ -1447,7 +1449,7 @@ fn test_the_ramp_coaching_outranks_chatter() {
         app.ctx.event_pacer.note_queued(
             "Brake lights right ahead.",
             EventPriority::Critical,
-            None,
+            hearken::speech::Protect::Yes,
             None,
         );
     }
@@ -1490,7 +1492,7 @@ fn test_being_stranded_short_of_the_bar_is_never_dropped_as_chatter() {
         app.ctx.event_pacer.note_queued(
             "Brake lights right ahead.",
             EventPriority::Critical,
-            None,
+            hearken::speech::Protect::Yes,
             None,
         );
     }
@@ -1498,7 +1500,7 @@ fn test_being_stranded_short_of_the_bar_is_never_dropped_as_chatter() {
 
     app.ctx.say_event_with(
         LINE,
-        freight_fate::app::SayEvent::queued().priority(EventPriority::Route),
+        freight_fate::app::SayEvent::queued().priority(EventPriority::Important),
     );
 
     assert!(
@@ -1522,7 +1524,7 @@ fn test_the_stranded_prompts_ask_for_route_priority() {
         app.ctx.event_pacer.note_queued(
             "Brake lights right ahead.",
             EventPriority::Critical,
-            None,
+            hearken::speech::Protect::Yes,
             None,
         );
     }

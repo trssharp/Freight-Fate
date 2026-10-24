@@ -118,15 +118,15 @@ fn smoke_checks_find_every_baked_runtime_file() {
 }
 
 #[test]
-fn smoke_audio_check_requires_the_real_bass_runtime() {
+fn smoke_audio_check_decodes_the_menu_sound_through_hearken() {
     let _guard = crate::audio_support::audio_lock();
     let result = smoke_audio_checks();
-    if bass_sys::native_available() {
-        result.expect("the fetched BASS runtime should initialize on its no-sound device");
+    if crate::audio_support::shipped_sounds() {
+        result.expect("the packed menu sound should decode through Hearken");
     } else {
         assert!(result
-            .expect_err("a missing BASS runtime must fail the release smoke check")
-            .contains("BASS"));
+            .expect_err("a build without its sounds must fail the release smoke check")
+            .contains("ui/menu_select"));
     }
 }
 

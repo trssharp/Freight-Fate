@@ -1,10 +1,11 @@
 //! The ambient line queue: lines that wait for the road to go quiet, and the
 //! drain that ages them out rather than performing them late.
 
+use crate::speech::EventPriority;
 use ff_core::message_log::MessageCategory;
 use ff_core::sim::driving_modes::tuning_for_time_scale;
 use ff_core::sim::trip_models::{TripEvent, TripEventKind};
-use ff_core::speech_pacing::{EventPriority, SpeechCategory};
+use ff_core::speech_pacing::SpeechCategory;
 use ff_core::speech_text::SpokenMessage;
 
 use crate::app::{GameContext, SayEvent};

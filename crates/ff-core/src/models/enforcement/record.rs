@@ -168,6 +168,21 @@ impl DrivingRecord {
         self.count_within(&self.fatigue_times, game_hours, days)
     }
 
+    /// Fatigue events inside the last `days` that were booked as a safety
+    /// incident: the ones before running off the road asleep became a
+    /// serious violation, which the serious count already holds.
+    pub fn safety_incidents_within(&self, game_hours: f64, days: i64) -> i64 {
+        let cutoff = self.cutoff_days_back(game_hours, days);
+        let untimed = self.fatigue_events - self.fatigue_times.len() as i64;
+        self.fatigue_times
+            .iter()
+            .enumerate()
+            .filter(|&(i, &at)| {
+                at >= cutoff && untimed + (i as i64) < FATIGUE_EVENTS_BEFORE_SERIOUS - 1
+            })
+            .count() as i64
+    }
+
     /// Out-of-service orders inside the last `days`, since the review began.
     pub fn out_of_service_within(&self, game_hours: f64, days: i64) -> i64 {
         self.count_within(&self.out_of_service_times, game_hours, days)

@@ -397,8 +397,14 @@ impl Trip {
                 .map(|c| c.to_uppercase().collect())
                 .unwrap_or_default();
             let body = format!("{first}{}.", chars.as_str());
+            let animal = hazard_is_animal(hazard);
             let message = if in_lane {
                 in_lane_hazard_call_named(&body, side, &self.open_side_spoken(side))
+            } else if animal {
+                // Only what is on the road: braking hard for a deer at
+                // highway speed does not change what happens (owner,
+                // 2026-10-19), so the call asks for nothing.
+                SpokenMessage::new(body.clone())
             } else {
                 hazard_call("Brake now!", &body)
             };
@@ -410,6 +416,14 @@ impl Trip {
                     deadline_s: Some(deadline_s),
                     dodgeable: Some(dodgeable),
                     in_lane: Some(in_lane),
+                    open_side: in_lane.then_some(side),
+                    pass_message: if dodgeable {
+                        passing_hazard_call(&body, side)
+                    } else {
+                        None
+                    },
+                    animal: Some(animal),
+                    brake_to_mph: hazard_brake_to_mph(hazard),
                     name: Some(hazard_name(hazard).to_string()),
                     ..Default::default()
                 },

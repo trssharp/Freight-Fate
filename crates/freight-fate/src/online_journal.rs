@@ -418,6 +418,9 @@ pub struct DeliveryFacts {
     pub distance_mi: f64,
     /// `job.weight_tons`
     pub weight_tons: f64,
+    /// On a team load, who drove how much of it; said in place of the
+    /// condition line.
+    pub team_note: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -453,7 +456,9 @@ pub fn queue_delivery(
     inner.insert("destination".to_string(), Value::from(destination));
     inner.insert("distanceMiles".to_string(), Value::from(distance));
     inner.insert("onTime".to_string(), Value::from(on_time));
-    if undamaged {
+    if let Some(note) = &facts.team_note {
+        inner.insert("notableCondition".to_string(), Value::from(note.as_str()));
+    } else if undamaged {
         inner.insert(
             "notableCondition".to_string(),
             Value::from("Delivered without new truck damage"),

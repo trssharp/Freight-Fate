@@ -66,7 +66,7 @@ fn test_driving_help_explains_selected_automatic_direction_style() {
     );
     assert!(
         said.contains(
-            "T plans the recommended break or sleep stop when hours of service planning hints are on"
+            "While rolling, T plans the next stop for what you choose: fuel, a break, sleep"
         ),
         "{said}"
     );
@@ -95,9 +95,7 @@ fn test_driving_help_explains_selected_automatic_direction_style() {
         "{said}"
     );
     assert!(
-        said.contains(
-            "plans a recommended break or sleep stop when hours of service planning hints are on"
-        ),
+        said.contains("plans a stop for fuel, a break, sleep or food while rolling"),
         "{said}"
     );
     assert!(
@@ -237,7 +235,19 @@ fn test_dispatch_board_keeps_route_planning_out_of_load_offer() {
     let toll_route = world
         .route_from_cities(&["New York", "Philadelphia"])
         .expect("New York to Philadelphia is a route");
-    let summary = route_planning_summary(&toll_route);
+    // A team load's deadline has the drivers changing over where a solo
+    // driver sleeps, so its plan names no sleep.
+    let long_route = world
+        .supported_route("Chicago", "Denver", None)
+        .ok()
+        .flatten()
+        .expect("Chicago to Denver is a route");
+    let solo = route_planning_summary(&long_route, None, false);
+    assert!(solo.contains("10-hour sleep"), "{solo}");
+    let team = route_planning_summary(&long_route, None, true);
+    assert!(!team.contains("10-hour sleep"), "{team}");
+    assert!(team.contains(" driving hours"), "{team}");
+    let summary = route_planning_summary(&toll_route, None, false);
     assert!(summary.contains(" driving hours"), "{summary}");
     assert!(summary.contains("Fuel stops:"), "{summary}");
     assert!(

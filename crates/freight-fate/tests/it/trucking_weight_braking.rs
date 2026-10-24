@@ -26,6 +26,7 @@ fn realism_hazard_budgets_keep_service_assist_and_emergency_response_distinct() 
             dodgeable: false,
             in_lane: false,
             lead_mph: None,
+            brake_to_mph: None,
         };
         for scale in [1.0, 10.0, 20.0] {
             d.trip.time_scale = scale;

@@ -6,12 +6,12 @@
 //!
 //! Test names keep the Python names so the two suites diff by `grep`.
 
-use ff_core::speech_text::SpokenMessage;
 use freight_fate::speech::fakes::{FakeRegistry, FakeVoice};
 use freight_fate::speech::{
     apply_speech_settings, pick_backend_gated, pick_event_backend, CaptureSpeech, NullSpeech,
     Speech, SpeechChannel, SpeechSink, VoiceFeatures, EVENT_BACKEND, REFRESH_INTERVAL_S,
 };
+use hearken::speech::SpokenMessage;
 
 const SPEAKING: VoiceFeatures = VoiceFeatures::SPEAKING;
 const ADJUSTABLE: VoiceFeatures = VoiceFeatures::ADJUSTABLE;
@@ -1048,4 +1048,12 @@ fn apply_speech_settings_pushes_braille_only() {
     apply_speech_settings(&mut speech, &mut settings);
     speech.say("Main menu", true);
     assert_eq!(nvda.spoken(), spoken(&[("Main menu", true)]));
+}
+
+#[test]
+fn the_speech_environment_keeps_the_game_variable_names() {
+    let env = freight_fate::speech::env();
+    assert_eq!(env.no_speech, freight_fate::speech::NO_SPEECH_ENV);
+    assert_eq!(env.backend, freight_fate::speech::SPEECH_BACKEND_ENV);
+    assert_eq!(env.stream_transcript, "FREIGHT_FATE_STREAM_TRANSCRIPT");
 }

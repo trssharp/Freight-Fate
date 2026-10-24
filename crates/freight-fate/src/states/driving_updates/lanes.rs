@@ -2,11 +2,12 @@
 //! changes, crossings, a road that narrows under the truck, coned-off lanes,
 //! and keep-right pressure.
 
+use crate::speech::EventPriority;
 use ff_core::data::curves::{advisory_with_bank_mph, superelevation_at};
 use ff_core::pyfmt::fmt_grouped;
 use ff_core::sim::lane::{in_lane_phrase, RoadConditions};
 use ff_core::sim::trip_models::Zone;
-use ff_core::speech_pacing::{EventPriority, SpeechCategory};
+use ff_core::speech_pacing::SpeechCategory;
 use ff_core::speech_text::SpokenMessage;
 
 use crate::app::{GameContext, SayEvent};
@@ -23,14 +24,14 @@ impl DrivingState {
     pub fn update_lane(&mut self, ctx: &mut GameContext, dt: f64) {
         let mode = ctx.settings.lane_keeping.clone();
         let mut key_dir = 0i8;
-        if ctx.bindings.pressed(&ctx.input, Action::SteerLeft) {
+        if self.held(ctx, Action::SteerLeft) {
             key_dir -= 1;
         }
-        if ctx.bindings.pressed(&ctx.input, Action::SteerRight) {
+        if self.held(ctx, Action::SteerRight) {
             key_dir += 1;
         }
         // The left stick provides analog steering when the keys are idle.
-        let stick = if ctx.controller.active() {
+        let stick = if self.pad_live(ctx) {
             ctx.controller.steering()
         } else {
             0.0
@@ -39,7 +40,7 @@ impl DrivingState {
         if ctx.settings.lane_is_automated() {
             self.update_stick_lane_change(ctx, stick);
         }
-        self.lane.straighten = ctx.bindings.pressed(&ctx.input, Action::Straighten);
+        self.lane.straighten = self.held(ctx, Action::Straighten);
         // The exit ramp is a single lane; the mainline keeps its leg count.
         self.lane_before_narrow = Some(self.lane.lane);
         let count = if self.ramp_mi.is_some() {
@@ -301,7 +302,7 @@ impl DrivingState {
                 ctx.say_event_with(
                     "Slowing for the bend.",
                     SayEvent::queued()
-                        .priority(EventPriority::Route)
+                        .priority(EventPriority::Important)
                         .category(SpeechCategory::Confirmation),
                 );
             }
@@ -317,7 +318,7 @@ impl DrivingState {
             ctx.say_event_with(
                 "Curve assistance released.",
                 SayEvent::queued()
-                    .priority(EventPriority::Route)
+                    .priority(EventPriority::Important)
                     .category(SpeechCategory::Confirmation),
             );
         } else if !curve_assisting {
@@ -377,7 +378,7 @@ impl DrivingState {
             ctx.say_event_with(
                 "Route-transition assistance released.",
                 SayEvent::queued()
-                    .priority(EventPriority::Route)
+                    .priority(EventPriority::Important)
                     .category(SpeechCategory::Confirmation),
             );
         }
@@ -628,7 +629,7 @@ impl DrivingState {
             ctx.say_event_with(
                 format!("{}.", in_lane_phrase(lane_index, lane_count)),
                 SayEvent::queued()
-                    .priority(EventPriority::Route)
+                    .priority(EventPriority::Important)
                     .category(category),
             );
         }
@@ -884,7 +885,7 @@ impl DrivingState {
             // Money rides ROUTE's never-dropped contract: a busy stretch must
             // not age a citation out of the queue.
             SayEvent::queued()
-                .priority(EventPriority::Route)
+                .priority(EventPriority::Important)
                 .category(SpeechCategory::Money),
         );
         // A second serious violation just suspended the CDL: the drive ends

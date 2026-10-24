@@ -298,7 +298,7 @@ impl DrivingState {
             ctx.say_event_with(
                 "Automatic speed control canceled.",
                 SayEvent::queued()
-                    .priority(EventPriority::Route)
+                    .priority(EventPriority::Important)
                     .category(SpeechCategory::Confirmation),
             );
             return;
@@ -406,7 +406,7 @@ impl DrivingState {
             ctx.say_event_with(
                 resuming,
                 SayEvent::queued()
-                    .priority(EventPriority::Route)
+                    .priority(EventPriority::Important)
                     .category(SpeechCategory::Confirmation),
             );
             return;
@@ -430,7 +430,7 @@ impl DrivingState {
                     ctx.say_event_with(
                         format!("Cruise resumes at {floor}. Pedals are yours."),
                         SayEvent::queued()
-                            .priority(EventPriority::Route)
+                            .priority(EventPriority::Important)
                             .category(SpeechCategory::Confirmation),
                     );
                 }
@@ -440,7 +440,7 @@ impl DrivingState {
             ctx.say_event_with(
                 "Speed control resuming.",
                 SayEvent::queued()
-                    .priority(EventPriority::Route)
+                    .priority(EventPriority::Important)
                     .category(SpeechCategory::Confirmation),
             );
             return;

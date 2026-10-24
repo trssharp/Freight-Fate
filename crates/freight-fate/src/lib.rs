@@ -25,3 +25,5 @@ pub mod speech;
 pub mod states;
 pub mod touch;
 pub mod updater;
+#[cfg(feature = "visuals")]
+pub mod visuals;

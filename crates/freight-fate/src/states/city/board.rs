@@ -28,6 +28,11 @@ use ff_core::models::trailers::{
 use ff_core::playtest_levers::forced_dispatch_destination;
 use ff_core::pyfmt::{fmt_f, fmt_grouped};
 use ff_core::sim::hos::limits;
+use ff_core::sim::real_weather_alerts::{alerts_chain_law_level, warm_route_alerts};
+use ff_core::sim::trip::{Trip, TripOptions};
+use ff_core::sim::trip_models::{rig_must_chain, ChainCorridorAhead, CHAIN_LAW_LEAD_MI};
+use ff_core::sim::vehicle::TruckState;
+use ff_core::sim::weather::{effects, WeatherSystem};
 
 use crate::app::{GameContext, Say, SharedState};
 use crate::impl_state_for_menu;
@@ -43,6 +48,7 @@ use crate::states::city_pickup::{
     pickup_snapshot, PickupFacilityState, PickupOptions, PickupSnapshotOptions,
 };
 
+pub(crate) mod briefing;
 mod details;
 mod weight;
 pub use details::{describe_job, JobDetailState};
@@ -217,6 +223,106 @@ fn market_preview(business: &BusinessSettlement) -> String {
     )
 }
 
+/// Stop planning's no-chains reminder, while the driver is still at the
+/// terminal and its garage is open, with no usable chains aboard: a chain
+/// law in effect right now on a chain area of the loaded route that chains
+/// this rig (`posted_chain_law_on_route`), or a carry-rule corridor in
+/// season (`Trip::chain_carry_corridors`). Speech only; a second Enter
+/// accepts as usual.
+fn chain_reminder_before_accepting(ctx: &mut GameContext, job: &Job) -> Option<String> {
+    {
+        let p = profile(ctx);
+        if !ctx.settings.hos_planning_hints
+            || job.bobtail
+            || (p.chains_owned() && p.chain_wear_pct() < 100.0)
+        {
+            return None;
+        }
+    }
+    let route = ctx
+        .world
+        .supported_route(&job.origin, &job.destination, None)
+        .ok()??;
+    // The sky here is never the offline forecast: that draw is unseeded
+    // until the drive starts, so it would name a law the road won't post.
+    let trip = Trip::new(
+        route,
+        TruckState::default(),
+        WeatherSystem::new("", Some(1), None, None, false),
+        TripOptions {
+            seed: Some(1),
+            career_hours: Some(profile(ctx).game_hours),
+            world: Some(ctx.world),
+            ..Default::default()
+        },
+    );
+    if let Some(ahead) = posted_chain_law_on_route(ctx, &trip) {
+        let highway = ahead.highway;
+        return Some(format!(
+            "A chain law is in effect on {highway} on this route. You have no chains. The \
+             garage here sells them. Enter again to accept."
+        ));
+    }
+    let ahead = trip.chain_carry_corridors().into_iter().next()?;
+    let highway = ahead.highway;
+    Some(format!(
+        "Trucks on {highway} must carry chains this season. You have no chains. The garage \
+         here sells them. Enter again to accept."
+    ))
+}
+
+/// The first chain area on `trip`'s route where a chain law is in effect
+/// now and chains this rig (`rig_must_chain`). The level is read from the
+/// live sources only: the Weather Service alerts cached for the cities at
+/// either end of the area's leg (`warm_route_alerts`, the same cache
+/// dispatch reads at the pickup), and with live weather on, those cities'
+/// observed snow or ice. With live sources off there is nothing to read,
+/// so the board reminds about carry-rule corridors only.
+fn posted_chain_law_on_route(ctx: &mut GameContext, trip: &Trip) -> Option<ChainCorridorAhead> {
+    let alerts = ctx.weather_alerts_provider_arc();
+    if let Some(alerts) = &alerts {
+        warm_route_alerts(&trip.route, alerts, ctx.world);
+    }
+    let world = ctx.world;
+    let cities = trip.route.cities.clone();
+    let mut sky_level = |key: &str| -> i64 {
+        let Some(city) = world.cities.get(key) else {
+            return 0;
+        };
+        let alert_level = alerts
+            .as_ref()
+            .and_then(|a| a.get(city.lat, city.lon))
+            .map_or(0, |found| alerts_chain_law_level(&found));
+        let (lat, lon) = (city.lat, city.lon);
+        let observed = ctx.real_weather_provider().and_then(|provider| {
+            // Keyed as the pickup's route weather is (`city_pickup`).
+            provider.request(key, lat, lon);
+            provider.get(key)
+        });
+        let weather_level = match observed.map(|kind| effects(kind).surface) {
+            Some("ice") => 2,
+            Some("snow") => 1,
+            _ => 0,
+        };
+        alert_level.max(weather_level)
+    };
+    let areas = trip.chain_corridor_areas(0.0, trip.route.miles(), |_, _| true);
+    for area in areas {
+        let (leg, _) = trip.leg_at_mile(area.start_mi + CHAIN_LAW_LEAD_MI);
+        let level = cities
+            .get(leg..=leg + 1)
+            .unwrap_or_default()
+            .iter()
+            .map(|key| sky_level(key))
+            .max()
+            .unwrap_or(0);
+        if level > 0 && rig_must_chain(Some(&area.state), level) {
+            return Some(area);
+        }
+    }
+    None
+}
+
 // -- JobBoardState ------------------------------------------------------------------------
 
 pub struct JobBoardState {
@@ -224,6 +330,8 @@ pub struct JobBoardState {
     pub jobs: Vec<Job>,
     /// Index of the job whose hours warning was already heard once.
     confirm_risky_job: Option<usize>,
+    /// Index of the job whose no-chains reminder was already heard once.
+    confirm_chain_job: Option<usize>,
     session_declined: HashSet<usize>,
     assigned_queue: Vec<usize>,
 }
@@ -234,6 +342,7 @@ impl JobBoardState {
             menu: MenuCore::new("Dispatch board").with_intro_help(JOB_BOARD_INTRO_HELP),
             jobs,
             confirm_risky_job: None,
+            confirm_chain_job: None,
             session_declined: HashSet::new(),
             assigned_queue: Vec::new(),
         };
@@ -704,6 +813,7 @@ impl JobBoardState {
         profile_mut(ctx).dispatch_board_cache = None;
         self.jobs.remove(index);
         self.confirm_risky_job = None;
+        self.confirm_chain_job = None;
         self.assigned_queue = if dispatch_policy(profile(ctx)).assigns_load {
             self.assignment_queue(ctx)
         } else {
@@ -746,6 +856,15 @@ impl JobBoardState {
             }
             return;
         }
+        // A confirmation belongs to the job it was heard for: another
+        // selection starts over. Both stand until this job is accepted, so
+        // the hours warning is not re-run after the chain reminder.
+        if self.confirm_risky_job.is_some_and(|i| i != index) {
+            self.confirm_risky_job = None;
+        }
+        if self.confirm_chain_job.is_some_and(|i| i != index) {
+            self.confirm_chain_job = None;
+        }
         if self.needs_hos_confirmation(ctx, index) {
             self.confirm_risky_job = Some(index);
             held_load::hold_for_rest(profile_mut(ctx), &job);
@@ -757,7 +876,16 @@ impl JobBoardState {
             ));
             return;
         }
+        if self.confirm_chain_job != Some(index) {
+            if let Some(reminder) = chain_reminder_before_accepting(ctx, &job) {
+                self.confirm_chain_job = Some(index);
+                ctx.audio.play("ui/warning");
+                ctx.say(&reminder);
+                return;
+            }
+        }
         self.confirm_risky_job = None;
+        self.confirm_chain_job = None;
         if job.bobtail {
             self.accept_reposition(ctx, index);
             return;
@@ -797,7 +925,7 @@ impl JobBoardState {
         // Junior drivers slip-seat: the yard picks the tractor for the load
         // before the keys change hands, so the truck is decided before the
         // trip snapshot is taken.
-        let equipment_note = slip_seat_note(ctx, &job);
+        let equipment_note = dispatch_equipment_note(ctx, &job);
         profile_mut(ctx).dispatch_board_cache = None;
         let line = format!(
             "Accepted.{equipment_note} Deadhead {} on {} to pickup at {}.",
@@ -847,7 +975,7 @@ impl JobBoardState {
             Ok(approach) => corridor.then(&approach),
             Err(_) => corridor.clone(),
         };
-        let equipment_note = slip_seat_note(ctx, &job);
+        let equipment_note = dispatch_equipment_note(ctx, &job);
         profile_mut(ctx).dispatch_board_cache = None;
         // The facility text already names its city; whole miles for a run
         // this long (heard live: "in Las Vegas, Nevada in Las Vegas, Nevada"
@@ -877,7 +1005,7 @@ impl JobBoardState {
     /// pickup), then the pickup facility itself instead of a drive to it.
     fn accept_at_home_yard(&mut self, ctx: &mut GameContext, job: Job) {
         warm_route_feeds(ctx, &job.origin, &job.destination);
-        let equipment_note = slip_seat_note(ctx, &job);
+        let equipment_note = dispatch_equipment_note(ctx, &job);
         profile_mut(ctx).dispatch_board_cache = None;
         let snapshot = pickup_snapshot(&job, &PickupSnapshotOptions::default());
         profile_mut(ctx).active_trip = Some(Value::Object(snapshot));
@@ -937,6 +1065,13 @@ fn sort_scored(candidates: &mut [(f64, usize)]) {
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.1.cmp(&b.1))
     });
+}
+
+/// The tractor for this load, then the carrier's shop on it if it needs one.
+fn dispatch_equipment_note(ctx: &mut GameContext, job: &Job) -> String {
+    let seat = slip_seat_note(ctx, job);
+    let shop = crate::states::city_garage::carrier_shop_before_dispatch(ctx);
+    format!("{seat}{shop}")
 }
 
 /// Draw the assigned tractor and say why, or nothing if it is not new.
@@ -1076,3 +1211,39 @@ impl Menu for JobBoardState {
 }
 
 impl_state_for_menu!(JobBoardState);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::testing::TestApp;
+    use ff_core::models::jobs::cargo_type;
+
+    fn load(pickup: &str) -> Job {
+        Job::new(
+            cargo_type("general").expect("general freight"),
+            12.0,
+            "Denver",
+            pickup,
+            "Silverthorne",
+            70.0,
+            900.0,
+            9.0,
+        )
+    }
+
+    #[test]
+    fn test_dropping_a_dead_offer_clears_both_confirmations() {
+        // The rows shift up, so a confirmation heard for one row must not
+        // let the load that moves into it skip its own warning.
+        let mut app = TestApp::new();
+        app.ctx.profile = Some(Profile::named_in("Chain Board", "Denver"));
+        let jobs = vec![load("Denver Gone-Away Storage"), load("Denver Cross-Dock")];
+        let mut board = JobBoardState::new(&app.ctx, jobs);
+        board.confirm_risky_job = Some(0);
+        board.confirm_chain_job = Some(0);
+        board.drop_dead_offer(&mut app.ctx, 0);
+        assert_eq!(board.jobs.len(), 1);
+        assert_eq!(board.confirm_risky_job, None);
+        assert_eq!(board.confirm_chain_job, None);
+    }
+}

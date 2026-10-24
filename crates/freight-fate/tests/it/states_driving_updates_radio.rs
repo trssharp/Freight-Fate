@@ -65,7 +65,7 @@ struct MusicAudio {
     stops: Rc<RefCell<Vec<u32>>>,
     /// Every live stream URL the cab was asked to open, in order.
     streams: Rc<RefCell<Vec<String>>>,
-    /// The song title the playing stream reports, as BASS would read it.
+    /// The song title the playing stream reports, as the backend reads it.
     now_playing: Rc<RefCell<Option<String>>>,
     volume: Rc<Cell<f64>>,
     playing: Rc<Cell<bool>>,

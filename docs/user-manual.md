@@ -26,6 +26,7 @@ Start at the [main menu](#main-menu), then follow [your first delivery](#quick-s
 - [Enforcement, your record, and your CDL](#enforcement-your-record-and-your-cdl)
 - [When you owe money](#when-you-owe-money)
 - [Hours of service and fatigue](#hours-of-service-and-fatigue)
+- [Team driving](#team-driving)
 - [Status screens](#status-screens)
 - [Driver apps](#driver-apps)
 - [Pause, save, and resume](#pause-save-and-resume)
@@ -156,7 +157,7 @@ Use the readout hotkeys to check the trip while driving. Space reads your speed 
 
 On a controller, D-pad up reads where you are, D-pad left the weather, and D-pad right the clock with all your hours limits. D-pad down signals for an exit, and the right bumper with D-pad down plans a rest stop. The road ahead and the other readouts with no button are in Driving commands: hold the right bumper, press Start, and choose Driving commands.
 
-Check those readouts before you need a stop. T helps you choose a rest stop while you're rolling; X signals for its exit. Keep an eye on your legal driving time as well as the delivery clock. Alt+A tells you how much time you've used at the wheel and on duty. Alt+S tells you when your break is due, and Alt+D tells you what will end the shift and which rest stops you can reach.
+Check those readouts before you need a stop. T plans a stop for fuel, a break, sleep or food while you're rolling; X signals for its exit. Keep an eye on your legal driving time as well as the delivery clock. Alt+A tells you how much time you've used at the wheel and on duty. Alt+S tells you when your break is due, and Alt+D tells you what will end the shift and which rest stops you can reach.
 
 When a break is due, pull into a stop and take it before driving farther. Don't wait for the eleven-hour driving limit: your break can come due earlier, and the duty window can end your shift before you've driven eleven hours. A short break won't reset the shift. Check the [hours and fatigue guide](#hours-of-service-and-fatigue) when you're deciding whether you need a break or sleep.
 
@@ -384,12 +385,15 @@ A control marked Driving commands has no controller button. Hold the right bumpe
 | Plus / Minus | Right bumper plus D-pad right or left | Raise or lower the open-road cruise target while automatic speed control is active, snapping outward to the next multiple of 5 mph: from 32 it lands on 35, then 40. The keypad Plus and Minus keys work too. |
 | Ctrl+Plus / Ctrl+Minus | Not on the controller | Raise or lower the open-road cruise target by exactly 1 mph, no snapping, for setting a precise number. |
 | X | D-pad down | Signal for or cancel the next announced route exit. The truck takes the ramp when speed, lane setup, and route intent are valid. |
-| T | Right bumper plus D-pad down | While rolling, plan the next nearby sleep-capable stop and hear its distance, exit, and stopping-assistance state. T never signals or takes the exit; press X for that. When fully stopped at a supported route stop, T opens its menu; away from route points, it opens the emergency shoulder-sleep confirmation. |
+| T | Right bumper plus D-pad down | While rolling, choose what the stop is for, such as fuel, a break or sleep, then hear the planned stop's distance, exit, and stopping-assistance state. T never signals or takes the exit; press X for that. When fully stopped at a supported route stop, T opens its menu; away from route points, it opens the emergency shoulder-sleep confirmation. |
 | J | Right stick click | Toggle the engine brake. It engages at the stage you last selected, like a real dash switch. In an automatic, J arms the truck's own retarder management unless you have turned that off. |
 | Alt+J | Driving commands | In an automatic, choose whether J arms the automatic retarder or leaves the stage entirely to you. |
 | Alt+T | Driving commands | Switch between automatic and manual transmission on the road. This changes your whole control scheme. |
 | 1 / 2 / 3 | Right bumper plus right stick click steps to the next stage | Select the engine brake stage, two, four, or six cylinders of retard, while it is on. With the engine brake off these keys do nothing. |
 | H | Left stick click, hold | Hold to sound the horn; release to stop it. |
+| Z | Not on the controller | Lower or raise the driver window. With it down you hear the wind rush in and the road louder; it closes again at the start of every drive. |
+| Alt+Z | Not on the controller | Step the fan: off, low, medium, high. The fan runs while the engine does. |
+| Shift+Z | Not on the controller | Switch the fan between heat and air conditioning. A drive starts on whichever the weather calls for. |
 | Space | B | Report speed, gear, and the active speed-control mode and open-road target when speed control is on. RPM is added with a manual transmission, and air pressure or the parking brake only when they need attention. With the signal set for an exit, it ends with that exit and how far away it is. Tab has the full air and brake readings. |
 | S | Right bumper plus X | Report the posted speed limit here, the zone if any, and how far over you are. In bend country it adds the bend's advisory speed, since the posted limit and the yellow diamond are different numbers on a real road. On a delivery ramp that ends at a traffic light, S answers with the light and the distance to the stop bar instead, since the light is the law there. |
 | D | Driving commands | Report one safe-speed number for right now. Weather grip, a steep downgrade, and the next bend are already baked into the number. On an exit ramp it is the exit speed. |
@@ -518,7 +522,7 @@ The damage readout names a band as well as a percentage, so you can hear how ser
 
 Owners pay for roadside repairs and lose several hours; they still need further garage repair afterward. Company drivers get carrier-paid service and a yard spare. Preventable equipment trouble can also affect their record and dispatch trust.
 
-Preventable damage can cost a safety bonus and add a deductible. Repairing it on the road doesn't erase that consequence: settlement uses the deepest damage band reached during the trip. Correct reactions to hazards don't count as preventable damage. Unsafe equipment that's visible on the road can attract an inspection.
+Preventable damage can cost a safety bonus and add a deductible. Repairing it on the road doesn't erase that consequence: settlement uses the deepest damage band reached during the trip. Correct reactions to hazards don't count as preventable damage. Unsafe equipment that's visible on the road can attract an inspection. A company driver's tractor at 40 percent damage or more goes through the carrier shop when the next load is accepted, at no charge and an hour on duty.
 
 ## Mountain driving
 
@@ -587,7 +591,7 @@ The GPS announces state lines, towns, route changes, work zones, tolls, and usef
 
 Slow as the work-zone limit steps down, and leave a closing lane when instructed. Continuing past the urgent barrel warning causes damage, a 1,000 dollar citation, and a serious violation. That citation is charged once per zone and isn't doubled again for construction. If the road itself reduces the lane count and repositions you, there's no penalty for that move.
 
-While you're rolling, T plans the next stop where you can sleep. With planning hints enabled, it selects the recommended break or sleep stop instead. Press T again to cancel the plan.
+While you're rolling, T asks what the stop is for: fuel, a break, sleep, fuel and sleep, or food and coffee. Each choice gives the distance to its stop, and Enter plans the next stop for it. With planning hints enabled, a break or sleep plan takes the recommended stop. The list opens on fuel when the tank is low or won't reach the next pumps. Press T again to cancel the plan.
 
 Planning the stop doesn't signal for its exit. X sets or cancels that signal separately. On a controller, the right bumper with D-pad down plans the stop and D-pad down signals. The call names the exit and its ramp control, and the blinker starts near half a mile out.
 
@@ -613,7 +617,7 @@ A CAT Scale weigh takes ten on-duty minutes and reads the steer, drive, trailer,
 
 For an open scale, slow into its lane, signal with X, stop, and use T to check in. On a controller, signal with D-pad down and check in with the right bumper and D-pad down. A required scale takes priority over a sleep plan.
 
-Don't wait for an empty tank before looking for fuel. Warnings tell you when it's near fifteen percent and when your range won't reach the next fuel stop or destination. An owner pays for rescue; a company driver takes a service-record hit.
+Don't wait for an empty tank before looking for fuel. Warnings tell you when it's near fifteen percent and when your range won't reach the next fuel stop or destination. The fifteen percent warning names the next fuel stop. Truck stops, fuel stations, service plazas and truck parking lots say Fuel or No fuel as they come up. An owner pays for rescue; a company driver takes a service-record hit.
 
 ### Weather and calendar
 
@@ -637,6 +641,8 @@ CB reports tell you what another driver saw and how certain they were. Treat the
 
 ### What a citation costs
 
+Until level 10, officers give you a warning instead of most citations: no fine, no reputation lost, and nothing on your record. Speeding 15 or more over the limit, driving through the barrels, failing to pull over, running an open scale, and anything that puts you out of service are still cited.
+
 | Citation | Base fine |
 | --- | --- |
 | Unsafe equipment | 2,300 dollars |
@@ -646,7 +652,6 @@ CB reports tell you what another driver saw and how certain they were. Treat the
 | Following too closely | 600 dollars |
 | Chain law | 580 dollars |
 | Improper lane use | 500 dollars |
-| Running dark after sunset | 350 dollars |
 
 Speeding fines start at 250 dollars below ten over the limit, 400 from ten over, 1,000 from fifteen, 1,600 from twenty, and 2,500 from thirty. Fleeing has a 5,000 dollar base fine. Construction doubles applicable fines, with the barrel citation excluded.
 
@@ -678,7 +683,7 @@ Your legal hours are the same in both hours modes: eleven driving hours after te
 
 Any thirty consecutive minutes without driving can meet the driving-break requirement. Loading and inspections can count, but they won't reset the duty window. Moving the truck for work counts even when you're bobtail.
 
-Check your hours before choosing how far to continue. Alt+A reads time used, Alt+S tells you when the break is due, and Alt+D reads both shift limits with reachable legal rest. C gives the clock, deadline, and nearest limit. On a controller, D-pad right reads the clock with all of these limits in one report. You'll hear warnings with two hours, one hour, and thirty minutes left.
+Check your hours before choosing how far to continue. Alt+A reads time used, Alt+S tells you when the break is due, and Alt+D reads both shift limits with reachable legal rest. C gives the clock, deadline, and nearest limit. On a controller, D-pad right reads the clock with all of these limits in one report. Before each limit you'll hear one warning: with one hour left in the Relaxed driving mode, two hours in Standard, and two hours, one hour and thirty minutes in Real time. A limit the trip ends inside gets no warning. When you leave with a load, the departure line says your driving time left, your fuel, and whether the run needs a break or a sleep.
 
 A half-hour break won't solve a shift that's ending. Check reachability again if traffic or weather slows you down.
 
@@ -693,6 +698,39 @@ Coffee only buys temporary relief. A break helps more, and full sleep clears fat
 If a lot is full, it may offer a motel at your own expense. Sleep 10 hours in the lot gives poor rest; proper sleeper parking gives full rest.
 
 Away from route points, stop fully and use T or the pause menu for emergency shoulder sleep. On a controller, that's the right bumper with D-pad down, or Start for the pause menu. A nearby stop takes priority. Shoulder sleep secures the truck and resets legal hours after ten hours, but fatigue remains. You also risk a ticket or damage, and the delivery deadline keeps advancing.
+
+## Team driving
+
+On a load too long for one shift, a co-driver can take the wheel while you rest in the sleeper. Dispatch pairs a company driver with a classmate from Great Lakes Training Transport for one load. An owner-operator keeps the co-driver they have teamed with most.
+
+When the rest of the delivery would need a ten-hour break, the pause menu offers two rows, each naming your co-driver:
+
+- **Hand the wheel to Dan and ride along.** The drive goes on at the normal pace. You hear the truck and the radio, and the road's announcements stay quiet.
+- **Hand the wheel to Dan and sleep.** The co-driver's shift runs ahead without waiting, with the sound off. You wake when they need you, with a summary of how far they drove and where they fueled.
+
+The pickup menu offers the same choice once the load is on: **Depart with Dan driving, and ride along**, or **and sleep**. Each row's help names the co-driver and the pay terms.
+
+**Team loads.** Some long loads on the dispatch board are booked for a team. Their details say "Team load". They pay about a third more, and the deadline leaves no time for a ten-hour break, only for changing drivers. You can still drive a team load alone, but you will be late unless the co-driver takes their turns. Trip hours in the job details and the route plan at the shipper count on those turns, so they name no ten-hour sleep. With stop planning hints on, the hint near the end of your hours names your co-driver instead of a sleep stop.
+
+While the co-driver drives, the keys that move the truck do nothing. The information keys still answer, and Tab, the apps and the pause menu still open. If the radio was on, the co-driver may change the station or switch it off for a while; once you change it yourself, they leave it alone. A radio you left off stays off.
+
+The first time a load can be shared, the game says so once, at the shipper's dock or in the pause menu. After that, a long load's details on the dispatch board say "Co-driver: offered at the shipper's dock or from the pause menu, on your current hours."
+
+The co-driver uses every assist, fuels when the tank runs low, crosses the open scales and pulls over for a trooper. They hand the wheel back:
+
+- parked at the next stop with parking once you have had your ten-hour rest, which comes before a fresh co-driver's hours run out;
+- parked at a stop, when their own hours run out first, and they tell you how much of your rest you had;
+- at a rest area for their 30-minute break, or on the road if they could not reach one in time;
+- at the receiver's gate, so you can dock and deliver;
+- when the truck takes damage, or something else needs your decision.
+
+To drive again sooner, pause and choose Take the wheel back.
+
+**Who they are.** Once you have run a team load, Career stats has a Co-drivers list: everyone you have teamed with, how many loads you ran together, and a line or two about them. The Driver status screen reads the same story for the co-driver on your current load. Nothing reads it to you unless you open it.
+
+**What it costs.** On a company job, miles the co-driver drives pay you half. An owner-operator pays their co-driver 30 percent of the settlement for those miles, and still pays fuel, tolls and upkeep. Those miles earn half the career experience. The settlement names the co-driver's miles and share. Badges for how a haul was driven, such as a long run with no tolls, are not earned on a team load, and the road journal notes who drove.
+
+**Your hours.** Time while the co-driver drives counts as sleeper-berth time, whether you ride along or sleep. Ten hours of it resets your legal hours and clears your fatigue. The co-driver keeps a logbook of their own. The Driver status screen says who is driving. It, C and the Take the wheel back row all say how much of your ten hours you have rested and when the co-driver hands back, for example "Rest: 3.5 hours of 10 hours. Dan hands back in about 6.5 hours." The ELD app reads both logbooks. If you were already rested when you handed over, the co-driver drives until their own hours run out.
 
 ## Status screens
 
@@ -849,13 +887,13 @@ Choose the driving pace first. Relaxed gives you more time to react, Standard co
 | --- | --- |
 | Driving mode | Choose Relaxed, Standard, or Real time. The explanations below help you choose your pace. |
 | Hours of service | Choose realistic or relaxed legal limits. Both use the same 11-hour driving limit, 14-hour duty window, and break after 8 hours. Relaxed reduces fines, inspections, and random hazards. |
-| Hours of service planning hints | Off by default. On, when the delivery is out of legal reach, the cab suggests a break or sleep stop once, with time to spare before the next hours warning, and names the last stop you can legally reach if it suggests an earlier one. While rolling, T plans that stop; press it again to cancel. Quiet and Urgent only driving speech skip the spoken suggestion. |
+| Hours of service planning hints | Off by default. On, when the delivery is out of legal reach, the cab suggests a break or sleep stop once, with time to spare before the next hours warning, and names the last stop you can legally reach if it suggests an earlier one. While rolling, choosing a break or sleep from T plans that stop; press T again to cancel. Quiet and Urgent only driving speech skip the spoken suggestion. |
 
 #### Choosing your driving pace
 
-Relaxed gives you the most time to react. All the driving systems remain available, but you'll face fewer random hazards, have longer to respond, and receive calmer routine announcements. Collisions and fatigue are more forgiving too.
+Relaxed passes about ten minutes of road and clock for each real minute, and gives you the most time to react. All the driving systems remain available, but you'll face fewer random hazards, have longer to respond, and receive calmer routine announcements. Collisions and fatigue are more forgiving too.
 
-Standard brings balanced timing and consequences. Distance and time move twice as fast, so a driving day takes half the real time. Decisions arrive sooner, without the extra forgiveness of Relaxed.
+Standard brings balanced timing and consequences. Distance and time move twice as fast, about twenty minutes for each real minute, so a driving day takes half the real time. Decisions arrive sooner, without the extra forgiveness of Relaxed.
 
 Real time uses Standard's level of challenge and follows your computer's date and time. The driving clock runs in real time on the road and while parked. Pair it with real-world weather if you'd like conditions to follow the world outside. Matching the clock doesn't change your delivery time remaining, career progress, or hours of service.
 
@@ -887,6 +925,7 @@ This is where you change units, transmission, and eligible shortcuts. Open Keybo
 | Automatic direction changes | In an automatic, both styles now change direction the same way: a fresh press held at a standstill. A brake held through a stop just holds the truck. The setting remains for familiarity. |
 | Controller | Accept controller input alongside the keyboard. The keyboard always stays active. While it is on, it names the controller the game is using. |
 | Haptics | Use controller vibration for hazards, hard braking, rumble strips, and road seams. |
+| Visual display | On by default: the game window draws the road, the dashboard, menus, and captions of what the game says. Off keeps the window dark and saves battery. Speech and sound are the same either way. |
 | Keyboard shortcuts | Choose the control you want to change and press Enter, then press your preferred key, with Shift, Control, or Alt held if you want a chord. A key another control already has is refused by name; Escape keeps the current key. The pause key, Enter, F1, F2, the Control keys that stop the voice, plus and minus, the radio dial keys, and the message review keys stay fixed. Choose the reset option to restore every default shortcut. |
 | Controller buttons | Choose the controller action you want to change and press Enter, then press your preferred button, with the right bumper held for the second layer. Press its current button to keep the assignment. Start, Back, the bumpers, the triggers, and the sticks stay fixed. |
 
@@ -899,7 +938,7 @@ If one sound is covering another, adjust that sound's volume rather than lowerin
 | Master volume | Overall game volume. |
 | Gameplay cues volume | Horn, alerts, road, facility, and gameplay cue sounds. |
 | Lane and edge cue volume | Make rumble strips, shoulder sounds, the lane locator, and hairpin warning bars easier to hear. This works alongside Gameplay cues volume and adjusts only these road cues. Quieter keeps them below the engine, Standard brings them to its level, and Louder helps them stand out. Assistance presets leave your choice unchanged. |
-| Steering guide | Which way to steer when the engine leans. Steer toward the lean, the default, or steer away from the lean, for drivers who learned that habit in audio racing games. |
+| Steering guide | Which way to steer when the engine sound moves to one side. Steer toward the engine, the default, or steer away from the engine, for drivers used to that from audio racing games. |
 | Lane guide sound | What leans toward the side to steer: the engine, the default, or a soft tone panned the same way, for setups where the engine is hard to place. |
 | Weather sounds volume | Rain, wind, thunder, snow, and fog sounds. |
 | Engine sounds volume | Engine start, shutdown, and running engine sounds. |
@@ -969,6 +1008,18 @@ The window shows the core information the game speaks. Speech can come through a
 You can give driving events a separate voice. Either Control key stops that voice, as does Back on a controller while it's speaking, and message review lets you return to anything you missed.
 
 If a sound is unfamiliar, open Learn game sounds, select the cue, and press Enter, or A, to hear it. F1, or Back, explains its meaning. Haptics also reinforce seams, lane edges, hazards, and braking.
+
+### The game window
+
+Everything in Freight Fate can be played by ear, and everything the game says can also be seen, for sighted and low-vision players and for anyone driving with a friend watching.
+
+- **Menus and screens** appear as a large-print panel with the selected choice highlighted and a count such as 3 of 9.
+- **While you drive**, the window shows the road from behind your truck: your lane and the lanes beside you, the traffic around you with brake lights and signals, bends and hills as they come, and the signs on your route, including speed limits, curve warnings with their advisory speed, work zones, exits, rest areas, weigh stations, state lines, and billboards. The sky follows the time of day where you are, and rain, snow, fog, and storms show as they happen.
+- **The dashboard** shows your speed with the posted limit and cruise speed marked on the dial, engine speed and gear, fuel, air pressure, truck and cargo damage, warning lights such as the parking brake and low air, turn signals, the next bend and your next turn, the time and weather, how far you have left, and a traffic display of every vehicle within half a mile.
+- **Blind-spot lights** glow amber on the truck's mirrors, with the lane shaded on the traffic display, while traffic holds the lane beside you. They answer the same way the "lane open" announcement and the L key do: change lanes only once the light on that side is out.
+- **Captions** show each announcement for a few seconds, so nothing the game says is missed.
+
+The window can be resized or made full screen, and everything scales with it. To turn the drawing off, set Visual display to off under Settings, Gameplay, Controls; the window stays dark and uses less power. The game also stops drawing while its window is minimized or, on a Mac, covered by other windows.
 
 | Category | Examples |
 | --- | --- |

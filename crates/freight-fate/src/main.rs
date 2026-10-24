@@ -1,6 +1,6 @@
 // The game is a windowed application, so the binary is linked into the
 // Windows GUI subsystem: no console window is ever created for it. The
-// Python build did the same (`tools/build_release.py` passes Nuitka
+// Python build did the same (`tools/build_release.py` passed Nuitka
 // `--windows-console-mode=disable`); the port had lost it, and a packaged
 // launch opened a black terminal beside the game. For a screen reader that
 // is a second window in the player's world, competing for focus, so this is
@@ -521,7 +521,7 @@ fn list_speech_backends() -> i32 {
                 (usable(backend.as_ref()), note.to_string())
             }
             // The ordinary case for every reader this machine does not have.
-            Err(prismer::Error::BackendNotAvailable) => {
+            Err(freight_fate::speech::backend::SpeechError::BackendNotAvailable) => {
                 (false, "not installed or not running here".to_string())
             }
             Err(err) => (false, err.to_string()),
@@ -675,7 +675,9 @@ fn playtest_road(args: &[String]) -> i32 {
         // `road::plan` answers off the world data and returns before any app
         // is built. Refusing a search because a drive is open cost the tool
         // its one use during a playtest: finding where to go next.
-        let mut guard = freight_fate::single_instance::SingleInstanceGuard::new();
+        let mut guard = freight_fate::single_instance::SingleInstanceGuard::new(
+            freight_fate::single_instance::SINGLE_INSTANCE_MUTEX_NAME,
+        );
         if !guard.acquire() {
             eprintln!(
                 "Freight Fate is already running. Close it first. A second window would \
@@ -797,7 +799,7 @@ fn road_session(opts: &road::RoadOptions, headless: f64, args: &[String]) -> i32
     // the main menu reaches the REAL menu, with its working Exit.
     app.set_initial_state(road_builder(hit, args));
     if let Some(dir) = &sandbox_dir {
-        // Announce the live session so tools/playtest_watch.py can follow this
+        // Announce the live session so cargo tools playtest-watch can follow this
         // drive the same way it follows a sandbox launch.
         sandbox::open_session(dir, &log_path);
     }

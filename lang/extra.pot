@@ -152,6 +152,42 @@ msgstr ""
 msgid "dry van {unit}"
 msgstr ""
 
+#. Public activity from the online drivers board. The server receives these
+#. strings already assembled, so the source extractor never sees the shapes.
+msgid "Driving: {origin} to {destination}"
+msgstr ""
+
+msgid "{pct}% there"
+msgstr ""
+
+msgid "listening to {station}"
+msgstr ""
+
+#. One assembled detail sentence from the public online drivers board.
+msgid "{cargo}, {pct}% there, {rig}"
+msgstr ""
+
+msgid "{cargo}, {pct}% there, {rig}, listening to {station}"
+msgstr ""
+
+#. The board joins the route and detail into adjacent sentences.
+msgid "Driving: {origin} to {destination}. {cargo}, {pct}% there, {rig}. updated {minutes} minutes ago."
+msgstr ""
+
+msgid "Driving: {origin} to {destination}. {cargo}, {pct}% there, {rig}, listening to {station}. updated just now."
+msgstr ""
+
+#. A licenses-and-training row. Both values are assembled by catalog helpers.
+msgid "{credential} course: {offer}"
+msgstr ""
+
+#. Complete assembled variants keep punctuation and nested values together.
+msgid "{credential} course: {price} dollars, carrier-sponsored free at level {level}."
+msgstr ""
+
+msgid "{credential} course: {price} dollars, background check clears in about {days} days."
+msgstr ""
+
 msgid "air cargo area {place_name} in {city}"
 msgstr ""
 
@@ -477,4 +513,253 @@ msgid "Divided, one lane your side."
 msgstr ""
 
 msgid "Mostly divided, one lane your side."
+msgstr ""
+
+# Lines Hearken's input and text helpers speak. They were in the game's own
+# source until it moved onto the Hearken engine, so the extractor no longer
+# finds them; they are listed here so every translation stays live.
+
+#. Key and controller button names, as Hearken's bindings say them
+#. (hearken-app src/bindings/names.rs). The lowercase words are the ids
+#. the settings file stores; they stay here so their translations are kept.
+msgid "keypad 0"
+msgstr ""
+
+msgid "keypad 1"
+msgstr ""
+
+msgid "keypad 2"
+msgstr ""
+
+msgid "keypad 3"
+msgstr ""
+
+msgid "keypad 4"
+msgstr ""
+
+msgid "keypad 5"
+msgstr ""
+
+msgid "keypad 6"
+msgstr ""
+
+msgid "keypad 7"
+msgstr ""
+
+msgid "keypad 8"
+msgstr ""
+
+msgid "keypad 9"
+msgstr ""
+
+msgid "keypad Enter"
+msgstr ""
+
+msgid "keypad plus"
+msgstr ""
+
+msgid "keypad minus"
+msgstr ""
+
+msgid "enter"
+msgstr ""
+
+msgid "escape"
+msgstr ""
+
+msgid "space"
+msgstr ""
+
+msgid "tab"
+msgstr ""
+
+msgid "backspace"
+msgstr ""
+
+msgid "the Left arrow"
+msgstr ""
+
+msgid "the Right arrow"
+msgstr ""
+
+msgid "Home"
+msgstr ""
+
+msgid "home"
+msgstr ""
+
+msgid "end"
+msgstr ""
+
+msgid "Insert"
+msgstr ""
+
+msgid "insert"
+msgstr ""
+
+msgid "Delete"
+msgstr ""
+
+msgid "comma"
+msgstr ""
+
+msgid "period"
+msgstr ""
+
+msgid "slash"
+msgstr ""
+
+msgid "backslash"
+msgstr ""
+
+msgid "grave"
+msgstr ""
+
+msgid "grave accent"
+msgstr ""
+
+msgid "equals"
+msgstr ""
+
+msgid "plus"
+msgstr ""
+
+msgid "minus"
+msgstr ""
+
+msgid "semicolon"
+msgstr ""
+
+msgid "apostrophe"
+msgstr ""
+
+msgid "left bracket"
+msgstr ""
+
+msgid "right bracket"
+msgstr ""
+
+msgid "Left Control"
+msgstr ""
+
+msgid "Right Control"
+msgstr ""
+
+msgid "Right Shift"
+msgstr ""
+
+msgid "Left Alt"
+msgstr ""
+
+msgid "Right Alt"
+msgstr ""
+
+msgid "an unnamed key"
+msgstr ""
+
+msgctxt "controller button"
+msgid "Back"
+msgstr ""
+
+msgid "back"
+msgstr ""
+
+msgid "guide"
+msgstr ""
+
+msgid "the guide button"
+msgstr ""
+
+msgid "the right bumper"
+msgstr ""
+
+msgid "misc"
+msgstr ""
+
+msgid "the extra button"
+msgstr ""
+
+msgid "paddle 1"
+msgstr ""
+
+msgid "paddle 2"
+msgstr ""
+
+msgid "paddle 3"
+msgstr ""
+
+msgid "paddle 4"
+msgstr ""
+
+msgid "the touchpad"
+msgstr ""
+
+msgid "touchpad"
+msgstr ""
+
+msgid "an unnamed button"
+msgstr ""
+
+#. The pieces Hearken's bindings join into a shortcut's spoken name
+#. (hearken-app src/bindings.rs).
+msgid "Control "
+msgstr ""
+
+msgid "Alt "
+msgstr ""
+
+msgid "Shift "
+msgstr ""
+
+#. placeholders: {short}
+msgid "right bumper plus {short}"
+msgstr ""
+
+#. placeholders: {short}
+msgid "the {short} button"
+msgstr ""
+
+#. A typed character as text entry says it, from Hearken's spoken_char
+#. (hearken-app src/text.rs).
+msgid "colon"
+msgstr ""
+
+msgid "dot"
+msgstr ""
+
+msgid "underscore"
+msgstr ""
+
+msgid "question mark"
+msgstr ""
+
+msgid "exclamation mark"
+msgstr ""
+
+msgid "percent"
+msgstr ""
+
+msgid "number sign"
+msgstr ""
+
+msgid "at"
+msgstr ""
+
+msgid "tilde"
+msgstr ""
+
+msgid "star"
+msgstr ""
+
+msgid "quote"
+msgstr ""
+
+msgid "left paren"
+msgstr ""
+
+msgid "right paren"
+msgstr ""
+
+#. placeholders: {ch}
+msgid "cap {ch}"
 msgstr ""

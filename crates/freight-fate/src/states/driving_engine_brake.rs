@@ -385,7 +385,7 @@ impl DrivingState {
         ctx.say_event_with(
             message,
             SayEvent::queued()
-                .priority(EventPriority::Route)
+                .priority(EventPriority::Important)
                 .category(SpeechCategory::Confirmation),
         );
     }
@@ -427,7 +427,7 @@ impl DrivingState {
         ctx.say_event_with(
             format!("No engine brake zone in {distance}, coming into {spoken}."),
             SayEvent::queued()
-                .priority(EventPriority::Route)
+                .priority(EventPriority::Important)
                 .category(SpeechCategory::Navigation),
         );
     }
@@ -444,6 +444,14 @@ impl DrivingState {
 
     /// The citation: paid on the spot, escalating like repeat offenses do.
     pub fn fine_engine_braking(&mut self, ctx: &mut GameContext, city: &str) {
+        if self.new_driver_warning(ctx) {
+            ctx.audio.play("ui/warning");
+            ctx.say_event_with(
+                "A local officer warns you about the engine brake.",
+                SayEvent::new().category(SpeechCategory::Navigation),
+            );
+            return;
+        }
         let index = (self.jake_zone_fines.max(0) as usize).min(JAKE_ZONE_FINES.len() - 1);
         let fine = JAKE_ZONE_FINES[index];
         self.jake_zone_fines += 1;

@@ -10,8 +10,9 @@
 //! and the exit speed (the ramp's advisory, MUTCD W13-2, which stands along
 //! this lane) governs the curve that follows it, not the gore.
 
+use crate::speech::EventPriority;
 use ff_core::data::curves::min_radius_ft;
-use ff_core::speech_pacing::{EventPriority, SpeechCategory};
+use ff_core::speech_pacing::SpeechCategory;
 
 use crate::app::{GameContext, SayEvent};
 use crate::bindings::Action;
@@ -102,8 +103,9 @@ impl DrivingState {
 
     /// The driver's own foot on the throttle, key or pad.
     pub fn driver_accelerating(ctx: &GameContext) -> bool {
-        ctx.bindings.pressed(&ctx.input, Action::Accelerate)
-            || (ctx.controller.active() && ctx.controller.throttle() > 0.05)
+        !ctx.co_driver_away
+            && (ctx.bindings.pressed(&ctx.input, Action::Accelerate)
+                || (ctx.controller.active() && ctx.controller.throttle() > 0.05))
     }
 
     /// Work the deceleration lane: publish the ramp's grade, and let the
@@ -170,7 +172,7 @@ impl DrivingState {
         ctx.say_event_with(
             "Slowing for the ramp.",
             SayEvent::queued()
-                .priority(EventPriority::Route)
+                .priority(EventPriority::Important)
                 .category(SpeechCategory::Confirmation),
         );
     }

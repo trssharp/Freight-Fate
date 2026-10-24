@@ -37,6 +37,16 @@ fn on_off(flag: bool) -> &'static str {
     }
 }
 
+/// The Radio sound row's value. Each is a whole literal so a catalog can
+/// translate it.
+fn radio_sound_name(cab_speakers: bool) -> &'static str {
+    if cab_speakers {
+        "Cab speakers"
+    } else {
+        "Clean"
+    }
+}
+
 fn pct(level: f64) -> i64 {
     round_py_int(level * 100.0)
 }
@@ -148,7 +158,7 @@ pub(super) const DRIVING_ASSIST_SPECS: [(&str, &str, &str); 12] = [
     (
         "destination_approach_assist",
         "Facility stopping assistance",
-        "On the final approach, after any exit, it works the throttle and brakes: up to 12 miles per hour through the facility lane, creeping the last 200 feet, then stopping at pickup and delivery facilities, rest stops, and required weigh stations. It never chooses an exit, enters a yard, or docks. Realistic leaves it off; Balanced and All assists turn it on.",
+        "On the final approach, after any exit, it works the throttle and brakes: up to 12 miles per hour through the facility lane, creeping the last 200 feet, then stopping at pickup and delivery facilities, rest stops, and required weigh stations. It never chooses an exit, enters a yard, or docks. In a chain-law area it stops to put snow chains on and take them off, and it may spend on-duty minutes on chains: about 30 to chain up, 10 to take them off. It never buys chains. Realistic leaves it off; Balanced and All assists turn it on.",
     ),
     (
         "curve_speed_assist",
@@ -450,6 +460,8 @@ impl SettingsCategoryState {
                 adjust(|s, ctx, d| s.cycle_automatic_direction_changes(ctx, d)),
                 adjust(|s, ctx, d| s.toggle_controller(ctx, d)),
                 adjust(|s, ctx, d| s.toggle_haptics(ctx, d)),
+                #[cfg(feature = "visuals")]
+                adjust(|s, ctx, d| s.toggle_visual_display(ctx, d)),
             ],
             "assistance" => {
                 let mut actions = vec![adjust(|s, ctx, d| s.cycle_assist_preset(ctx, d))];
@@ -483,6 +495,7 @@ impl SettingsCategoryState {
                 adjust(|s, ctx, d| s.volume(ctx, "radio_volume", 0.1 * d as f64)),
                 adjust(|s, ctx, d| s.toggle_radio_streamer_safe(ctx, d)),
                 adjust(|s, ctx, d| s.toggle_radio_shuffle_playlists(ctx, d)),
+                adjust(|s, ctx, d| s.toggle_radio_cab_speakers(ctx, d)),
                 adjust(|s, ctx, d| s.toggle_duck_for_speech(ctx, d)),
                 adjust(|s, ctx, d| s.volume(ctx, "ui_volume", 0.1 * d as f64)),
             ],
@@ -502,10 +515,11 @@ impl SettingsCategoryState {
                 row(
                     dyn_label(|s| format!("Driving mode: {}", pace_label(s))),
                     adjust(|s, ctx, d| s.cycle_pace(ctx, d)),
-                    "Pacing and pressure. Relaxed gives wider hazard windows, \
+                    "Pacing and pressure. Relaxed passes about ten minutes of \
+                     road and clock each real minute, with wider hazard windows, \
                      gentler damage and fatigue, calmer speech, and the most \
                      time to respond. Standard keeps balanced pressure and moves \
-                     the clock twice as fast. Real time keeps Standard's \
+                     twice as fast, about twenty minutes each real minute. Real time keeps Standard's \
                      pressure and runs the driving clock at the speed of a real \
                      clock, lined up with your computer's date and time; delivery \
                      time remaining and hours of service do not move. Changeable \
@@ -528,7 +542,7 @@ impl SettingsCategoryState {
                         )
                     }),
                     adjust(|s, ctx, d| s.toggle_hos_planning_hints(ctx, d)),
-                    "Optional early advice for a break or sleep stop with time to spare. If an earlier stop fits, the hint also names the last legally reachable fallback. While rolling, use the Rest control to select the recommended stop; use it again to cancel. Standard driving speech speaks one suggestion before the next hours warning. The driving time readout gives full hours and route details. Quiet and Urgent only keep the automatic hint silent. Your required hours warnings and readout controls still work when this is off.",
+                    "Optional early advice for a break or sleep stop with time to spare. If an earlier stop fits, the hint also names the last legally reachable fallback. While rolling, use the Rest control to select the recommended stop; use it again to cancel. Standard driving speech speaks one suggestion before the next hours warning. The driving time readout gives full hours and route details. Quiet and Urgent only keep the automatic hint silent. Your required hours warnings and readout controls still work when this is off. It also reminds you before a chain-law road if you have no chains: on the dispatch board when the load crosses a road where trucks must carry chains this season, or where live weather or a weather alert puts a chain law in effect for your truck, while the terminal garage can still sell you a set, and on the road when a posted chain law requires chains on your truck. It never buys anything.",
                 ),
                 // The overspeed warning no longer has a row. It armed at the
                 // same 5-over pace predictive cruise itself holds, so it
@@ -691,6 +705,16 @@ impl SettingsCategoryState {
                     "Controller rumble for hazards, hard braking, the rumble \
                      strip, and road seams. Needs a controller connected.",
                 ),
+                // A build without the visual display has nothing to turn off.
+                #[cfg(feature = "visuals")]
+                row(
+                    dyn_label(|s| format!("Visual display: {}", on_off(s.visual_display))),
+                    adjust(|s, ctx, d| s.toggle_visual_display(ctx, d)),
+                    "Draws the road, the dashboard, menus and captions of what \
+                     is spoken in the game window, for sighted and low-vision \
+                     players. Off keeps the window dark and saves battery. \
+                     Speech and sound are the same either way.",
+                ),
                 // Enter opens each; Left and Right have nothing to step through,
                 // and the adjust table above stops before these rows.
                 MenuItem::new(
@@ -847,19 +871,18 @@ impl SettingsCategoryState {
                     format!(
                         "Steering guide: {}",
                         if s.steering_guide_inverted {
-                            "steer away from the lean"
+                            "steer away from the engine"
                         } else {
-                            "steer toward the lean"
+                            "steer toward the engine"
                         }
                     )
                 }),
                 adjust(|s, ctx, d| s.toggle_steering_guide_inverted(ctx, d)),
-                "Which way to steer when the engine leans. Toward the lean \
-                 is the default: the engine pans the way you have to turn, \
-                 and comes back to the middle as you turn. Away from the \
-                 lean flips it, for drivers who learned the other habit in \
-                 audio racing games. Everything else about the guide is the \
-                 same either way.",
+                "Which way to steer when the engine sound moves to one side. \
+                 Toward the engine is the default: the engine moves to the \
+                 side you have to turn to, then back to the middle as you \
+                 turn. Away from the engine flips it, for drivers used to \
+                 that from audio racing games.",
             ),
             row(
                 dyn_label(|s| {
@@ -960,6 +983,16 @@ impl SettingsCategoryState {
                 adjust(|s, ctx, d| s.toggle_radio_shuffle_playlists(ctx, d)),
                 "On plays each of your playlists in a random order, every track \
                  once before any repeats. Off plays the file top to bottom.",
+            ),
+            row(
+                dyn_label(|s| {
+                    let sound = radio_sound_name(s.radio_cab_speakers);
+                    format!("Radio sound: {sound}")
+                }),
+                adjust(|s, ctx, d| s.toggle_radio_cab_speakers(ctx, d)),
+                "Cab speakers plays the radio through the truck's door \
+                 speakers in the small cab, and lowering the driver window \
+                 brightens it. Clean plays it exactly as the station sends it.",
             ),
             row(
                 dyn_label(|s| {

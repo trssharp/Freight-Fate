@@ -135,3 +135,41 @@ fn a_crash_counts_as_a_serious_event_and_ages_out_like_one() {
     assert_eq!(d["driving_record"]["crashes"], 1);
     assert_eq!(d["driving_record"]["crash_times"][0], now);
 }
+
+/// Running off the road asleep goes on the record, and the Record line
+/// says so instead of "clean" over the list that names it (issue #347).
+#[test]
+fn the_record_line_names_a_safety_incident_and_a_crash() {
+    let mut p = a_driver_at(98.0);
+    let now = p.game_hours;
+    assert_eq!(standing_text(&p), "Record: clean.");
+    p.driving_record.record_fatigue_event(now - HOURS_PER_DAY);
+    assert_eq!(
+        standing_text(&p),
+        "Record: one safety incident in the last year."
+    );
+    p.driving_record.record_citation_at(150.0, now);
+    p.driving_record.record_crash(now);
+    assert!(
+        standing_text(&p).starts_with(
+            "Record: one citation, one safety incident and one crash in the last year."
+        ),
+        "{}",
+        standing_text(&p)
+    );
+    // The second time asleep is a serious violation, counted once as that.
+    let mut q = a_driver_at(98.0);
+    let now = q.game_hours;
+    q.driving_record
+        .record_fatigue_event(now - 2.0 * HOURS_PER_DAY);
+    q.driving_record.record_fatigue_event(now - HOURS_PER_DAY);
+    assert!(
+        standing_text(&q)
+            .starts_with("Record: one safety incident in the last year, one serious violation."),
+        "{}",
+        standing_text(&q)
+    );
+    // A year on, the incident has aged out like a citation does.
+    p.game_hours = now + (REVIEW_WINDOW_DAYS as f64 + 2.0) * HOURS_PER_DAY;
+    assert_eq!(standing_text(&p), "Record: clean.");
+}

@@ -543,8 +543,8 @@ fn silence_that_was_asked_for_is_announced_to_nobody() {
 #[test]
 fn a_headless_run_on_the_no_sound_device_arms_no_notice() {
     // The real backend pick, under the environment CI and the harness use:
-    // BASS lands on its no-sound device because this run asked it to, which
-    // must not read as a device that failed to open.
+    // Hearken plays through its silent backend because this run asked it
+    // to, which must not read as a device that failed to open.
     set_headless_env();
     let mut engine = AudioEngine::from_preference("");
     assert!(!engine.take_silence_notice());

@@ -144,3 +144,29 @@ fn a_called_off_lane_keeping_move_is_whole_spanish() {
         assert_eq!(es.translate(line), want);
     }
 }
+
+#[test]
+fn the_radio_sound_row_is_whole_spanish_both_ways() {
+    let es = spanish();
+    assert_eq!(
+        es.translate("Radio sound: Cab speakers"),
+        "Sonido de la radio: Altavoces de la cabina"
+    );
+    assert_eq!(
+        es.translate("Radio sound: Clean"),
+        "Sonido de la radio: Limpio"
+    );
+}
+
+#[test]
+fn the_visual_display_row_is_whole_spanish_both_ways() {
+    let es = spanish();
+    assert_eq!(
+        es.translate("Visual display: on"),
+        "Dibujo en pantalla: activado"
+    );
+    assert_eq!(
+        es.translate("Visual display: off"),
+        "Dibujo en pantalla: desactivado"
+    );
+}

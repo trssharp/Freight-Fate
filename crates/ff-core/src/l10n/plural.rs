@@ -12,7 +12,8 @@
 /// The CLDR plural category index of `n` in `language`, as the forms of a
 /// `{name:...}` choice are ordered: 0 = one, 1 = few (or other), 2 = many.
 ///
-/// - English, Spanish, German, Italian, Portuguese: one (n = 1), other.
+/// - English, Spanish, German, Italian, Portuguese, Turkish: one (n = 1),
+///   other.
 /// - French: one (0 and 1), other.
 /// - Russian: one (1, 21, 31...), few (2-4, 22-24...), many (the rest).
 /// - Polish: one (1 only), few (2-4, 22-24...), many (the rest).
@@ -112,7 +113,7 @@ pub fn choose<'a>(language: &str, forms: &'a [String], capture: &str) -> &'a str
 pub fn localize_number(language: &str, text: &str) -> Option<String> {
     let base = language.split(['_', '-']).next().unwrap_or(language);
     let (thousands, decimal) = match base {
-        "de" | "es" | "it" | "pt" => (".", ","),
+        "de" | "es" | "it" | "pt" | "tr" => (".", ","),
         "fr" | "ru" | "pl" => ("\u{a0}", ","),
         _ => return None,
     };

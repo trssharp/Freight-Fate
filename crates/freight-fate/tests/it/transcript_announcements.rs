@@ -33,7 +33,7 @@ use ff_core::sim::trip_models::{
 };
 use ff_core::sim::vehicle::TruckState;
 use ff_core::sim::weather::WeatherSystem;
-use ff_core::speech_pacing::EventPriority;
+use hearken::speech::EventPriority;
 
 use ff_core::data::world::get_world;
 use ff_core::models::jobs::{cargo_type, Job};
@@ -165,7 +165,12 @@ fn test_only_the_hazard_call_stays_critical() {
     ];
     for e in &act_soon {
         assert!(!DrivingState::is_critical_event(e), "{:?}", e.kind);
-        assert_eq!(d.event_priority(e), EventPriority::Route, "{:?}", e.kind);
+        assert_eq!(
+            d.event_priority(e),
+            EventPriority::Important,
+            "{:?}",
+            e.kind
+        );
     }
 
     let ambient = [
@@ -202,7 +207,7 @@ fn test_zone_entry_is_delivered_queued_at_route_priority() {
     );
     // The classification the call site reads (Python asserted this off the
     // `priority=` keyword its `say_event` stub captured).
-    assert_eq!(d.event_priority(&entry), EventPriority::Route);
+    assert_eq!(d.event_priority(&entry), EventPriority::Important);
 
     app.clear_speech();
     d.handle_trip_event(&mut app.ctx, &entry);
@@ -226,7 +231,7 @@ fn test_zone_warning_rides_route_while_weather_chatter_stays_ambient() {
     let warning = "Brake now! In 2 miles, construction ahead. Merge left for the \
                    flagger taper; speed limit 55, then 45 through the work zone.";
     let e = zoned(TripEventKind::GpsCue, warning, &zone);
-    assert_eq!(d.event_priority(&e), EventPriority::Route);
+    assert_eq!(d.event_priority(&e), EventPriority::Important);
 
     app.clear_speech();
     d.handle_trip_event(&mut app.ctx, &e);
@@ -549,7 +554,7 @@ fn test_zone_entry_no_longer_destroys_pending_ambient_chatter() {
     );
     assert_eq!(
         d.pending_ambient_events.back().unwrap().priority,
-        Some(EventPriority::Route)
+        Some(EventPriority::Important)
     );
     assert_eq!(
         app.event_calls(),

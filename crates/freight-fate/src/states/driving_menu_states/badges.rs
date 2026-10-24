@@ -6,6 +6,7 @@ use chrono::{Datelike, Local};
 use ff_core::achievements::{add_unique_stat, increment_stat, reset_stat};
 use ff_core::data::regions::REGIONS;
 use ff_core::models::carrier_fleet::{fleet_tier_for_level, FLEET_TIERS};
+use ff_core::models::co_driver;
 use ff_core::sim::season::{
     date_text, is_friday_the_thirteenth, is_truck_driver_appreciation_week, player_calendar_hours,
     season,
@@ -88,6 +89,20 @@ fn canonical_regions_visited(ctx: &GameContext) -> usize {
         })
         .count()
 }
+
+/// Badges for how the haul itself was driven, which a team load does not
+/// earn.
+const DRIVER_FEATS: [&str; 9] = [
+    "no_toll_long",
+    "long_haul",
+    "grueling_clean",
+    "mountain_clean",
+    "long_day_run",
+    "thrifty_run",
+    "spotless_long",
+    "five_hundred_mile_run",
+    "one_for_the_road",
+];
 
 fn int_stat(ctx: &GameContext, key: &str) -> i64 {
     profile_of(ctx)
@@ -582,6 +597,19 @@ pub(crate) fn award_arrival_achievements(
         }
     }
 
+    // A team load: the badges for driving the haul yourself are not earned
+    // on miles someone else drove, and a surprise co-driver has a badge of
+    // their own.
+    if state.team_miles > 0.0 {
+        ids.retain(|id| !DRIVER_FEATS.contains(&id.as_str()));
+        if let Some(badge) = d
+            .team
+            .as_ref()
+            .and_then(|team| co_driver::pairing_badge(team.co_driver.key))
+        {
+            push(&mut ids, badge);
+        }
+    }
     for achievement_id in ids {
         if let Some(result) = ctx.award_achievement_with(&achievement_id, false, false) {
             state.record_badge(

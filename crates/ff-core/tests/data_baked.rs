@@ -26,7 +26,7 @@
 //! ```
 //!
 //! Deselected must not mean unrun. A bad container reaches a tester through
-//! a release build, so that is where the gate belongs: `tools/build_release.py`
+//! a release build, so that is where the gate belongs: `cargo tools build-release`
 //! already runs `ff-bake --check` on every build, and CI should run both of
 //! these with `--ignored` whenever the data tree, the loaders or the baker
 //! change. Nothing else stands between a bad bake and a player.

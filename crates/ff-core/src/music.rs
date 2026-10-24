@@ -169,6 +169,11 @@ pub fn select_menu_music_sequence(profile: Option<&dyn MenuMusicProfile>) -> Vec
     let options: Vec<MusicTrack> = MENU_TRACKS[..unlocked_count]
         .iter()
         .chain(MENU_ROTATION_TRACKS.iter())
+        .chain(
+            MENU_LATE_CAREER_ROTATION_TRACKS
+                .iter()
+                .filter(|_| primary_index >= MENU_LATE_CAREER_MILESTONE),
+        )
         .cloned()
         .collect();
     let milestone_primary = MENU_TRACKS[primary_index].key.clone();
@@ -419,6 +424,30 @@ mod tests {
         assert_eq!(coast_pool[0], "menu_coast_to_coast");
         assert!(coast_pool.len() > rookie_pool.len());
         assert!(coast_pool.contains(&"menu_theme".to_string()));
+    }
+
+    #[test]
+    fn test_bossa_to_blues_joins_the_menu_with_million_mile_morning() {
+        let bossa = "drive_bossa_to_blues".to_string();
+        let mut regional = FakeProfile::named("Regional");
+        regional.level = 8;
+        regional.game_hours = 12.0;
+        assert!(!select_menu_music_sequence(Some(&regional)).contains(&bossa));
+
+        for hours in [12.0, 23.0] {
+            let mut late = FakeProfile::named("Late");
+            late.level = 9;
+            late.game_hours = hours;
+            assert_eq!(
+                menu_milestone_index(Some(&late)),
+                MENU_LATE_CAREER_MILESTONE
+            );
+            assert!(select_menu_music_sequence(Some(&late)).contains(&bossa));
+        }
+        assert_eq!(
+            MENU_TRACKS[MENU_LATE_CAREER_MILESTONE].key,
+            "menu_legendary_haul"
+        );
     }
 
     #[test]

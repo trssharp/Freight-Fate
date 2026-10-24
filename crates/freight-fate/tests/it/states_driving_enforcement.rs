@@ -39,6 +39,8 @@ use freight_fate::states::driving_enforcement::{
     DEFERRED_STOP_MAX_MI, PASS_TRIGGER_MI, POST_MARKER_LEAD_MI, SCALE_BED_CLOSED_MAX_VOLUME,
     SCALE_BED_OPEN_MAX_VOLUME, SCALE_BED_START_MI, SCALE_NOTICE_SAMPLE, WEIGH_STATION_REMINDER_MI,
 };
+use freight_fate::states::driving_events::stop_plan::StopPlanPurpose;
+use freight_fate::states::driving_menu_states::StopPurposeState;
 
 // -- rigging -------------------------------------------------------------------------
 
@@ -1098,6 +1100,33 @@ fn test_a_green_transponder_verdict_retires_the_reminder() {
 }
 
 #[test]
+fn test_a_green_transponder_lets_the_co_driver_and_the_exit_key_pass_the_scale() {
+    // Owner, 2026-10-19: with a transponder showing green, the truck rolls
+    // on by the scale as the rules allow; only a scale that wants the truck
+    // in is one to signal for.
+    let mut app = TestApp::new();
+    let mut drive = a_drive(&mut app, "Jerry");
+    let (scale, _) = with_scale(&mut drive, 10.0, 11.0, true);
+    drive.trip.position_mi = 8.0;
+    assert!(
+        drive.check_in_scale_ahead(&app.ctx, 5.0).is_some(),
+        "with no transponder the open scale wants the truck"
+    );
+    app.ctx.profile.as_mut().expect("a career").career =
+        ff_core::models::career::Career::with_xp(1.0e7);
+    let key = drive.weigh_station_key(&scale);
+    drive
+        .weigh_station_transponder_verdict
+        .insert(key.clone(), "green".to_string());
+    assert!(!drive.scale_wants_truck(&app.ctx, &scale));
+    assert!(drive.check_in_scale_ahead(&app.ctx, 5.0).is_none());
+    drive
+        .weigh_station_transponder_verdict
+        .insert(key, "red".to_string());
+    assert!(drive.check_in_scale_ahead(&app.ctx, 5.0).is_some());
+}
+
+#[test]
 fn test_the_reminder_window_is_the_last_half_mile() {
     const { assert!(WEIGH_STATION_REMINDER_MI > 0.0 && WEIGH_STATION_REMINDER_MI < 1.0) };
 }
@@ -1175,6 +1204,13 @@ fn test_rest_key_plans_normally_when_the_scale_is_closed() {
 
     let spoken = app.main_lines().join(" ") + &app.event_lines().join(" ");
     assert!(!spoken.contains("Weigh station first"), "{spoken}");
+    // The scale let the key through to the purpose list; the sleep row
+    // plans the plaza.
+    assert!(app
+        .ctx
+        .state()
+        .is_some_and(|state| state.borrow().as_any().is::<StopPurposeState>()));
+    drive.plan_stop_for(&mut app.ctx, StopPlanPurpose::Sleep);
     assert_eq!(
         drive.selected_stop_key.as_deref(),
         Some(plaza.key().as_str())
@@ -1194,6 +1230,13 @@ fn test_rest_key_plans_normally_when_the_scale_is_behind() {
 
     let spoken = app.main_lines().join(" ") + &app.event_lines().join(" ");
     assert!(!spoken.contains("Weigh station first"), "{spoken}");
+    // The scale let the key through to the purpose list; the sleep row
+    // plans the plaza.
+    assert!(app
+        .ctx
+        .state()
+        .is_some_and(|state| state.borrow().as_any().is::<StopPurposeState>()));
+    drive.plan_stop_for(&mut app.ctx, StopPlanPurpose::Sleep);
     assert_eq!(
         drive.selected_stop_key.as_deref(),
         Some(plaza.key().as_str())
@@ -1231,6 +1274,13 @@ fn test_rest_key_ignores_the_scale_in_a_casual_hos_mode() {
 
     let spoken = app.main_lines().join(" ") + &app.event_lines().join(" ");
     assert!(!spoken.contains("Weigh station first"), "{spoken}");
+    // The scale let the key through to the purpose list; the sleep row
+    // plans the plaza.
+    assert!(app
+        .ctx
+        .state()
+        .is_some_and(|state| state.borrow().as_any().is::<StopPurposeState>()));
+    drive.plan_stop_for(&mut app.ctx, StopPlanPurpose::Sleep);
     assert_eq!(
         drive.selected_stop_key.as_deref(),
         Some(plaza.key().as_str())

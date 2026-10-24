@@ -1,8 +1,10 @@
 //! Career stats screen: the terminal's driver record as a reviewable menu
 //! (port of `freight_fate/states/career_stats.py`).
 
+use ff_core::models::business_constants::is_owner_operator;
 use ff_core::models::career::xp_to_next_level;
 use ff_core::models::carrier_fleet::equipment_status_lines;
+use ff_core::models::co_driver;
 use ff_core::models::credentials::{credential, CredentialTier, CREDENTIALS};
 use ff_core::models::enforcement;
 use ff_core::models::profile::Profile;
@@ -208,6 +210,21 @@ impl Menu for CareerStatsState {
                 );
             }
         }
+        // Who you have teamed with, for a player who wants the story. Only
+        // there once a team load is done, and never read unless opened.
+        if ctx
+            .profile
+            .as_ref()
+            .is_some_and(|p| co_driver::team_loads(&p.achievement_stats) > 0)
+        {
+            items.push(
+                MenuItem::new("Co-drivers", |_s: &mut Self, ctx| {
+                    let lines = co_driver_lines(ctx);
+                    ctx.push_state(SimpleMenuState::readout("Co-drivers", lines));
+                })
+                .help("Open the list of co-drivers you have teamed with, each with their story."),
+            );
+        }
         items.push(
             MenuItem::new("Citations and violations", |_s: &mut Self, ctx| {
                 let lines = record_lines(ctx);
@@ -269,6 +286,35 @@ pub fn places_lines(ctx: &GameContext) -> Vec<String> {
     } else {
         lines
     }
+}
+
+/// One line per co-driver the career has teamed with, in cast order: the
+/// loads run together, whether they are this owner-operator's hire, and
+/// their story.
+pub fn co_driver_lines(ctx: &GameContext) -> Vec<String> {
+    let Some(p) = ctx.profile.as_ref() else {
+        return Vec::new();
+    };
+    let stats = &p.achievement_stats;
+    // The hire is only theirs while they run their own authority; back on
+    // a carrier's payroll, the carrier pairs co-drivers again.
+    let hire = is_owner_operator(&p.business_status)
+        .then(|| co_driver::hired_co_driver(stats).map(|member| member.key))
+        .flatten();
+    co_driver::teamed_with(stats)
+        .into_iter()
+        .map(|(member, loads)| {
+            let name = member.name;
+            let bio = member.bio;
+            // Whole lines, so a translation matches each as it is spoken.
+            match (hire == Some(member.key), loads == 1) {
+                (true, true) => format!("{name}, your hire, 1 team load. {bio}"),
+                (true, false) => format!("{name}, your hire, {loads} team loads. {bio}"),
+                (false, true) => format!("{name}, 1 team load. {bio}"),
+                (false, false) => format!("{name}, {loads} team loads. {bio}"),
+            }
+        })
+        .collect()
 }
 
 /// The record's entries as spoken lines, newest first, then the counts that

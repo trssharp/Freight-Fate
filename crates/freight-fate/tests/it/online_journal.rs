@@ -32,6 +32,7 @@ fn facts(deliveries: i64) -> DeliveryFacts {
         job_destination: "denver_co_us".to_string(),
         distance_mi: 1000.0,
         weight_tons: 20.0,
+        team_note: None,
     }
 }
 

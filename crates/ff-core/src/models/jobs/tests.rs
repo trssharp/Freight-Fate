@@ -38,8 +38,13 @@ fn supported(job: &Job) -> Option<Route> {
         .flatten()
 }
 
+/// The honest hours a load needs: a team load changes drivers where a
+/// solo driver sleeps.
 fn required(job: &Job) -> f64 {
     let route = supported(job);
+    if job.team {
+        return team_required_hours(job.distance_mi, route.as_ref(), Some(world()));
+    }
     required_hours(job.distance_mi, route.as_ref(), Some(world()), None)
 }
 

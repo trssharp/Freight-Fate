@@ -21,7 +21,7 @@
 //! (see [`POSITION_CUE`]), so the cue never depends on the row matching.
 //!
 //! The catalogs are gettext PO files in the repository's `lang/` folder;
-//! `lang/README.md` is the translator's guide. `tools/l10n/extract.py`
+//! `lang/README.md` is the translator's guide. `cargo tools l10n-extract`
 //! rebuilds the template list (`lang/freight-fate.pot`) from the source.
 
 use std::borrow::Cow;
@@ -51,51 +51,81 @@ pub const ENGLISH: &str = "en";
 pub struct Language {
     /// The catalog's file stem and the settings value: `es`, `pt_BR`.
     pub code: &'static str,
-    /// The language's name in that language, as the settings row reads it.
+    /// The language's name in English.
+    pub name: &'static str,
+    /// The language's name in that language.
     pub autonym: &'static str,
+}
+
+impl Language {
+    /// The settings row's name: the English name with the language's own
+    /// name after it, "Spanish (Español)", or one name when they are the same.
+    pub fn label(&self) -> String {
+        let Language { name, autonym, .. } = *self;
+        if name == autonym {
+            autonym.to_string()
+        } else {
+            format!("{name} ({autonym})")
+        }
+    }
 }
 
 /// Every language with a catalog, English first, then in settings order.
 pub const LANGUAGES: &[Language] = &[
     Language {
         code: "en",
+        name: "English",
         autonym: "English",
     },
     Language {
         code: "es",
+        name: "Spanish",
         autonym: "Español",
     },
     Language {
         code: "fr",
+        name: "French",
         autonym: "Français",
     },
     Language {
         code: "de",
+        name: "German",
         autonym: "Deutsch",
     },
     Language {
         code: "pt_BR",
+        name: "Brazilian Portuguese",
         autonym: "Português do Brasil",
     },
     Language {
         code: "it",
+        name: "Italian",
         autonym: "Italiano",
     },
     Language {
         code: "ru",
+        name: "Russian",
         autonym: "Русский",
     },
     Language {
         code: "pl",
+        name: "Polish",
         autonym: "Polski",
     },
     Language {
         code: "zh_CN",
+        name: "Simplified Chinese",
         autonym: "简体中文",
     },
     Language {
         code: "ja",
+        name: "Japanese",
         autonym: "日本語",
+    },
+    Language {
+        code: "tr",
+        name: "Turkish",
+        autonym: "Türkçe",
     },
 ];
 
@@ -103,12 +133,12 @@ pub const LANGUAGES: &[Language] = &[
 static ADDED: std::sync::OnceLock<Vec<Language>> = std::sync::OnceLock::new();
 
 /// Offer languages that came as a catalog file with no entry in
-/// [`LANGUAGES`]: `(code, autonym)` pairs, read from the files' headers.
+/// [`LANGUAGES`]: `(code, name, autonym)`, read from the files' headers.
 /// The game calls this once, before the language is first resolved; a
 /// later call changes nothing. Codes already known are skipped.
-pub fn add_languages(found: impl IntoIterator<Item = (String, String)>) {
+pub fn add_languages(found: impl IntoIterator<Item = (String, String, String)>) {
     let mut added: Vec<Language> = Vec::new();
-    for (code, autonym) in found {
+    for (code, name, autonym) in found {
         if language(&code).is_some() || added.iter().any(|lang| lang.code == code) {
             continue;
         }
@@ -116,6 +146,7 @@ pub fn add_languages(found: impl IntoIterator<Item = (String, String)>) {
         // resolved code hand these out as `&'static str` like the built-ins.
         added.push(Language {
             code: Box::leak(code.into_boxed_str()),
+            name: Box::leak(name.into_boxed_str()),
             autonym: Box::leak(autonym.into_boxed_str()),
         });
     }
@@ -465,11 +496,13 @@ impl Translator {
             return Cow::Owned(hit.clone());
         }
         let mut missed = Vec::new();
+        let mut memo = Memo::new();
         let out = match split_position_cue(line) {
             Some((row, position, count)) => {
                 let row = Pass {
                     catalog,
                     missed: &mut missed,
+                    memo: &mut memo,
                 }
                 .line(row, 0)
                 .unwrap_or_else(|| row.to_string());
@@ -480,6 +513,7 @@ impl Translator {
             None => Pass {
                 catalog,
                 missed: &mut missed,
+                memo: &mut memo,
             }
             .line(line, 0)
             .map(|out| {
@@ -536,7 +570,15 @@ impl MissLog {
 struct Pass<'c, 'm> {
     catalog: &'c Catalog,
     missed: &'m mut Vec<String>,
+    memo: &'m mut Memo,
 }
+
+/// Every piece already worked out in one line's translation, by its text,
+/// depth and whether it may split, with the misses it recorded. The
+/// matcher tries the same capture under many templates and clause splits,
+/// so a long line (the driving keyboard help) asked for the same pieces
+/// millions of times: minutes on the game thread before this.
+type Memo = HashMap<(String, usize, bool), (Option<String>, Vec<String>)>;
 
 impl Pass<'_, '_> {
     /// A whole line or one of its pieces. `None` when nothing in it was
@@ -550,6 +592,19 @@ impl Pass<'_, '_> {
     }
 
     fn piece(&mut self, text: &str, depth: usize, split: bool) -> Option<String> {
+        let key = (text.to_string(), depth, split);
+        if let Some((out, missed)) = self.memo.get(&key) {
+            self.missed.extend(missed.iter().cloned());
+            return out.clone();
+        }
+        let start = self.missed.len();
+        let out = self.piece_uncached(text, depth, split);
+        let missed = self.missed.get(start..).unwrap_or_default().to_vec();
+        self.memo.insert(key, (out.clone(), missed));
+        out
+    }
+
+    fn piece_uncached(&mut self, text: &str, depth: usize, split: bool) -> Option<String> {
         let core = text.trim();
         if core.is_empty() {
             return None;
@@ -656,6 +711,7 @@ impl Pass<'_, '_> {
                     let mut inner = Pass {
                         catalog: self.catalog,
                         missed: &mut missed,
+                        memo: &mut *self.memo,
                     };
                     // A sentence is a line of its own; only clauses go deeper.
                     let deeper = if clauses { depth + 1 } else { depth };
@@ -915,6 +971,7 @@ impl Pass<'_, '_> {
                         let translated = Pass {
                             catalog: self.catalog,
                             missed: &mut ignored,
+                            memo: &mut *self.memo,
                         }
                         .piece(raw, depth + 1, has_sentence_break(raw));
                         // A measure ("2 miles") or a name kept as is is
