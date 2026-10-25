@@ -48,8 +48,9 @@ bookmarks usable.
       `lang/` matched as templates, so the code stays English. Settings,
       Speech, Language picks the language (Automatic follows the system on
       a fresh install; an existing settings file keeps English). Turkish
-      joined the nine on 2026-10-22 (issue 397). Radio and
-      recordings stay English. `lang/README.md` is the translator's guide;
+      joined the nine on 2026-10-22 (issue 397). Vietnamese localization is
+      in progress as a draft PR (163 of 9,242 entries translated as of
+      2026-10-24). Radio and recordings stay English. `lang/README.md` is the translator's guide;
       corrections come as pull requests or the Translation correction issue
       form. Languages land one pull request each. A language added as a
       `.po` file alone, built in or dropped into `saves/lang/`, is offered
@@ -240,7 +241,8 @@ bookmarks usable.
 - [x] Facility streets setting (owner, 2026-10-11, for players who want the
       1.8 arrival): Settings, Gameplay, World and traffic. Off skips the
       facility street chains both ways (the destination ramp ends at the
-      gate, with no light or stop sign at its end; a loaded run leaves
+      gate; no exit ramp ends at a light or stop sign, owner 2026-10-24;
+      a loaded run leaves
       straight onto the highway) and gives a pickup in town the single
       synthetic access-road leg. On by default; a drive and its save keep
       the value it started with.
