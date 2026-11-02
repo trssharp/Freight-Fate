@@ -99,12 +99,12 @@ fn the_struct_carries_the_persisted_fields_in_python_order() {
     // (2026-10-12) and automatic_jake (2026-10-14) were added on the Rust side;
     // lane_centering_assist was retired for 1.9, and the three Mastodon
     // sharing fields on 2026-10-15; visual_display (2026-10-15) and
-    // radio_cab_speakers (2026-10-18).
-    assert_eq!(Settings::FIELD_NAMES.len(), 97);
+    // radio_cab_speakers (2026-10-18), achievement_sort (2026-10-28).
+    assert_eq!(Settings::FIELD_NAMES.len(), 100);
     assert_eq!(Settings::FIELD_NAMES[0], "online_services");
-    assert_eq!(Settings::FIELD_NAMES[80], "settings_layout_notice_from");
+    assert_eq!(Settings::FIELD_NAMES[82], "settings_layout_notice_from");
     let pairs = Settings::default().ordered_values();
-    assert_eq!(pairs.len(), 97);
+    assert_eq!(pairs.len(), 100);
     for ((name, _), field) in pairs.iter().zip(Settings::FIELD_NAMES) {
         assert_eq!(name, field);
     }
@@ -148,7 +148,8 @@ fn the_defaults_match_the_python_dataclass() {
         "announce_menu_position": true, "backup_announcements": "every",
         "sapi_events": true, "event_backend": "SAPI", "braille_only": false,
         "speech_rate": 0.5, "speech_pitch": 0.5, "speech_volume": 1.0, "speech_voice": "",
-        "update_channel": "", "skipped_update": "", "discord_presence": true,
+        "update_channel": "", "update_mirror_enabled": false,
+        "update_mirror_prefix": "", "skipped_update": "", "discord_presence": true,
         "online_presence": false, "duty_notifications": false,
         "profile_sharing_consent_version": 0,
         "profile_sharing_pending_off": false, "cloud_saves": false,
@@ -160,14 +161,14 @@ fn the_defaults_match_the_python_dataclass() {
         "touch_still_hold_ms": 500.0, "touch_rotate_degrees": 30.0, "touch_parking_brake_mph": 1.0,
         "steering_guide_inverted": false, "assist_preset_chosen": false,
         "facility_streets": true,
-        "language": "auto", "visual_display": true
+        "language": "auto", "visual_display": true, "achievement_sort": "earned"
     }"#,
     )
     .unwrap();
     let Value::Object(expected) = expected else {
         unreachable!()
     };
-    assert_eq!(expected.len(), 97);
+    assert_eq!(expected.len(), 100);
     for (name, value) in s.ordered_values() {
         assert_eq!(Some(&value), expected.get(name), "{name}");
     }
@@ -223,7 +224,7 @@ fn the_file_text_is_what_json_dump_wrote() {
          \"touch_deep_swipe_factor\": 3.0,\n  \"touch_still_hold_ms\": 500.0,\n  \
          \"touch_rotate_degrees\": 30.0,\n  \"touch_parking_brake_mph\": 1.0,\n  \
          \"steering_guide_inverted\": false,\n  \"assist_preset_chosen\": false,\n  \"facility_streets\": true,\n  \"language\": \"auto\",\n  \
-         \"visual_display\": true,\n  \"steering_assist\": \"off\"\n}"
+         \"visual_display\": true,\n  \"achievement_sort\": \"earned\",\n  \"steering_assist\": \"off\"\n}"
     ));
     assert!(text.contains("\n  \"time_scale\": 10.0,\n"));
     assert!(text.contains("\n  \"radio_volume\": 0.25,\n"));
@@ -1313,11 +1314,17 @@ fn test_settings_default_and_validation() {
     with_data_dir(|_| {
         let mut s = Settings::default();
         assert_eq!(s.update_channel, "");
+        assert!(!s.update_mirror_enabled);
+        assert_eq!(s.update_mirror_prefix, "");
         assert_eq!(s.skipped_update, "");
         s.update_channel = "weird".to_string();
+        s.update_mirror_enabled = true;
+        s.update_mirror_prefix = "https://mirror.example/".to_string();
         s.save().unwrap();
         let loaded = Settings::load();
         assert_eq!(loaded.update_channel, ""); // invalid value reset
+        assert!(loaded.update_mirror_enabled);
+        assert_eq!(loaded.update_mirror_prefix, "https://mirror.example/");
     });
 }
 

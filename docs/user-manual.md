@@ -380,7 +380,7 @@ A control marked Driving commands has no controller button. Hold the right bumpe
 | B, hold | Left trigger, all the way down | Emergency brake. |
 | E | Right bumper plus A | Start the engine. Stop the engine only below 5 miles per hour. |
 | P | Right bumper plus Y | Release or set the parking brake. Set it above a crawl and the spring brakes slam on: a screech, a hard stop, and permanent flat spots ground into the tires, worse the faster you were going. It is not a brake pedal. |
-| K | Y | Start or cancel automatic speed control. It uses adaptive cruise on open roads and speed keeper in low-speed zones. It pauses through the planned pickup and resumes once the loaded truck is rolling. Braking elsewhere also cancels it. Parked with the parking brake set, K latches a high idle instead. |
+| K | Y | Start or cancel automatic speed control. It uses adaptive cruise on the highway, work zones and heavy traffic included, and speed keeper on streets and facility approaches. It pauses through the planned pickup and resumes once the loaded truck is rolling. Braking elsewhere also cancels it. Parked with the parking brake set, K latches a high idle instead. |
 | Shift+K | Driving commands | Resume automatic speed control at the last speed you had set, after braking cancelled it. |
 | Plus / Minus | Right bumper plus D-pad right or left | Raise or lower the open-road cruise target while automatic speed control is active, snapping outward to the next multiple of 5 mph: from 32 it lands on 35, then 40. The keypad Plus and Minus keys work too. |
 | Ctrl+Plus / Ctrl+Minus | Not on the controller | Raise or lower the open-road cruise target by exactly 1 mph, no snapping, for setting a precise number. |
@@ -500,7 +500,7 @@ If the load is close to the weight limit, check before filling the tank. Fuel ad
 
 Set the parking brake once you're stopped. Pulling it at speed brings a hard stop and can flat-spot the tires. With it set, K, or Y on a controller, holds high idle until you release the brake.
 
-On open road at twenty miles per hour or above, K starts adaptive cruise. In supported low-speed zones, it starts speed keeper instead. The control follows traffic and leaves a wider gap in bad weather.
+On open road at twenty miles per hour or above, K starts adaptive cruise. On streets and facility approaches, it starts speed keeper instead. Cruise holds a work zone or heavy traffic at its limit. The control follows traffic and leaves a wider gap in bad weather.
 
 Plus and Minus move the cruise target outward to the next multiple of five: from 32, Plus selects 35, then 40. On a controller, hold the right bumper and press D-pad right or left. Hold Control to adjust one mile per hour at a time. Space tells you which mode is active, its target, and whether conditions are holding you below it. Braking cancels the control; Shift+K resumes. A pickup pauses the session through loading and saving, then resumes it after departure.
 
@@ -589,7 +589,7 @@ The GPS announces state lines, towns, route changes, work zones, tolls, and usef
 
 ### Construction and exits
 
-Slow as the work-zone limit steps down, and leave a closing lane when instructed. Continuing past the urgent barrel warning causes damage, a 1,000 dollar citation, and a serious violation. That citation is charged once per zone and isn't doubled again for construction. If the road itself reduces the lane count and repositions you, there's no penalty for that move.
+Slow as the work-zone limit steps down, and leave a closing lane when instructed. With full lane keeping, the truck leaves it for you when the signs come up, and waits behind traffic for a gap if it has to. Continuing past the urgent barrel warning causes damage, a 1,000 dollar citation, and a serious violation. That citation is charged once per zone and isn't doubled again for construction. If the road itself reduces the lane count and repositions you, there's no penalty for that move.
 
 While you're rolling, T asks what the stop is for: fuel, a break, sleep, fuel and sleep, or food and coffee. Each choice gives the distance to its stop, and Enter plans the next stop for it. With planning hints enabled, a break or sleep plan takes the recommended stop. The list opens on fuel when the tank is low or won't reach the next pumps. Press T again to cancel the plan.
 
@@ -1060,6 +1060,8 @@ To bring your own music, put an M3U, M3U8, or PLS playlist in the Playlists fold
 
 Stations remember their position when you tune away. Your playlists normally play in order and resume where you left them. Turn on Shuffle personal playlists to hear every track once in a random order, with a new order each time through. Unreadable entries are skipped, and slow streams get time to connect. If none can play, the game explains the problem and names the folder.
 
+A playlist can also hold YouTube links, livestreams included. Freight Fate doesn't include the program that plays them, yt-dlp, so install it yourself. Put yt-dlp.exe in the Playlists folder, or install it so it is on your PATH; on a Mac, Homebrew works. A YouTube link takes a few seconds longer to start than other streams. Keep yt-dlp up to date: an old copy can lose a livestream after half a minute, and an update usually fixes a link that stops playing.
+
 ### Suggesting a station
 
 If a station is missing, open Suggest a station in the Radio app. Enter its type, name, and stream address; Control V lets you paste. For AM or FM, include the call sign and state. City and frequency are optional. You'll need account setup and Online services enabled.
@@ -1068,7 +1070,9 @@ The service checks whether the stream plays and whether the station is already l
 
 ## Achievements and career progress
 
-Open Achievements from the main menu and choose a saved career. The menu reads how many achievements that driver has earned. Choose a category to browse its entries, using Up and Down to move and Enter to repeat an entry. Escape returns to the categories. On a controller, use the D-pad, A, and B.
+Open Achievements from the main menu and choose a saved career. While you play, Achievements on the terminal menu and the pause menu opens the current career's achievements directly. The menu reads how many achievements that driver has earned. Choose a category to browse its entries, using Up and Down to move and Enter to repeat an entry. Escape returns to the categories. On a controller, use the D-pad, A, and B.
+
+The first row, Sort, sets the order of the categories below it and of the entries inside them: earned first, newest first, locked first, A to Z, or the original order. Use Left and Right, or Enter, to change it; the game remembers your choice. Earned first is the default. Each category opens on its own Sort row, which changes that category alone until you leave the achievements. Account achievements under Online sort the same way.
 
 Earned entries include their descriptions. Locked entries don't give you the same detail, and hidden achievements keep their names secret until earned. You can browse them between trips without starting or changing a career.
 
@@ -1118,7 +1122,7 @@ It may need a certificate, endorsement, or trailer you do not have. Press F1 on 
 
 ### Why did I get a citation at a weigh station?
 
-When you hear "Open weigh station ahead", every truck must pull in. Press X to signal for the scale exit, stop at the scale, then press T to check in. A closed scale is not announced, and you can drive past it.
+When you hear "Open weigh station ahead", every truck must pull in. Press X to signal for the scale exit, stop at the scale, then press T to check in. With full lane keeping, the truck signals for the scale itself, and with facility stopping assistance on it also stops there for you. A closed scale is not announced, and you can drive past it.
 
 ### Why is the speed limit 55 on a fast highway?
 

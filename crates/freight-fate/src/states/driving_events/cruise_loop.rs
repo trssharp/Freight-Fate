@@ -3,7 +3,7 @@
 
 use crate::speech::EventPriority;
 use ff_core::sim::transmission::JAKE_MAX_RPM;
-use ff_core::sim::trip::LIMIT_WARNING_MAX_LEAD_MI;
+use ff_core::sim::trip::{is_highway_zone_reason, LIMIT_WARNING_MAX_LEAD_MI};
 use ff_core::speech_pacing::SpeechCategory;
 use ff_core::speech_text::SpokenMessage;
 
@@ -59,14 +59,16 @@ impl DrivingState {
 
     /// Distance ACC needs to ease down to a specific lower limit.
     ///
-    /// Two clocks are in play. The truck sheds speed in GAME seconds -- the
-    /// comfort deceleration is physics -- but the working setpoint it chases
-    /// only walks down at `CRUISE_ACCEL_MPH_PER_S` in REAL seconds
-    /// (`run_cruise_loop`), and under time compression the road passes
-    /// `effective_time_scale` times faster than that walk. At real time the
-    /// physics distance is the longer one; at ten and twenty times the ramp
-    /// is, by miles, and sizing the trigger on physics alone had cruise still
-    /// easing when the lower number arrived. The same real-seconds
+    /// Everything here runs on the REAL clock. The truck's physics steps in
+    /// real seconds and only the distance it covers is multiplied by
+    /// `effective_time_scale` (`Trip::update`), so the comfort deceleration
+    /// and the working setpoint's walk at `CRUISE_ACCEL_MPH_PER_S` both cost
+    /// `effective_time_scale` times the road under compression. So does the
+    /// quarter-mile margin, which is the time the brake trim needs to taper
+    /// onto the number. Sized on physics and margin at real time, cruise at
+    /// ten times reached a drop from 55 to 35 in the rain at 42, and the
+    /// overspeed warning fired for a speed cruise itself had chosen (agent
+    /// drive into Wausau on WI-29, 2026-10-27). The same real-seconds
     /// conversion the "drops to X" pacenote uses
     /// (`Trip::limit_drop_warning_lead_mi`).
     pub fn acc_limit_lookahead_mi(&self, speed_mph: f64, target_mph: f64) -> f64 {
@@ -75,15 +77,17 @@ impl DrivingState {
         if target_mps >= speed_mps {
             return ACC_LIMIT_LOOKAHEAD_MIN_MI;
         }
+        let scale = self.trip.effective_time_scale().max(1.0);
         let braking_m = (speed_mps * speed_mps - target_mps * target_mps)
             / (2.0 * ACC_LIMIT_COMFORT_DECEL_MPS2);
-        let braking_mi = 0.0f64.max(braking_m / 1609.344);
+        let braking_mi = 0.0f64.max(braking_m / 1609.344) * scale;
         let ramp_real_s = (speed_mph - target_mph) / CRUISE_ACCEL_MPH_PER_S;
         let mean_mph = (speed_mph + target_mph) / 2.0;
-        let ramp_mi = ramp_real_s * mean_mph * self.trip.effective_time_scale() / 3600.0;
+        let ramp_mi = ramp_real_s * mean_mph * scale / 3600.0;
+        let margin_mi = ACC_LIMIT_LOOKAHEAD_MIN_MI * scale;
         ACC_LIMIT_LOOKAHEAD_MIN_MI.max(
             self.acc_limit_lookahead_max_mi()
-                .min(braking_mi.max(ramp_mi) + 0.25),
+                .min(braking_mi.max(ramp_mi) + margin_mi),
         )
     }
 
@@ -369,6 +373,10 @@ impl DrivingState {
         }
         let position = self.trip.position_mi;
         let (limit, zone_reason) = self.trip.speed_limit_at(position);
+        // A highway work zone or heavy traffic stays on cruise, capped at its
+        // limit below. Handed to the keeper partway down a grade, it left
+        // descent control behind and the co-driver crawling (issue #518).
+        let zone_reason = zone_reason.filter(|reason| !is_highway_zone_reason(reason));
         if let Some(zone_reason) = zone_reason {
             if self.speed_control_armed && ctx.settings.speed_keeper {
                 self.cancel_cruise(ctx, true);
@@ -518,9 +526,7 @@ impl DrivingState {
         // tickets, and trooper stops -- all of which now exist. The "Speed limit X"
         // cue still names the number; this cue says cruise is handling it.
         let (posted, limit_reason) = self.acc_posted_limit_ahead(ctx);
-        let restricted = limit_reason
-            .as_deref()
-            .is_some_and(|reason| RESTRICTED_ZONE_REASONS.contains(&reason));
+        let restricted = limit_reason.as_deref().is_some_and(is_highway_zone_reason);
         let cap_mph = if restricted {
             posted
         } else {
@@ -532,6 +538,19 @@ impl DrivingState {
         // held the 60 the posted limit allowed, missing the exit and costing
         // the driver a twenty-minute loop back.
         let limit_capped = cap_mph < target_mph;
+        // Which limit, and whether it is in force yet: "holding 65 for the
+        // lower limit, set 70" in a 70 read as cruise ignoring the road, when
+        // it was slowing for a 60 sign ahead (owner, 2026-10-25).
+        let limit_reason_text = match limit_reason.as_deref() {
+            Some("construction" | "construction merge") if restricted => {
+                "through the construction zone".to_string()
+            }
+            Some(reason) if restricted => format!("for the {reason}"),
+            _ if posted < self.trip.speed_limit_at(self.trip.position_mi).0 => {
+                format!("for the {} limit ahead", ctx.settings.speed_value(posted))
+            }
+            _ => format!("for the {} limit", ctx.settings.speed_value(posted)),
+        };
         if limit_capped {
             // Take the lower of the two caps. A posted limit above ramp speed
             // must not undo an armed exit's cap and send the truck past its
@@ -708,7 +727,7 @@ impl DrivingState {
         } else if curve_capped {
             "for the bend".to_string()
         } else if limit_capped {
-            "for the lower limit".to_string()
+            limit_reason_text
         } else if [self.cruise_descent_mph, self.descent_safe_mph]
             .into_iter()
             .flatten()

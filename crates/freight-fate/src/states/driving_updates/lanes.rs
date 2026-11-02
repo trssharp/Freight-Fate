@@ -365,7 +365,12 @@ impl DrivingState {
                 // there is one; see `say_ramp_lift`.
                 self.say_ramp_lift(ctx);
             }
-        } else if self.transition_assist_active && !self.ramp_terminal_owns_the_stop() {
+        } else if self.transition_assist_active
+            && !self.ramp_terminal_owns_the_stop()
+            && !self.terminal_assist_closes_up(ctx)
+            && !self.terminal_takes_over_from_the_cap()
+            && !self.destination_arrival_active
+        {
             // ROUTE, not the ambient default: names the automation handing the
             // pedals back (automation-handoff sweep, 2026-08-20, the deferred
             // 2026-08-15 audit).
@@ -374,7 +379,12 @@ impl DrivingState {
             // five under its number, but the terminal's servo is still braking
             // for the bar, so "released" at 15 mph with the stop sign ahead was
             // untrue (agent drive into Abilene, 2026-09-23). The terminal's own
-            // "Stopped at the sign" is the release there.
+            // "Stopped at the sign" is the release there. Nor while the
+            // terminal is driving the truck up to its line: "released" came
+            // partway down Cleveland's exit 170A with the assist still at the
+            // pedals (owner, 2026-10-25). Nor while the arrival assist has
+            // the pedals for a ramp that ends at the gate: it is still
+            // driving the truck in (owner, 2026-10-25, Facility streets off).
             ctx.say_event_with(
                 "Route-transition assistance released.",
                 SayEvent::queued()
@@ -461,6 +471,7 @@ impl DrivingState {
         self.hold_keeping_lane_change(ctx);
         self.update_tap_lane_change(ctx, dt);
         self.update_pass_return(ctx);
+        self.update_closure_merge(ctx);
         self.update_merge(ctx, dt);
         self.update_keep_right(ctx, dt);
     }
@@ -761,10 +772,20 @@ impl DrivingState {
                 if self.merge_taper_warned.as_deref() != Some(taper_key.as_str()) {
                     self.merge_taper_warned = Some(taper_key);
                     ctx.audio.play("ui/warning");
-                    let text = format!(
-                        "The {} lane closes at the work zone ahead. Move to the {open_name} lane.",
-                        lane_label(closed, self.lane.lane_count)
-                    );
+                    // On full lane keeping the move is the truck's, so the
+                    // line says what it is waiting for, not what to do.
+                    let closed_name = lane_label(closed, self.lane.lane_count);
+                    let text = if ctx.settings.lane_is_automated() {
+                        format!(
+                            "The {closed_name} lane closes at the work zone ahead. Waiting for a \
+                             gap in the {open_name} lane."
+                        )
+                    } else {
+                        format!(
+                            "The {closed_name} lane closes at the work zone ahead. Move to the \
+                             {open_name} lane."
+                        )
+                    };
                     ctx.say_event_with(text, SayEvent::new().category(SpeechCategory::Safety));
                 }
                 return;
@@ -774,10 +795,15 @@ impl DrivingState {
             self.merge_deadline = Some(MERGE_WINDOW_S);
             ctx.audio.play("ui/warning");
             ctx.controller.rumble.alert();
-            let text = format!(
-                "You are in the closed {} lane! Move to the {open_name} lane!",
-                lane_label(closed, self.lane.lane_count)
-            );
+            let closed_name = lane_label(closed, self.lane.lane_count);
+            let text = if ctx.settings.lane_is_automated() {
+                format!(
+                    "You are in the closed {closed_name} lane! Waiting for a gap in the \
+                     {open_name} lane!"
+                )
+            } else {
+                format!("You are in the closed {closed_name} lane! Move to the {open_name} lane!")
+            };
             ctx.say_event_with(text, SayEvent::new().category(SpeechCategory::Safety));
             return;
         }
@@ -894,10 +920,11 @@ impl DrivingState {
     }
 
     /// Left-lane time is legitimate while passing slower right-lane
-    /// traffic, while construction has the right lane coned off, or while
+    /// traffic, while construction has the right lane coned off here or
+    /// just ahead, or while
     /// lane keeping's own move back is held or was just called off.
     pub fn keep_right_justified(&self) -> bool {
-        if self.closed_lane_here() == Some(0) || self.keep_right_excused_s > 0.0 {
+        if self.lane_closes_ahead(0) || self.keep_right_excused_s > 0.0 {
             return true;
         }
         let speed = self.trip.truck.speed_mph();

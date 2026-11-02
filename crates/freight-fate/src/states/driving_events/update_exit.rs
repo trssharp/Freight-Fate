@@ -268,6 +268,15 @@ impl DrivingState {
                 return;
             }
             self.ramp_end_said = true;
+            if self.scale_stop_is_assisted(ctx, &stop) {
+                // The assist is braking the truck onto the scale, and the
+                // stop announces itself once it is down: an arrival line
+                // here was said again over "Stopped at" (agent drive,
+                // 2026-10-27).
+                let unsaid = format!("At {}.", stop.spoken_name());
+                self.ramp_arrival_grace_s = self.ramp_arrival_grace_for(ctx, &unsaid);
+                return;
+            }
             let terse = self.terse_speech(ctx);
             let message = if stop.stop_type != "delivery_destination" {
                 let place = stop.spoken_name();
@@ -490,6 +499,9 @@ impl DrivingState {
         // the scale the truck just checked in at was crossed again on the way
         // out and charged as a bypass.
         self.trip.position_mi = self.trip.position_mi.max(stop.at_mi);
+        // Whether the one-mile call already gave the exit speed, read before
+        // the reset below clears the anchors.
+        let speed_given_at_the_mile = self.exit_countdown_said.contains(&1.0);
         self.reset_exit_lane_state();
         self.exit_signal_on = false;
         // Gore to stop bar, then the terminal-to-driveway stretch: the
@@ -534,16 +546,14 @@ impl DrivingState {
         self.pause_speed_control(ctx, transit);
         ctx.audio.play_with("ui/notify", 0.7, 0.0);
         let take = if stop.stop_type == "delivery_destination" {
-            let phrase = self.exit_phrase_of(ctx, stop);
-            let labeled = if phrase.is_empty() {
-                stop.exit_label.clone()
+            // Just the number. Where the exit leads and whose it is were
+            // said on every call from 5 miles out, and saying them again
+            // here buried the ramp's length and what ends it (owner,
+            // 2026-10-25: the move off the highway said too much).
+            if stop.exit_label.is_empty() {
+                String::new()
             } else {
-                phrase
-            };
-            if labeled.is_empty() {
-                format!("Destination exit for {}.", stop.name)
-            } else {
-                format!("{labeled}, destination exit for {}.", stop.name)
+                format!("{}.", stop.exit_label)
             }
         } else if stop.exit_label.is_empty() {
             format!("Exit for {}.", stop.spoken_name())
@@ -555,7 +565,9 @@ impl DrivingState {
         let take = {
             let mut chars = take.chars();
             match chars.next() {
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                Some(first) => {
+                    " ".to_string() + &first.to_uppercase().collect::<String>() + chars.as_str()
+                }
                 None => take,
             }
         };
@@ -578,11 +590,20 @@ impl DrivingState {
         // driver doing their own braking has a few seconds of lane, and the
         // number is what they brake on (review, 2026-09-24). Never a number
         // the load aboard cannot take the ramp curve at (`spoken_exit_mph`).
-        let exit_speed = format!(
-            "Exit speed {}.",
-            ctx.settings
-                .speed_value(self.spoken_exit_mph(self.armed_ramp_mph(Some(stop))))
-        );
+        //
+        // Not twice when the exit speed assist does the braking, though: the
+        // one-mile call gave the same number a minute earlier, and a driver
+        // who is not braking for it has no use for it again (owner,
+        // 2026-10-25). The ramp line leads with the exit then.
+        let exit_speed = if speed_given_at_the_mile && ctx.settings.exit_speed_assist {
+            String::new()
+        } else {
+            format!(
+                "Exit speed {}.",
+                ctx.settings
+                    .speed_value(self.spoken_exit_mph(self.armed_ramp_mph(Some(stop))))
+            )
+        };
         let message = if self.terse_speech(ctx) {
             let mut terminal = match self.ramp_control.as_str() {
                 "signal" => " Traffic light at the end.",
@@ -594,7 +615,9 @@ impl DrivingState {
             if scale_ramp {
                 terminal = " The scale is at the end.";
             }
-            format!("{exit_speed} {take} {ramp} of ramp.{terminal}")
+            format!("{exit_speed}{take} {ramp} of ramp.{terminal}")
+                .trim_start()
+                .to_string()
         } else {
             let mut ending = match self.ramp_control.as_str() {
                 "signal" => "light at the end",
@@ -611,9 +634,13 @@ impl DrivingState {
             }
             if ending == "stop at the end" && self.ramp_continues_to_destination_streets(ctx) {
                 // Streets follow this ramp: its end is not where to stop.
-                format!("{exit_speed} {take} {ramp} of ramp.")
+                format!("{exit_speed}{take} {ramp} of ramp.")
+                    .trim_start()
+                    .to_string()
             } else {
-                format!("{exit_speed} {take} {ramp} of ramp, {ending}.")
+                format!("{exit_speed}{take} {ramp} of ramp, {ending}.")
+                    .trim_start()
+                    .to_string()
             }
         };
         // On the ramp from this line on: a mainline line it cuts is not
@@ -718,7 +745,8 @@ impl DrivingState {
         ctx.say_event_with(message, opts);
     }
 
-    /// Brake an explicitly selected optional stop at its entrance.
+    /// Brake an explicitly selected optional stop at its entrance, and an
+    /// open scale lane keeping on full signalled for at its bar.
     ///
     /// Where the stop has its own streets past the ramp, its entrance is
     /// their end, the lot, and the assist brakes for that instead.
@@ -727,9 +755,10 @@ impl DrivingState {
         let Some(stop) = self.ramp_stop.clone().or_else(|| self.stop_chain.clone()) else {
             return false;
         };
-        if !self.selected_stop_assist_armed
-            || !self.is_selected_stop(Some(&stop))
-            || !ctx.settings.selected_stop_assist
+        let selected = self.selected_stop_assist_armed
+            && self.is_selected_stop(Some(&stop))
+            && ctx.settings.selected_stop_assist;
+        if !(selected || self.scale_stop_is_assisted(ctx, &stop))
             || (!on_streets && !self.ramp_terminal_done)
         {
             return false;

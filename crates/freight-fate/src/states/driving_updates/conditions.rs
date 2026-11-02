@@ -281,8 +281,12 @@ impl DrivingState {
             //
             // Unless the terminal release already armed the pull-ahead: the
             // truck moving off the bar is that handoff, and saying it here
-            // too announced it twice.
-            if !self.approach_pull_ahead {
+            // too announced it twice. Nor at the top of a ramp that ends at
+            // the gate, where "Slowing for the ramp." went out in the same
+            // breath and the ramp line had just said what is at its end
+            // (owner, 2026-10-25, Facility streets off).
+            let ramp_said_it = self.ramp_mi.is_some() && self.decel_lane_assist_said;
+            if !self.approach_pull_ahead && !ramp_said_it {
                 ctx.say_event_with(
                     "Slowing for the entrance.",
                     SayEvent::queued()
@@ -658,7 +662,8 @@ impl DrivingState {
     /// per level; the roll is seeded, so a reload does not re-roll the dice.
     pub fn update_chain_law(&mut self, ctx: &mut GameContext) {
         let level = self.trip.chain_law_level();
-        if level == 0 || self.trip.truck.speed_mph() < 3.0 {
+        // The assist pulling in to chain up is not rolling in without chains.
+        if level == 0 || self.trip.truck.speed_mph() < 3.0 || self.chain_up_pending() {
             return;
         }
         let Some(area) = self.trip.chain_law_area_at(self.trip.position_mi) else {

@@ -727,12 +727,43 @@ impl SettingsCategoryState {
         self.announce(ctx);
     }
 
-    pub(super) fn toggle_update_channel(&mut self, ctx: &mut GameContext, _d: i64) {
-        ctx.settings.update_channel = if update_channel(&ctx.settings) == "dev" {
-            "stable".to_string()
-        } else {
-            "dev".to_string()
-        };
+    pub(super) fn toggle_update_channel(&mut self, ctx: &mut GameContext, d: i64) {
+        let channels = updater::CHANNELS;
+        let index = channels
+            .iter()
+            .position(|c| *c == update_channel(&ctx.settings))
+            .unwrap_or(0);
+        ctx.settings.update_channel =
+            channels[(index as i64 + d).rem_euclid(channels.len() as i64) as usize].to_string();
+        // Discard a result requested on the old subscription. The next home
+        // entry starts a check for the newly saved choice.
+        super::MainMenuState::install_update_check(None, false);
         self.announce(ctx);
+    }
+
+    pub(super) fn toggle_update_mirror(&mut self, ctx: &mut GameContext, _d: i64) {
+        ctx.settings.update_mirror_enabled = !ctx.settings.update_mirror_enabled;
+        self.announce(ctx);
+    }
+
+    pub(super) fn update_mirror_entry(current: &str) -> TextEntryState {
+        let mut entry = TextEntryState::new(
+            "GitHub mirror prefix",
+            "GitHub mirror prefix",
+            |ctx, text| match updater::normalize_mirror_prefix(text) {
+                Ok(prefix) => {
+                    ctx.settings.update_mirror_prefix = prefix;
+                    save_settings(&ctx.settings);
+                    ctx.pop_state();
+                }
+                Err(message) => {
+                    ctx.audio.play("ui/error");
+                    ctx.say_with(message, Say::new().review(false));
+                }
+            },
+        );
+        entry.entry.max_len = 500;
+        entry.entry.set_text(current);
+        entry
     }
 }

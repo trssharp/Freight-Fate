@@ -1929,6 +1929,51 @@ msgstr ""
 msgid "Jethro Tull - Teacher"
 msgstr ""
 
+msgid "earned"
+msgstr ""
+
+msgid "newest"
+msgstr ""
+
+msgid "locked"
+msgstr ""
+
+msgid "name"
+msgstr "name"
+
+msgid "original"
+msgstr ""
+
+msgid "Earned first"
+msgstr ""
+
+msgid "Newest"
+msgstr ""
+
+msgid "Locked first"
+msgstr ""
+
+msgid "A to Z"
+msgstr ""
+
+msgid "Original order"
+msgstr ""
+
+msgid "Sort: Earned first"
+msgstr ""
+
+msgid "Sort: Newest"
+msgstr ""
+
+msgid "Sort: Locked first"
+msgstr ""
+
+msgid "Sort: A to Z"
+msgstr ""
+
+msgid "Sort: Original order"
+msgstr ""
+
 #. placeholders: {path}
 msgid "Not a Freight Fate sound pack: {path}"
 msgstr "这不是Freight Fate声音包：{path}"
@@ -3783,6 +3828,69 @@ msgstr "万圣节这一周。玉米迷宫开放了，稻草人正在评判你的
 msgid ""
 "Happy Halloween. The scariest thing on this road is still the weigh station."
 msgstr "万圣节快乐。这条路上最吓人的东西依然是称重站。"
+
+msgid ""
+"Halloween week. Somewhere a porch light is on, and the candy bowl is going "
+"fast."
+msgstr ""
+
+msgid ""
+"Trick or treat. Big Jim is handing out business cards this year. Nobody "
+"wants them."
+msgstr ""
+
+msgid "Costume idea: a driver with a clean logbook. Nobody will believe it."
+msgstr ""
+
+msgid ""
+"Halloween week. Kids in costumes are out after dark. Take it slow where the "
+"houses start."
+msgstr ""
+
+msgid ""
+"Haunted house season. Nothing in there is as frightening as a dock "
+"appointment before sunrise."
+msgstr ""
+
+msgid ""
+"Halloween week. The hayrides are running, and the tractors are slower than "
+"you."
+msgstr ""
+
+msgid ""
+"Illinois grows more pumpkins than any other state. Most of them end up in a "
+"pie."
+msgstr ""
+
+msgid ""
+"Salem, Massachusetts, spends all of October on Halloween. Witches welcome. "
+"Trailers, less so."
+msgstr ""
+
+msgid ""
+"New England at Halloween. The leaves are mostly down, and the cider "
+"doughnuts are still hot."
+msgstr ""
+
+msgid ""
+"Sleepy Hollow is on the Hudson. The headless horseman rides all week. Keep "
+"your own head on the road."
+msgstr ""
+
+msgid ""
+"New Orleans takes its ghosts seriously. The cemetery tours are booked all "
+"week."
+msgstr ""
+
+msgid ""
+"Halloween week in farm country. Harvest is still on, so watch for grain "
+"trucks pulling out slow."
+msgstr ""
+
+msgid ""
+"Día de los Muertos is days away. The marigolds and sugar skulls are already "
+"out."
+msgstr ""
 
 msgid ""
 "Thanksgiving week. Somewhere a turkey is grateful you are hauling freight "
@@ -8275,9 +8383,6 @@ msgstr "事故"
 msgid "missing or invalid exchange_version"
 msgstr "exchange_version缺失或无效"
 
-msgid "name"
-msgstr "name"
-
 #. placeholders: {business_status}
 msgid "unknown business_status {business_status}"
 msgstr "未知的business_status {business_status}"
@@ -8864,6 +8969,38 @@ msgstr ""
 "Freight Fate已把这个文件夹里的存档移到：\n"
 "{target}\n"
 "这个提示文件可以放心删除。"
+
+msgid "The career has no valid file name."
+msgstr ""
+
+msgid "Career not found."
+msgstr ""
+
+msgid "This build cannot open this sealed career. Use the released game."
+msgstr ""
+
+#. placeholders: {reason}
+#. one sentence of a longer line
+msgid "The career could not be authenticated: {reason}."
+msgstr ""
+
+#. placeholders: {reason}
+msgid ""
+"The career could not be authenticated: {reason}. Under Online, restore a "
+"cloud backup."
+msgstr ""
+
+#. one sentence of a longer line
+msgid "Under Online, restore a cloud backup."
+msgstr ""
+
+msgid ""
+"The career file was left unchanged. Try again; if it still fails, use "
+"Report a problem."
+msgstr ""
+
+msgid "This build cannot replace a sealed career. Use the released game."
+msgstr ""
 
 msgid "version"
 msgstr "version"
@@ -10246,8 +10383,11 @@ msgstr "均衡"
 msgid "interactive"
 msgstr "互动"
 
-msgid "dev"
-msgstr "开发版"
+msgid "alpha"
+msgstr ""
+
+msgid "beta"
+msgstr ""
 
 msgid "stable"
 msgstr "稳定版"
@@ -13891,12 +14031,6 @@ msgstr "进入 "
 msgid "Passing "
 msgstr "经过 "
 
-msgid "auto"
-msgstr "自动"
-
-msgid "manual"
-msgstr "手动"
-
 msgid "miles"
 msgstr "英里"
 
@@ -14105,6 +14239,9 @@ msgstr "smoke checks"
 msgid "screen"
 msgstr ""
 
+msgid "system"
+msgstr "system"
+
 #. placeholders: {spacing}
 msgid ", {spacing} ms after the last press"
 msgstr "，距上一次按下{spacing}毫秒"
@@ -14271,9 +14408,6 @@ msgstr "ff-rust-app"
 
 msgid "recording"
 msgstr "recording"
-
-msgid "system"
-msgstr "system"
 
 msgid "title"
 msgstr "title"
@@ -15509,15 +15643,15 @@ msgid ""
 "{earned} of {ACHIEVEMENTS} earned across every career on this installation."
 msgstr "这次安装中的所有职业生涯共获得{earned}个成就，共{ACHIEVEMENTS}个。"
 
-msgid "Controls and account scope"
-msgstr "操作和账户范围"
+#. placeholders: {title}, {done}, {achievements}
+msgid "{title}. {done} of {achievements}"
+msgstr "{title}。{done}个，共{achievements}个"
 
 msgid "The account-wide earned count."
 msgstr "整个账户已获得的数量。"
 
-#. placeholders: {title}, {done}, {achievements}
-msgid "{title}. {done} of {achievements}"
-msgstr "{title}。{done}个，共{achievements}个"
+msgid "Controls and account scope"
+msgstr "操作和账户范围"
 
 msgid "Back to Online"
 msgstr "返回“在线”"
@@ -15561,6 +15695,14 @@ msgstr "继续玩就能解锁。"
 msgid "Back to account categories"
 msgstr "返回账户类别"
 
+msgid ""
+"Left and Right change the order of the categories and the achievements in "
+"each one."
+msgstr ""
+
+msgid "Left and Right change the order of this category only."
+msgstr ""
+
 msgid "All assists: the truck steers. Recommended for your first drives."
 msgstr "全部辅助：卡车替你转向。推荐在最初几次驾驶时使用。"
 
@@ -15572,22 +15714,21 @@ msgstr "轻按一下{control_steer_left}或{control_steer_right}就会换道。"
 
 #. one sentence of a longer line
 msgid ""
-"It holds the lane, steers the bends and street corners, and takes your "
-"exits."
-msgstr "它会保持车道，转过弯道和街角，还会替你驶出出口。"
+"It holds the lane, steers the bends and street corners, moves out of closed "
+"lanes, and takes your exits and open weigh stations."
+msgstr ""
 
 #. placeholders: {control_steer_left}, {control_steer_right}
 msgid ""
-"It holds the lane, steers the bends and street corners, and takes your "
-"exits. A tap of {control_steer_left} or {control_steer_right} changes "
-"lanes. Speed, stops and the docks are yours."
+"It holds the lane, steers the bends and street corners, moves out of closed "
+"lanes, and takes your exits and open weigh stations. A tap of "
+"{control_steer_left} or {control_steer_right} changes lanes. Speed, rest "
+"and fuel stops, and the docks are yours."
 msgstr ""
-"它会保持车道，转过弯道和街角，还会替你驶出出口。轻按一下{control_steer_left}或{control_steer_right}就会换道。车"
-"速、停车和装卸口归你管。"
 
 #. one sentence of a longer line
-msgid "Speed, stops and the docks are yours."
-msgstr "车速、停车和装卸口归你管。"
+msgid "Speed, rest and fuel stops, and the docks are yours."
+msgstr ""
 
 msgid "Balanced: you steer, with help."
 msgstr "平衡：你来转向，有辅助帮忙。"
@@ -16887,6 +17028,9 @@ msgid ""
 "Level, reputation, dispatch trust, driving record and CDL, balance and "
 "debt, endorsements, lifetime numbers, and rest."
 msgstr "等级、声誉、调度信任度、驾驶记录和CDL、余额和债务、驾照签注、累计数据，以及休息。"
+
+msgid "Achievements"
+msgstr "成就"
 
 msgid "Licenses and training"
 msgstr "驾照与培训"
@@ -19584,6 +19728,9 @@ msgstr "气压{air_pressure_psi} psi"
 msgid "automatic"
 msgstr "自动"
 
+msgid "manual"
+msgstr "手动"
+
 msgid "pickup drive"
 msgstr "提货行驶"
 
@@ -21121,6 +21268,12 @@ msgid ""
 "clutch."
 msgstr "提醒：按住{control_hint}，选择{control_hint2}，然后松开离合。"
 
+#. placeholders: {display_name}
+msgid ""
+"{display_name} needs yt-dlp for its YouTube links, and it is not installed; "
+"it is off the dial for the rest of this session."
+msgstr ""
+
 msgid "station has no stream URL"
 msgstr "电台没有流地址"
 
@@ -22268,6 +22421,9 @@ msgstr "操作放慢，能安全避开的急刹和急弯都避开。"
 msgid "A trooper has somebody stopped on the shoulder, not you."
 msgstr "州警在路肩拦下了别人，不是你。"
 
+msgid "Another trooper has somebody stopped, not you."
+msgstr ""
+
 msgid "for a log check"
 msgstr "查工时记录"
 
@@ -23108,8 +23264,13 @@ msgstr " ，通过施工区"
 msgid " through the heavy traffic"
 msgstr " ，穿过拥堵车流"
 
-msgid " for the lower limit"
-msgstr " ，为较低的限速"
+#. placeholders: {speed_value}
+msgid " for the {speed_value} limit ahead"
+msgstr ""
+
+#. placeholders: {speed_value}
+msgid " for the {speed_value} limit"
+msgstr ""
 
 #. placeholders: {value}
 msgid " in the {value}"
@@ -23261,6 +23422,21 @@ msgstr "{title_case}区域。限速保持维持在{held}。"
 #. placeholders: {speed_value}
 msgid "Speed keeper holding {speed_value}."
 msgstr "限速保持维持在{speed_value}。"
+
+msgid "through the construction zone"
+msgstr ""
+
+#. placeholders: {reason}
+msgid "for the {reason}"
+msgstr ""
+
+#. placeholders: {speed_value}
+msgid "for the {speed_value} limit ahead"
+msgstr ""
+
+#. placeholders: {speed_value}
+msgid "for the {speed_value} limit"
+msgstr ""
 
 #. placeholders: {reason}, {eased}
 msgid "{reason}, cruise easing to {eased}."
@@ -24174,6 +24350,10 @@ msgstr "称重站匝道"
 msgid "ramp terminal"
 msgstr "匝道尽头路口"
 
+#. placeholders: {name}
+msgid "At {name}."
+msgstr ""
+
 #. placeholders: {place}
 msgid "At {place}."
 msgstr "到了{place}。"
@@ -24236,14 +24416,6 @@ msgid "Too fast for the ramp, missed {missed}.{note}"
 msgstr "坡道速度太快，错过了 {missed}.{note}"
 
 #. placeholders: {name}
-msgid "Destination exit for {name}."
-msgstr "{name} 的目的地出口。"
-
-#. placeholders: {labeled}, {name}
-msgid "{labeled}, destination exit for {name}."
-msgstr "{labeled}，{name} 的目的地出口。"
-
-#. placeholders: {name}
 msgid "Exit for {name}."
 msgstr "退出 {name}。"
 
@@ -24271,8 +24443,8 @@ msgid " The scale is at the end."
 msgstr " 尽头是称重站。"
 
 #. placeholders: {exit_speed}, {take}, {ramp}, {terminal}
-msgid "{exit_speed} {take} {ramp} of ramp.{terminal}"
-msgstr "{exit_speed}{take}{ramp}匝道。{terminal}"
+msgid "{exit_speed}{take} {ramp} of ramp.{terminal}"
+msgstr ""
 
 msgid "light at the end"
 msgstr "光在最后"
@@ -24293,12 +24465,12 @@ msgid "the scale at the end, stop at the bar"
 msgstr "尽头是称重站，在停止线停车"
 
 #. placeholders: {exit_speed}, {take}, {ramp}
-msgid "{exit_speed} {take} {ramp} of ramp."
-msgstr "{exit_speed}{take}{ramp}匝道。"
+msgid "{exit_speed}{take} {ramp} of ramp."
+msgstr ""
 
 #. placeholders: {exit_speed}, {take}, {ramp}, {ending}
-msgid "{exit_speed} {take} {ramp} of ramp, {ending}."
-msgstr "{exit_speed}{take}{ramp}匝道，{ending}。"
+msgid "{exit_speed}{take} {ramp} of ramp, {ending}."
+msgstr ""
 
 #. placeholders: {place}
 #. one sentence of a longer line
@@ -24395,6 +24567,10 @@ msgstr "{capitalized}车道畅通。"
 #. placeholders: {name}
 msgid "Changing to the {name} lane for the exit."
 msgstr "正换到{name}车道准备驶出。"
+
+#. placeholders: {name}
+msgid "Changing to the {name} lane for the lane closure."
+msgstr ""
 
 #. placeholders: {lane_count_words}
 msgid "The road narrows to {lane_count_words}."
@@ -28988,6 +29164,9 @@ msgstr ""
 msgid "{name} was pulled in for an inspection at {place}. {outcome}"
 msgstr ""
 
+msgid "advice"
+msgstr ""
+
 msgid "the next street"
 msgstr "下一条街"
 
@@ -29002,10 +29181,6 @@ msgstr "{distance}后{capitalize}转驶入{street}。"
 #. placeholders: {target}
 msgid "Advise {target}."
 msgstr "建议{target}。"
-
-#. placeholders: {advice}
-msgid "{advice} Speed keeper easing."
-msgstr "{advice}限速保持正在减速。"
 
 msgid "Missed the turn. Going around the block."
 msgstr "错过了转弯。绕着街区转。"
@@ -29826,36 +30001,58 @@ msgstr "现在位于 {lane_label} 车道。"
 msgid "The road narrows to {lane_count_words}.{moved}"
 msgstr "道路变窄至{lane_count_words}.{moved}"
 
+#. placeholders: {closed_name}
+#. one sentence of a longer line
+msgid "The {closed_name} lane closes at the work zone ahead."
+msgstr ""
+
+#. placeholders: {closed_name}, {open_name}
+msgid ""
+"The {closed_name} lane closes at the work zone ahead. Waiting for a gap in "
+"the {open_name} lane."
+msgstr ""
+
+#. placeholders: {open_name}
+#. one sentence of a longer line
+msgid "Waiting for a gap in the {open_name} lane."
+msgstr ""
+
 #. placeholders: {open_name}
 #. one sentence of a longer line
 msgid "Move to the {open_name} lane."
 msgstr "换到{open_name}车道。"
 
-#. placeholders: {lane_label}
-#. one sentence of a longer line
-msgid "The {lane_label} lane closes at the work zone ahead."
-msgstr "{lane_label}车道在前方施工区封闭。"
-
-#. placeholders: {lane_label}, {open_name}
+#. placeholders: {closed_name}, {open_name}
 msgid ""
-"The {lane_label} lane closes at the work zone ahead. Move to the "
+"The {closed_name} lane closes at the work zone ahead. Move to the "
 "{open_name} lane."
-msgstr "{lane_label}车道在前方施工区封闭。换到{open_name}车道。"
+msgstr ""
+
+#. placeholders: {open_name}
+#. one sentence of a longer line
+msgid "Waiting for a gap in the {open_name} lane!"
+msgstr ""
+
+#. placeholders: {closed_name}
+#. one sentence of a longer line
+msgid "You are in the closed {closed_name} lane!"
+msgstr ""
+
+#. placeholders: {closed_name}, {open_name}
+msgid ""
+"You are in the closed {closed_name} lane! Waiting for a gap in the "
+"{open_name} lane!"
+msgstr ""
 
 #. placeholders: {open_name}
 #. one sentence of a longer line
 msgid "Move to the {open_name} lane!"
 msgstr "换到{open_name}车道！"
 
-#. placeholders: {lane_label}
-#. one sentence of a longer line
-msgid "You are in the closed {lane_label} lane!"
-msgstr "你在已封闭的{lane_label}车道上！"
-
-#. placeholders: {lane_label}, {open_name}
+#. placeholders: {closed_name}, {open_name}
 msgid ""
-"You are in the closed {lane_label} lane! Move to the {open_name} lane!"
-msgstr "你在已封闭的{lane_label}车道上！换到{open_name}车道！"
+"You are in the closed {closed_name} lane! Move to the {open_name} lane!"
+msgstr ""
 
 #. placeholders: {damage_pct}
 #. one sentence of a longer line
@@ -29963,13 +30160,23 @@ msgid "no playable entry in this playlist"
 msgstr "这个播放列表里没有能播放的条目"
 
 #. one sentence of a longer line
-msgid "Check the tracks in your Playlists folder."
-msgstr "检查一下你播放列表文件夹里的曲目。"
+msgid "Its YouTube links need yt-dlp, which is not installed."
+msgstr ""
 
 #. placeholders: {display_name}
 #. one sentence of a longer line
 msgid "Nothing in {display_name} would play."
 msgstr "{display_name}里没有能播放的内容。"
+
+#. placeholders: {display_name}
+msgid ""
+"Nothing in {display_name} would play. Its YouTube links need yt-dlp, which "
+"is not installed."
+msgstr ""
+
+#. one sentence of a longer line
+msgid "Check the tracks in your Playlists folder."
+msgstr "检查一下你播放列表文件夹里的曲目。"
 
 #. placeholders: {display_name}
 msgid ""
@@ -30224,6 +30431,15 @@ msgstr "{name}，尚未移植"
 msgid "This screen is not ported yet; Escape goes back."
 msgstr "这个界面尚未移植；Escape返回。"
 
+#. placeholders: {name}
+#. one sentence of a longer line
+msgid "{name} could not be opened."
+msgstr ""
+
+#. placeholders: {name}, {error}
+msgid "{name} could not be opened. {error}"
+msgstr ""
+
 #. placeholders: {terminal}, {the_city}
 msgid "{terminal} in {the_city} service area"
 msgstr "{the_city}服务区域的{terminal}"
@@ -30367,122 +30583,6 @@ msgstr "无法打开网页浏览器。请到github.com/{REPO}/issues报告问题
 msgid "Report problems at github.com/{REPO}/issues."
 msgstr "请到github.com/{REPO}/issues报告问题。"
 
-msgid ""
-"Game sounds could not start on this computer: the voice, but no engine, "
-"traffic, or alert sounds. Check that sound works elsewhere, then start "
-"Freight Fate again."
-msgstr ""
-"这台电脑上无法启动游戏声音：有语音，但没有发动机、车流或提示音效。检查一下其他地方的声音是否正常，然后重新启动Freight Fate。"
-
-msgid ""
-"The system password store did not answer in time, so online features may "
-"need you to link your account again under Online. If a permission dialog is "
-"still open, allow Freight Fate and restart."
-msgstr ""
-"系统密码存储没有及时响应，所以在线功能可能需要你在“在线”里重新关联账户。如果还有权限对话框开着，请允许Freight Fate并重新启动。"
-
-#. placeholders: {count}
-msgid "{count} saved career could not be read and was moved aside. "
-msgstr "{count}个保存的职业生涯无法读取，已被移到一边。 "
-
-#. placeholders: {count}
-msgid "{count} saved careers could not be read and were moved aside. "
-msgstr "{count}个保存的职业生涯无法读取，已被移到一边。 "
-
-msgid ""
-"Your lane keeping setting could not be read, so it is set to full: the "
-"truck holds the lane and takes your exits. Change it in Settings, Gameplay, "
-"Driving assistance. "
-msgstr "你的车道保持设置无法读取，所以设为完全：卡车会保持车道并替你驶出出口。可以在设置、游戏玩法、驾驶辅助里更改。 "
-
-msgid ""
-"Game sounds could not start on this computer: the voice, but no engine, "
-"traffic, or alert sounds. Check that sound works elsewhere, then start "
-"Freight Fate again. "
-msgstr ""
-"这台电脑上无法启动游戏声音：有语音，但没有发动机、车流或提示音效。检查一下其他地方的声音是否正常，然后重新启动Freight Fate。 "
-
-msgid ""
-"The system password store did not answer in time, so online features may "
-"need you to link your account again under Online. If a permission dialog is "
-"still open, allow Freight Fate and restart. "
-msgstr ""
-"系统密码存储没有及时响应，所以在线功能可能需要你在“在线”里重新关联账户。如果还有权限对话框开着，请允许Freight Fate并重新启动。 "
-
-msgid ""
-"Your saved careers are from an earlier version of Freight Fate; they are "
-"listed under Choose career. "
-msgstr "你保存的职业生涯来自更早版本的Freight Fate；它们列在“选择职业生涯”下。 "
-
-#. placeholders: {version}
-#. one sentence of a longer line
-msgid "Freight Fate {version}."
-msgstr "货运命运{version}。"
-
-#. placeholders: {version}, {warning}
-msgid "Freight Fate {version}. {warning}"
-msgstr "货运命运{version}。{warning}"
-
-#. placeholders: {career_summary}
-msgid "Continue latest career: {career_summary}"
-msgstr "继续最近的职业生涯：{career_summary}"
-
-#. placeholders: {name}
-msgid "Load the newest save for {name}."
-msgstr "载入{name}最新的存档。"
-
-msgid "Any saved career, not only the newest."
-msgstr "任意一个保存的职业生涯，不只是最新的。"
-
-msgid "Reset or delete saved careers."
-msgstr "重置或删除保存的职业生涯。"
-
-msgid "New career"
-msgstr "新的职业生涯"
-
-msgid "Start a fresh career."
-msgstr "开始一段全新的职业生涯。"
-
-msgid "Earned and locked achievements for a saved career."
-msgstr "一个保存的职业生涯已获得和未解锁的成就。"
-
-msgid ""
-"Drivers on duty, your orinks.net account, cloud backup and restore, and "
-"Discord presence."
-msgstr "查看在岗司机、orinks.net账户、云备份与恢复，以及Discord状态。"
-
-msgid "How to play"
-msgstr "玩法说明"
-
-msgid "The controls and the goal of the game."
-msgstr "操作方式和游戏目标。"
-
-msgid "Any sound the road uses, and what it means."
-msgstr "道路上用到的任何声音，以及它的含义。"
-
-msgid "Units, transmission mode, volumes, weather, voices, and trip pacing."
-msgstr "单位、变速箱模式、音量、天气、语音和行程节奏。"
-
-msgid ""
-"Units, transmission mode, volumes, weather, voices, update channel, and "
-"trip pacing."
-msgstr "单位、变速箱模式、音量、天气、语音、更新渠道和行程节奏。"
-
-msgid "Report a problem"
-msgstr "报告问题"
-
-msgid "The bug report page on GitHub, in your web browser."
-msgstr "在你的网页浏览器里打开GitHub上的错误报告页面。"
-
-msgid "Exit the game."
-msgstr "退出游戏。"
-
-msgid "Quit"
-msgstr "退出"
-
-msgid "In the main menu"
-msgstr "在主菜单"
-
 msgid "Quit Freight Fate?"
 msgstr "退出Freight Fate？"
 
@@ -30515,8 +30615,8 @@ msgstr "输入你的司机名字。"
 msgid "New career. Type your driver name, then Enter."
 msgstr "新建生涯。输入司机姓名，然后按Enter。"
 
-msgid "Achievements"
-msgstr "成就"
+msgid "This career's earned and locked achievements."
+msgstr ""
 
 msgid "Pick a saved career. Enter opens its achievements, Escape goes back."
 msgstr "选一个保存的职业生涯。Enter打开它的成就，Escape返回。"
@@ -30566,12 +30666,12 @@ msgstr "{name}的成就。已获得{earned_count}个，共{ACHIEVEMENTS}个。{c
 msgid "{earned_count} of {ACHIEVEMENTS} earned."
 msgstr "已获得{earned_count}个，共{ACHIEVEMENTS}个。"
 
-msgid "The total earned."
-msgstr "已获得的总数。"
-
 #. placeholders: {title}, {done}, {achs}
 msgid "{title}. {done} of {achs}"
 msgstr "{title}。已获得{done}个，共{achs}个"
+
+msgid "The total earned."
+msgstr "已获得的总数。"
 
 msgid "Up and Down move, Enter repeats the entry, Escape goes back."
 msgstr "Up和Down移动，Enter重复这一条，Escape返回。"
@@ -30804,6 +30904,125 @@ msgid ""
 "backup on the Online menu can remove them later."
 msgstr "无法连接网站，所以云备份还在；以后可以用“在线”菜单上的“云备份”删除它们。"
 
+msgid ""
+"Game sounds could not start on this computer: the voice, but no engine, "
+"traffic, or alert sounds. Check that sound works elsewhere, then start "
+"Freight Fate again."
+msgstr ""
+"这台电脑上无法启动游戏声音：有语音，但没有发动机、车流或提示音效。检查一下其他地方的声音是否正常，然后重新启动Freight Fate。"
+
+msgid ""
+"The system password store did not answer in time, so online features may "
+"need you to link your account again under Online. If a permission dialog is "
+"still open, allow Freight Fate and restart."
+msgstr ""
+"系统密码存储没有及时响应，所以在线功能可能需要你在“在线”里重新关联账户。如果还有权限对话框开着，请允许Freight Fate并重新启动。"
+
+#. placeholders: {count}
+msgid "{count} saved career could not be read and was moved aside. "
+msgstr "{count}个保存的职业生涯无法读取，已被移到一边。 "
+
+#. placeholders: {count}
+msgid "{count} saved careers could not be read and were moved aside. "
+msgstr "{count}个保存的职业生涯无法读取，已被移到一边。 "
+
+msgid ""
+"Your lane keeping setting could not be read, so it is set to full: the "
+"truck holds the lane and takes your exits. Change it in Settings, Gameplay, "
+"Driving assistance. "
+msgstr "你的车道保持设置无法读取，所以设为完全：卡车会保持车道并替你驶出出口。可以在设置、游戏玩法、驾驶辅助里更改。 "
+
+msgid ""
+"Game sounds could not start on this computer: the voice, but no engine, "
+"traffic, or alert sounds. Check that sound works elsewhere, then start "
+"Freight Fate again. "
+msgstr ""
+"这台电脑上无法启动游戏声音：有语音，但没有发动机、车流或提示音效。检查一下其他地方的声音是否正常，然后重新启动Freight Fate。 "
+
+msgid ""
+"The system password store did not answer in time, so online features may "
+"need you to link your account again under Online. If a permission dialog is "
+"still open, allow Freight Fate and restart. "
+msgstr ""
+"系统密码存储没有及时响应，所以在线功能可能需要你在“在线”里重新关联账户。如果还有权限对话框开着，请允许Freight Fate并重新启动。 "
+
+msgid ""
+"Your saved careers are from an earlier version of Freight Fate; they are "
+"listed under Choose career. "
+msgstr "你保存的职业生涯来自更早版本的Freight Fate；它们列在“选择职业生涯”下。 "
+
+#. placeholders: {version}
+#. one sentence of a longer line
+msgid "Freight Fate {version}."
+msgstr "货运命运{version}。"
+
+#. placeholders: {version}, {warning}
+msgid "Freight Fate {version}. {warning}"
+msgstr "货运命运{version}。{warning}"
+
+#. placeholders: {career_summary}
+msgid "Continue latest career: {career_summary}"
+msgstr "继续最近的职业生涯：{career_summary}"
+
+#. placeholders: {name}
+msgid "Load the newest save for {name}."
+msgstr "载入{name}最新的存档。"
+
+msgid "Any saved career, not only the newest."
+msgstr "任意一个保存的职业生涯，不只是最新的。"
+
+msgid "Reset or delete saved careers."
+msgstr "重置或删除保存的职业生涯。"
+
+msgid "New career"
+msgstr "新的职业生涯"
+
+msgid "Start a fresh career."
+msgstr "开始一段全新的职业生涯。"
+
+msgid "Earned and locked achievements for a saved career."
+msgstr "一个保存的职业生涯已获得和未解锁的成就。"
+
+msgid "Online"
+msgstr "在线"
+
+msgid ""
+"Drivers on duty, your orinks.net account, cloud backup and restore, and "
+"Discord presence."
+msgstr "查看在岗司机、orinks.net账户、云备份与恢复，以及Discord状态。"
+
+msgid "How to play"
+msgstr "玩法说明"
+
+msgid "The controls and the goal of the game."
+msgstr "操作方式和游戏目标。"
+
+msgid "Any sound the road uses, and what it means."
+msgstr "道路上用到的任何声音，以及它的含义。"
+
+msgid "Units, transmission mode, volumes, weather, voices, and trip pacing."
+msgstr "单位、变速箱模式、音量、天气、语音和行程节奏。"
+
+msgid ""
+"Units, transmission mode, volumes, weather, voices, update channel, and "
+"trip pacing."
+msgstr "单位、变速箱模式、音量、天气、语音、更新渠道和行程节奏。"
+
+msgid "Report a problem"
+msgstr "报告问题"
+
+msgid "The bug report page on GitHub, in your web browser."
+msgstr "在你的网页浏览器里打开GitHub上的错误报告页面。"
+
+msgid "Exit the game."
+msgstr "退出游戏。"
+
+msgid "Quit"
+msgstr "退出"
+
+msgid "In the main menu"
+msgstr "在主菜单"
+
 msgid "Leaving key and button practice."
 msgstr "正在退出按键和按钮练习。"
 
@@ -30963,9 +31182,6 @@ msgstr "reports"
 #. placeholders: {label}
 msgid "Open {label} settings."
 msgstr "打开{label}设置。"
-
-msgid "Online"
-msgstr "在线"
 
 msgid ""
 "Online options have moved to the Online menu on the main menu; this opens "
@@ -31218,6 +31434,9 @@ msgid ""
 "Only NVDA and JAWS can send the game to a braille display. Speech stays on "
 "until one of them is running."
 msgstr "只有NVDA和JAWS能把游戏内容发送到盲文显示器。在它们之一运行之前，语音会保持开启。"
+
+msgid "GitHub mirror prefix"
+msgstr "GitHub 镜像前缀"
 
 msgid "Cab speakers"
 msgstr ""
@@ -31854,128 +32073,6 @@ msgid ""
 "bug report."
 msgstr "这次游戏的日志记录了游戏说出的每一句话。请把它和错误报告一起发送。"
 
-#. placeholders: {else}
-msgid "Update channel: {else}"
-msgstr "更新渠道：{else}"
-
-msgid "developer snapshots"
-msgstr "开发者快照"
-
-msgid "stable releases"
-msgstr "稳定版"
-
-msgid "Stable releases or developer snapshots."
-msgstr "稳定版或开发者快照。"
-
-msgid "Check for updates"
-msgstr "检查更新"
-
-msgid "Look for a new version now."
-msgstr "现在查找新版本。"
-
-#. placeholders: {assist_preset_label}
-msgid "Driving assistance preset: {assist_preset_label}"
-msgstr "驾驶辅助预设：{assist_preset_label}"
-
-msgid ""
-"Realistic is modern truck safety support. Balanced adds partial lane "
-"keeping, a firmer hand on descents, and stopping at your destination. All "
-"assists turns on every assist and sets lane keeping to full: the truck "
-"holds the lane, a tap changes lanes, and your destination exit is taken for "
-"you. Changing one assist makes this Custom. You still choose routes and "
-"handle yards and docks. Presets never change pacing, hours rules, "
-"transmission, weather, or hazards."
-msgstr ""
-"写实是现代卡车的安全辅助。均衡加上部分车道保持、下坡时更稳的控制，以及在目的地停车。全部辅助打开所有辅助功能，并把车道保持设为完全：卡车保持车道，轻按一"
-"下就能变道，目的地出口也会替你驶出。改动任何一项辅助都会让预设变成自定义。路线还是由你选择，场院和装卸口也由你处理。预设从不改变节奏、工时规则、变速箱、"
-"天气或危险。"
-
-#. placeholders: {lane_keeping_label}
-msgid "Lane keeping: {lane_keeping_label}"
-msgstr "车道保持：{lane_keeping_label}"
-
-#. placeholders: {control_steer_left}, {control_steer_right}
-#. one sentence of a longer line
-msgid ""
-"Full holds the lane, turns {control_steer_left} and {control_steer_right} "
-"into tap lane changes, and takes your exits, including the destination "
-"exit, without a signal."
-msgstr ""
-"完全会保持车道，把{control_steer_left}和{control_steer_right}变成轻按变道，并且不用打转向灯就替你驶出出口，包括"
-"目的地出口。"
-
-#. one sentence of a longer line
-msgid "How much of the lane-holding work the truck does."
-msgstr "卡车替你做多少保持车道的工作。"
-
-#. placeholders: {control_steer_left}, {control_steer_right}
-msgid ""
-"How much of the lane-holding work the truck does. Full holds the lane, "
-"turns {control_steer_left} and {control_steer_right} into tap lane changes, "
-"and takes your exits, including the destination exit, without a signal. "
-"Partial steers the truck through the road's bends and drifts gently, with "
-"generous steering help; lane changes and speed are yours. Off drifts like a "
-"real wheel; bends are yours unless curve assistance is on, and every exit "
-"needs its signal and its exit lane. On partial or off {lean}. The road "
-"sound only says where you sit in your lane, and the road edge answers: a "
-"stutter clipping the rumble strip, a buzz fully on it, gravel off the "
-"pavement. Steering guide and Lane guide sound, under Audio, change which "
-"way to steer and what leans. Realistic sets this off, Balanced partial, All "
-"assists full."
-msgstr ""
-"卡车替你做多少保持车道的工作。完全会保持车道，把{control_steer_left}和{control_steer_right}变成轻按变道，并且不"
-"用打转向灯就替你驶出出口，包括目的地出口。部分会带卡车通过道路的弯道，偏移很轻，转向帮助很充足；变道和车速由你负责。关闭时偏移就像真实的方向盘；弯道由你"
-"负责，除非开启了弯道辅助，而且每个出口都需要打转向灯并进入出口车道。在部分或关闭时，{lean}。道路声音只告诉你在车道中的位置，路边会有回应：擦到振动"
-"带时是断续的抖动声，完全压上时是嗡嗡声，冲出路面时是碎石声。“音频”下的“转向引导”和“车道引导声音”可以改变转向方向和偏向的声音。写实把它设为关闭，均"
-"衡设为部分，全部辅助设为完全。"
-
-#. one sentence of a longer line
-msgid ""
-"Off drifts like a real wheel; bends are yours unless curve assistance is "
-"on, and every exit needs its signal and its exit lane."
-msgstr "关闭时偏移就像真实的方向盘；弯道由你负责，除非开启了弯道辅助，而且每个出口都需要打转向灯并进入出口车道。"
-
-#. placeholders: {lean}
-#. one sentence of a longer line
-msgid "On partial or off {lean}."
-msgstr "在部分或关闭时，{lean}。"
-
-#. one sentence of a longer line
-msgid ""
-"Partial steers the truck through the road's bends and drifts gently, with "
-"generous steering help; lane changes and speed are yours."
-msgstr "部分会带卡车通过道路的弯道，偏移很轻，转向帮助很充足；变道和车速由你负责。"
-
-#. one sentence of a longer line
-msgid "Realistic sets this off, Balanced partial, All assists full."
-msgstr "写实把它设为关闭，均衡设为部分，全部辅助设为完全。"
-
-#. one sentence of a longer line
-msgid ""
-"Steering guide and Lane guide sound, under Audio, change which way to steer "
-"and what leans."
-msgstr "“音频”下的“转向引导”和“车道引导声音”可以改变转向方向和偏向的声音。"
-
-#. one sentence of a longer line
-msgid ""
-"The road sound only says where you sit in your lane, and the road edge "
-"answers: a stutter clipping the rumble strip, a buzz fully on it, gravel "
-"off the pavement."
-msgstr "道路声音只告诉你在车道中的位置，路边会有回应：擦到振动带时是断续的抖动声，完全压上时是嗡嗡声，冲出路面时是碎石声。"
-
-#. placeholders: {acc_gap_label}
-msgid "Following gap: {acc_gap_label}"
-msgstr "跟车间隔：{acc_gap_label}"
-
-msgid ""
-"How much room adaptive cruise leaves to the vehicle ahead. Close is two and "
-"a half seconds, normal three, far three and a half. Weather widens the gap "
-"whichever you pick. All three stay clear of a following-too-close citation. "
-"The preset above never changes it."
-msgstr ""
-"自适应巡航和前车之间留多少距离。近是2.5秒，正常是3秒，远是3.5秒。无论你选哪个，天气都会加大间隔。三种都不会让你因跟车太近被开罚单。上面的预设永远"
-"不会改变它。"
-
 #. placeholders: {pct}
 msgid "Master volume: {pct} percent"
 msgstr "主音量：百分之{pct}"
@@ -32165,6 +32262,140 @@ msgstr "菜单和界面声音音量：百分之{pct}"
 
 msgid "Menu movement, selection, warning, and cash sounds."
 msgstr "菜单移动、选择、警告和现金的声音。"
+
+#. placeholders: {_}
+msgid "Update channel: {_}"
+msgstr ""
+
+msgid "stable releases"
+msgstr "稳定版"
+
+msgid "Stable releases, beta testing, or early alpha builds."
+msgstr ""
+
+#. placeholders: {on_off}
+msgid "Use GitHub mirror for updates: {on_off}"
+msgstr "使用 GitHub 镜像更新：{on_off}"
+
+msgid ""
+"Checks for and downloads updates through a GitHub mirror. Turn it on, then "
+"enter the mirror's address in GitHub mirror prefix, just below."
+msgstr ""
+
+msgid "GitHub mirror prefix: not set"
+msgstr "GitHub 镜像前缀：未设置"
+
+#. placeholders: {update_mirror_prefix}
+msgid "GitHub mirror prefix: {update_mirror_prefix}"
+msgstr "GitHub 镜像前缀：{update_mirror_prefix}"
+
+msgid ""
+"The mirror's address, put in front of every GitHub link. Use a mirror you "
+"trust: updates download through it."
+msgstr ""
+
+msgid "Check for updates"
+msgstr "检查更新"
+
+msgid "Look for a new version now."
+msgstr "现在查找新版本。"
+
+#. placeholders: {assist_preset_label}
+msgid "Driving assistance preset: {assist_preset_label}"
+msgstr "驾驶辅助预设：{assist_preset_label}"
+
+msgid ""
+"Realistic is modern truck safety support. Balanced adds partial lane "
+"keeping, a firmer hand on descents, and stopping at your destination. All "
+"assists turns on every assist and sets lane keeping to full: the truck "
+"holds the lane, a tap changes lanes, and your destination exit is taken for "
+"you. Changing one assist makes this Custom. You still choose routes and "
+"handle yards and docks. Presets never change pacing, hours rules, "
+"transmission, weather, or hazards."
+msgstr ""
+"写实是现代卡车的安全辅助。均衡加上部分车道保持、下坡时更稳的控制，以及在目的地停车。全部辅助打开所有辅助功能，并把车道保持设为完全：卡车保持车道，轻按一"
+"下就能变道，目的地出口也会替你驶出。改动任何一项辅助都会让预设变成自定义。路线还是由你选择，场院和装卸口也由你处理。预设从不改变节奏、工时规则、变速箱、"
+"天气或危险。"
+
+#. placeholders: {lane_keeping_label}
+msgid "Lane keeping: {lane_keeping_label}"
+msgstr "车道保持：{lane_keeping_label}"
+
+#. placeholders: {control_steer_left}, {control_steer_right}
+#. one sentence of a longer line
+msgid ""
+"Full holds the lane, turns {control_steer_left} and {control_steer_right} "
+"into tap lane changes, moves out of a lane a work zone closes, and takes "
+"your exits and open weigh stations, including the destination exit, without "
+"a signal."
+msgstr ""
+
+#. one sentence of a longer line
+msgid "How much of the lane-holding work the truck does."
+msgstr "卡车替你做多少保持车道的工作。"
+
+#. placeholders: {control_steer_left}, {control_steer_right}
+msgid ""
+"How much of the lane-holding work the truck does. Full holds the lane, "
+"turns {control_steer_left} and {control_steer_right} into tap lane changes, "
+"moves out of a lane a work zone closes, and takes your exits and open weigh "
+"stations, including the destination exit, without a signal. Partial steers "
+"the truck through the road's bends and drifts gently, with generous "
+"steering help; lane changes and speed are yours. Off drifts like a real "
+"wheel; bends are yours unless curve assistance is on, and every exit needs "
+"its signal and its exit lane. On partial or off {lean}. The road sound only "
+"says where you sit in your lane, and the road edge answers: a stutter "
+"clipping the rumble strip, a buzz fully on it, gravel off the pavement. "
+"Steering guide and Lane guide sound, under Audio, change which way to steer "
+"and what leans. Realistic sets this off, Balanced partial, All assists full."
+msgstr ""
+
+#. one sentence of a longer line
+msgid ""
+"Off drifts like a real wheel; bends are yours unless curve assistance is "
+"on, and every exit needs its signal and its exit lane."
+msgstr "关闭时偏移就像真实的方向盘；弯道由你负责，除非开启了弯道辅助，而且每个出口都需要打转向灯并进入出口车道。"
+
+#. placeholders: {lean}
+#. one sentence of a longer line
+msgid "On partial or off {lean}."
+msgstr "在部分或关闭时，{lean}。"
+
+#. one sentence of a longer line
+msgid ""
+"Partial steers the truck through the road's bends and drifts gently, with "
+"generous steering help; lane changes and speed are yours."
+msgstr "部分会带卡车通过道路的弯道，偏移很轻，转向帮助很充足；变道和车速由你负责。"
+
+#. one sentence of a longer line
+msgid "Realistic sets this off, Balanced partial, All assists full."
+msgstr "写实把它设为关闭，均衡设为部分，全部辅助设为完全。"
+
+#. one sentence of a longer line
+msgid ""
+"Steering guide and Lane guide sound, under Audio, change which way to steer "
+"and what leans."
+msgstr "“音频”下的“转向引导”和“车道引导声音”可以改变转向方向和偏向的声音。"
+
+#. one sentence of a longer line
+msgid ""
+"The road sound only says where you sit in your lane, and the road edge "
+"answers: a stutter clipping the rumble strip, a buzz fully on it, gravel "
+"off the pavement."
+msgstr "道路声音只告诉你在车道中的位置，路边会有回应：擦到振动带时是断续的抖动声，完全压上时是嗡嗡声，冲出路面时是碎石声。"
+
+#. placeholders: {acc_gap_label}
+msgid "Following gap: {acc_gap_label}"
+msgstr "跟车间隔：{acc_gap_label}"
+
+msgid ""
+"How much room adaptive cruise leaves to the vehicle ahead. Close is two and "
+"a half seconds, normal three, far three and a half. Weather widens the gap "
+"whichever you pick. All three stay clear of a following-too-close citation. "
+"The preset above never changes it."
+msgstr ""
+"自适应巡航和前车之间留多少距离。近是2.5秒，正常是3秒，远是3.5秒。无论你选哪个，天气都会加大间隔。三种都不会让你因跟车太近被开罚单。上面的预设永远"
+"不会改变它。"
 
 msgid ""
 "Up and Down pick a control, Enter then a key press moves it, Escape goes "
@@ -35578,25 +35809,8 @@ msgstr "{label}。空。"
 msgid "update-check"
 msgstr "update-check"
 
-#. one sentence of a longer line
-msgid "Could not reach the update server."
-msgstr "无法连接更新服务器。"
-
-#. placeholders: {describe_error}
-msgid "Could not reach the update server. {describe_error}"
-msgstr "无法连接更新服务器。{describe_error}"
-
-msgid ""
-"On iPhone and iPad, updates come through the App Store or TestFlight."
-msgstr "在iPhone和iPad上，更新通过App Store或TestFlight提供。"
-
-msgid "AG Now keeps this copy up to date."
+msgid "The update check could not start."
 msgstr ""
-
-msgid ""
-"Updates are only available in the packaged game. This copy runs from "
-"source; update it with git."
-msgstr "只有安装包版本的游戏才能更新。这个副本是从源代码运行的；请用git更新它。"
 
 msgid "Checking for updates..."
 msgstr "正在检查更新……"
@@ -35626,11 +35840,6 @@ msgid ""
 "this version stops asking about this update."
 msgstr "“下载并重启”会立即安装它。“更新内容”会读出改动。“跳过这个版本”就不再询问这次更新。"
 
-msgid ""
-"Updates can only be installed in the packaged game. This copy runs from "
-"source."
-msgstr "只有安装包版本的游戏才能安装更新。这个副本是从源代码运行的。"
-
 #. placeholders: {title}
 #. one sentence of a longer line
 msgid "Skipping {title}."
@@ -35644,9 +35853,12 @@ msgstr "跳过{title}。下一次更新仍然会提供。"
 msgid "The next update will still be offered."
 msgstr "下一次更新仍然会提供。"
 
-#. placeholders: {mb}
-msgid " {mb} megabytes."
-msgstr "{mb} 兆字节。"
+msgid " of changes"
+msgstr ""
+
+#. placeholders: {f}, {changes}
+msgid "{f} megabytes{changes}"
+msgstr ""
 
 #. one sentence of a longer line
 msgid "Update available."
@@ -35744,10 +35956,6 @@ msgstr "下载停止了。已经{as_secs}秒没有收到任何数据。"
 msgid "The download arrived damaged, so it was not installed."
 msgstr "下载的文件已损坏，所以没有安装。"
 
-#. placeholders: {describe_error}
-msgid "The download failed. {describe_error}"
-msgstr "下载失败。{describe_error}"
-
 #. placeholders: {sentence}
 msgid "The download failed. {sentence}"
 msgstr "下载失败。{sentence}"
@@ -35790,10 +35998,8 @@ msgid "The download stopped. Nothing arrived for {STALL_TIMEOUT_S} seconds."
 msgstr "下载停止了。已经{STALL_TIMEOUT_S}秒没有收到任何数据。"
 
 #. one sentence of a longer line
-msgid ""
-"Copy it over your game folder, which keeps your music and radio packs, then "
-"restart the game."
-msgstr ""
+msgid "Install it yourself, then restart the game."
+msgstr "请自己安装，然后重启游戏。"
 
 #. placeholders: {dest}
 #. one sentence of a longer line
@@ -35802,28 +36008,9 @@ msgstr "新版本保存在{dest}。"
 
 #. placeholders: {dest}
 msgid ""
-"The new version is saved at {dest}. Copy it over your game folder, which "
-"keeps your music and radio packs, then restart the game."
-msgstr ""
-
-#. one sentence of a longer line
-msgid "Install it yourself, then restart the game."
-msgstr "请自己安装，然后重启游戏。"
-
-#. placeholders: {dest}
-msgid ""
 "The new version is saved at {dest}. Install it yourself, then restart the "
 "game."
 msgstr ""
-
-#. placeholders: {mb}
-msgid ", {mb} megabytes"
-msgstr "，{mb}兆字节"
-
-#. placeholders: {mb}
-#. one clause of a longer line
-msgid "{mb} megabytes"
-msgstr "{mb} MB"
 
 #. placeholders: {title}, {size}
 #. one sentence of a longer line
@@ -37012,6 +37199,154 @@ msgstr "右括号"
 #. placeholders: {ch}
 msgid "cap {ch}"
 msgstr "大写{ch}"
+
+#. GitHub update mirror validation returned from the updater to the text field.
+msgid "Type an HTTPS mirror address."
+msgstr "请输入 HTTPS 镜像地址。"
+
+msgid "Type a valid HTTPS mirror address."
+msgstr "请输入有效的 HTTPS 镜像地址。"
+
+msgid "The mirror address must start with https://."
+msgstr "镜像地址必须以 https:// 开头。"
+
+msgid "The mirror address cannot contain a query or fragment."
+msgstr "镜像地址不能包含查询参数或片段。"
+
+#~ msgid "dev"
+#~ msgstr "开发版"
+
+#~ msgid "Update channel: {else}"
+#~ msgstr "更新渠道：{else}"
+
+#~ msgid "developer snapshots"
+#~ msgstr "开发者快照"
+
+#~ msgid "Stable releases or developer snapshots."
+#~ msgstr "稳定版或开发者快照。"
+
+#~ msgid "Could not reach the update server."
+#~ msgstr "无法连接更新服务器。"
+
+#~ msgid "Could not reach the update server. {describe_error}"
+#~ msgstr "无法连接更新服务器。{describe_error}"
+
+#~ msgid ""
+#~ "On iPhone and iPad, updates come through the App Store or TestFlight."
+#~ msgstr "在iPhone和iPad上，更新通过App Store或TestFlight提供。"
+
+#~ msgid ""
+#~ "Updates are only available in the packaged game. This copy runs from "
+#~ "source; update it with git."
+#~ msgstr "只有安装包版本的游戏才能更新。这个副本是从源代码运行的；请用git更新它。"
+
+#~ msgid ""
+#~ "Updates can only be installed in the packaged game. This copy runs from "
+#~ "source."
+#~ msgstr "只有安装包版本的游戏才能安装更新。这个副本是从源代码运行的。"
+
+#~ msgid " {mb} megabytes."
+#~ msgstr "{mb} 兆字节。"
+
+#~ msgid "The download failed. {describe_error}"
+#~ msgstr "下载失败。{describe_error}"
+
+#~ msgid ", {mb} megabytes"
+#~ msgstr "，{mb}兆字节"
+
+#~ msgid "{mb} megabytes"
+#~ msgstr "{mb} MB"
+
+#~ msgid ""
+#~ "It holds the lane, steers the bends and street corners, and takes your "
+#~ "exits."
+#~ msgstr "它会保持车道，转过弯道和街角，还会替你驶出出口。"
+
+#~ msgid ""
+#~ "It holds the lane, steers the bends and street corners, and takes your "
+#~ "exits. A tap of {control_steer_left} or {control_steer_right} changes "
+#~ "lanes. Speed, stops and the docks are yours."
+#~ msgstr ""
+#~ "它会保持车道，转过弯道和街角，还会替你驶出出口。轻按一下{control_steer_left}或{control_steer_right}就会换道。车"
+#~ "速、停车和装卸口归你管。"
+
+#~ msgid "Speed, stops and the docks are yours."
+#~ msgstr "车速、停车和装卸口归你管。"
+
+#~ msgid "The {lane_label} lane closes at the work zone ahead."
+#~ msgstr "{lane_label}车道在前方施工区封闭。"
+
+#~ msgid ""
+#~ "The {lane_label} lane closes at the work zone ahead. Move to the "
+#~ "{open_name} lane."
+#~ msgstr "{lane_label}车道在前方施工区封闭。换到{open_name}车道。"
+
+#~ msgid "You are in the closed {lane_label} lane!"
+#~ msgstr "你在已封闭的{lane_label}车道上！"
+
+#~ msgid ""
+#~ "You are in the closed {lane_label} lane! Move to the {open_name} lane!"
+#~ msgstr "你在已封闭的{lane_label}车道上！换到{open_name}车道！"
+
+#~ msgid ""
+#~ "Full holds the lane, turns {control_steer_left} and {control_steer_right} "
+#~ "into tap lane changes, and takes your exits, including the destination "
+#~ "exit, without a signal."
+#~ msgstr ""
+#~ "完全会保持车道，把{control_steer_left}和{control_steer_right}变成轻按变道，并且不用打转向灯就替你驶出出口，包括"
+#~ "目的地出口。"
+
+#~ msgid ""
+#~ "How much of the lane-holding work the truck does. Full holds the lane, "
+#~ "turns {control_steer_left} and {control_steer_right} into tap lane changes, "
+#~ "and takes your exits, including the destination exit, without a signal. "
+#~ "Partial steers the truck through the road's bends and drifts gently, with "
+#~ "generous steering help; lane changes and speed are yours. Off drifts like a "
+#~ "real wheel; bends are yours unless curve assistance is on, and every exit "
+#~ "needs its signal and its exit lane. On partial or off {lean}. The road "
+#~ "sound only says where you sit in your lane, and the road edge answers: a "
+#~ "stutter clipping the rumble strip, a buzz fully on it, gravel off the "
+#~ "pavement. Steering guide and Lane guide sound, under Audio, change which "
+#~ "way to steer and what leans. Realistic sets this off, Balanced partial, All "
+#~ "assists full."
+#~ msgstr ""
+#~ "卡车替你做多少保持车道的工作。完全会保持车道，把{control_steer_left}和{control_steer_right}变成轻按变道，并且不"
+#~ "用打转向灯就替你驶出出口，包括目的地出口。部分会带卡车通过道路的弯道，偏移很轻，转向帮助很充足；变道和车速由你负责。关闭时偏移就像真实的方向盘；弯道由你"
+#~ "负责，除非开启了弯道辅助，而且每个出口都需要打转向灯并进入出口车道。在部分或关闭时，{lean}。道路声音只告诉你在车道中的位置，路边会有回应：擦到振动"
+#~ "带时是断续的抖动声，完全压上时是嗡嗡声，冲出路面时是碎石声。“音频”下的“转向引导”和“车道引导声音”可以改变转向方向和偏向的声音。写实把它设为关闭，均"
+#~ "衡设为部分，全部辅助设为完全。"
+
+#~ msgid "Routes update checks and downloads through a mirror you configure."
+#~ msgstr "通过你配置的镜像检查并下载更新。"
+
+#~ msgid ""
+#~ "The player chooses and trusts the mirror used for update checks and "
+#~ "downloads."
+#~ msgstr "玩家自行选择并信任用于检查和下载更新的镜像。"
+
+#~ msgid "auto"
+#~ msgstr "自动"
+
+#~ msgid " for the lower limit"
+#~ msgstr " ，为较低的限速"
+
+#~ msgid "Destination exit for {name}."
+#~ msgstr "{name} 的目的地出口。"
+
+#~ msgid "{labeled}, destination exit for {name}."
+#~ msgstr "{labeled}，{name} 的目的地出口。"
+
+#~ msgid "{exit_speed} {take} {ramp} of ramp.{terminal}"
+#~ msgstr "{exit_speed}{take}{ramp}匝道。{terminal}"
+
+#~ msgid "{exit_speed} {take} {ramp} of ramp."
+#~ msgstr "{exit_speed}{take}{ramp}匝道。"
+
+#~ msgid "{exit_speed} {take} {ramp} of ramp, {ending}."
+#~ msgstr "{exit_speed}{take}{ramp}匝道，{ending}。"
+
+#~ msgid "{advice} Speed keeper easing."
+#~ msgstr "{advice}限速保持正在减速。"
 
 #~ msgid ""
 #~ "On, you drive the real streets between the highway and a facility, turn by "

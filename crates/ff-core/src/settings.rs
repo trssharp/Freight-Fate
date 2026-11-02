@@ -192,7 +192,7 @@ pub const ACC_GAP_DEFAULT: &str = "normal";
 pub const LANE_CUE_LOUDNESS_MODES: [&str; 3] = ["subtle", "standard", "prominent"];
 pub const DESCENT_SPEED_CONTROL_MODES: [&str; 4] = ["off", "realistic", "balanced", "interactive"];
 pub const PEDAL_LATCH_MODES: [&str; 2] = ["on", "off"];
-pub const UPDATE_CHANNELS: [&str; 3] = ["", "stable", "dev"];
+pub const UPDATE_CHANNELS: [&str; 4] = ["", "stable", "beta", "alpha"];
 
 /// One preset field's value: the assist switches are bools, descent speed
 /// control and lane keeping are modes.
@@ -629,6 +629,11 @@ settings_fields! {
     speech_voice: String = "" => str_plain,
     /// "stable"/"dev"; "" follows this build's channel
     update_channel: String = "" => str_checked,
+    /// Route GitHub update discovery and archive downloads through the
+    /// player-supplied mirror prefix. Off by default; no mirror is built in.
+    update_mirror_enabled: bool = false => bool_strict,
+    /// HTTPS prefix prepended to GitHub API and release-asset URLs.
+    update_mirror_prefix: String = "" => str_plain,
     /// release tag the player chose to skip
     skipped_update: String = "" => str_plain,
     /// show broad activity in Discord (privacy-safe)
@@ -736,6 +741,9 @@ settings_fields! {
     /// plain dark fill that is never redrawn, which saves the battery for a
     /// player who only listens. Speech and sound are the same either way.
     visual_display: bool = true => bool_strict,
+    /// The order the achievements screens list categories and badges in
+    /// (`AchievementSort::key`); anything unknown reads as earned first.
+    achievement_sort: String = "earned" => str_plain,
 }
 
 impl Settings {

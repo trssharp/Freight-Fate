@@ -439,8 +439,11 @@ fn test_selected_stop_assist_reaches_full_stop_and_sleep_menu() {
         d.ramp_terminal_done = true;
     });
 
+    // The real exit at this mile has a ramp a mile long since the October
+    // 2026 exits re-read: two minutes at the ramp's 31, so give it three
+    // and a bit.
     let mut opened = false;
-    for _ in 0..4_000 {
+    for _ in 0..12_000 {
         top_frame(&mut harness);
         if harness.state_is::<RestStopState>() {
             opened = true;
@@ -457,9 +460,11 @@ fn test_selected_stop_assist_reaches_full_stop_and_sleep_menu() {
     assert!(harness.read_drive(|d| d.truck().parking_brake));
     assert!(harness.read_drive(|d| d.selected_stop_key.is_none()));
     assert!(harness.read_drive(|d| d.trip.planned_stop_key.is_none()));
-    assert!(spoken(&harness)
-        .iter()
-        .any(|line| line.contains("Slowing for the entrance.")));
+    // One line for the slowdown: the deceleration lane's on a ramp that
+    // runs straight to the lot, or the arrival's.
+    assert!(spoken(&harness).iter().any(|line| {
+        line.contains("Slowing for the entrance.") || line.contains("Slowing for the ramp.")
+    }));
     assert!(spoken(&harness)
         .iter()
         .any(|line| line.contains("Stopped at public rest area: Prairie View Rest Area")));
@@ -494,7 +499,7 @@ fn test_selected_stop_assist_reaches_full_stop_and_sleep_menu() {
     };
     let selected_i = index_of("Sleep stop planned");
     let armed_i = index_of("Signal ");
-    let braking_i = index_of("Slowing for the entrance.");
+    let braking_i = index_of("Slowing for the");
     let stopped_i = index_of("Stopped at public rest area");
     let menu_i = index_of("Sleep 10 hours");
     assert!(
