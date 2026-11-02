@@ -40,8 +40,8 @@ mod zones;
 
 pub use lookups::LaneRun;
 pub use streets::{
-    is_gate_zone_reason, is_street_zone_reason, spoken_zone, LOT_ZONE, STOP_STREET_ZONE,
-    STREET_ZONE, YARD_ZONE,
+    is_gate_zone_reason, is_highway_zone_reason, is_street_zone_reason, spoken_zone, LOT_ZONE,
+    STOP_STREET_ZONE, STREET_ZONE, YARD_ZONE,
 };
 
 /// A stop is announced ("stop ahead") when it first comes within this many
@@ -69,7 +69,7 @@ pub const PACENOTE_LEAD_FLOOR_S: f64 = 30.0;
 /// call's "then left/right" tail INSTEAD of getting its own call.
 pub const PACENOTE_LINK_GAP_MI: f64 = 0.3;
 
-/// A signalled exit gets the same real-time treatment as a hard bend, over
+/// A signaled exit gets the same real-time treatment as a hard bend, over
 /// the road the truck genuinely needs to reach ramp speed, widened so the
 /// clock is already real by the time anything has to start shedding.
 pub const EXIT_APPROACH_DECOMPRESS_SLACK: f64 = 1.5;
@@ -135,21 +135,9 @@ pub fn spoken_short_miles(miles: f64, imperial: bool) -> String {
     format!("{meters} meters")
 }
 
-/// Turn direction for the earcon, read out of a baked maneuver cue;
-/// directionless legacy cues ("Turn onto") return "" and stay speech-only.
-pub fn cue_direction(text: &str) -> &'static str {
-    let lowered = text.to_lowercase();
-    if lowered.contains("left") {
-        return "left";
-    }
-    if lowered.contains("right") {
-        return "right";
-    }
-    if lowered.starts_with("continue") || lowered.starts_with("start") {
-        return "ahead";
-    }
-    ""
-}
+/// Turn direction for the earcon, read out of a baked maneuver cue; see
+/// [`crate::data::world_services::cue_direction`].
+pub use crate::data::world_services::cue_direction;
 
 impl HasLocation for City {
     fn lat(&self) -> f64 {
@@ -171,6 +159,8 @@ pub struct TripOptions {
     pub imperial: bool,
     pub hazard_scale: f64,
     pub career_hours: Option<f64>,
+    /// The career calendar follows the real date, so weekdays are real.
+    pub live_calendar: bool,
     pub traffic_provider: Option<Arc<dyn TrafficProvider>>,
     pub parking_provider: Option<Arc<TruckParkingProvider>>,
     pub bobtail: bool,
@@ -193,6 +183,7 @@ impl Default for TripOptions {
             imperial: true,
             hazard_scale: 1.0,
             career_hours: None,
+            live_calendar: false,
             traffic_provider: None,
             parking_provider: None,
             bobtail: false,
@@ -231,6 +222,8 @@ pub struct Trip {
     /// Absolute career clock at departure: carries the day of the week so
     /// commuter rush hour only forms on weekdays. None reads as a weekday.
     pub career_hours: Option<f64>,
+    /// The career calendar follows the real date, so weekdays are real.
+    pub live_calendar: bool,
     imperial: bool,
     pub traffic_provider: Option<Arc<dyn TrafficProvider>>,
     pub parking_provider: Option<Arc<TruckParkingProvider>>,
@@ -265,6 +258,9 @@ pub struct Trip {
     pub finished: bool,
     /// The control the stop callout names for signalling an exit.
     pub exit_hint: String,
+    /// Lane keeping signals for open scales itself, so a scale's callout
+    /// names no key. Set each frame by the driving layer.
+    pub scales_signal_themselves: bool,
     /// Facilities named in full already this leg (research doc R6).
     pub facilities_named: HashSet<String>,
     pub facility_leg: usize,
@@ -364,6 +360,8 @@ pub struct Trip {
     /// Tunnel gates already reached in this run.  A refused gate remains
     /// closed rather than replaying its refusal every frame.
     pub processed_tunnel_gates: HashSet<usize>,
+    /// Crossings the truck is held at until the wind drops.
+    pub wind_held_gates: HashSet<usize>,
     pub refused_tunnel_gates: HashSet<usize>,
     /// The zone the truck was last known to be inside (Python
     /// `_active_zone`); compared by `zone_key`, the Rust stand-in for
@@ -372,7 +370,15 @@ pub struct Trip {
     /// Whether the current entered zone's ZONE_ENTER colour line has been
     /// spoken.
     pub zone_entry_spoken: bool,
+    /// Set by the drive while the turn into the yard or lot is still ahead
+    /// or unsettled: the yard's entry line waits for the truck to have
+    /// actually turned in, so a truck that overruns the driveway is not told
+    /// it is in the yard before it is told it missed the turn.
+    pub yard_entry_held: bool,
     pub announced_speed_limit: Option<f64>,
+    /// Where a lower posting the truck passed too fast to be told about
+    /// ends. Until then no speed is charged against it.
+    pub unannounced_limit_end_mi: Option<f64>,
     pub warned_limit_drops: Vec<f64>,
     /// Posted-limit values already spoken for the CURRENT posting.
     pub limit_drop_preannounced: Vec<f64>,
@@ -451,6 +457,7 @@ impl Trip {
             hazard_scale,
             start_hour,
             career_hours: opts.career_hours,
+            live_calendar: opts.live_calendar,
             imperial: opts.imperial,
             traffic_provider: opts.traffic_provider,
             parking_provider: opts.parking_provider,
@@ -468,6 +475,7 @@ impl Trip {
             last_chatter_s: None,
             finished: false,
             exit_hint: "X".to_string(),
+            scales_signal_themselves: false,
             facilities_named: HashSet::new(),
             facility_leg: 0,
             waiting: false,
@@ -524,10 +532,13 @@ impl Trip {
             announced_navigation: HashSet::new(),
             charged_tolls: HashSet::new(),
             processed_tunnel_gates: HashSet::new(),
+            wind_held_gates: HashSet::new(),
             refused_tunnel_gates: HashSet::new(),
             entered_zone: None,
             zone_entry_spoken: true,
+            yard_entry_held: false,
             announced_speed_limit: None,
+            unannounced_limit_end_mi: None,
             warned_limit_drops: Vec::new(),
             limit_drop_preannounced: Vec::new(),
             event_breather: RoadEventBreather::new(),
@@ -583,6 +594,15 @@ impl Trip {
             trip.weather.set_city(&weather_key, lat, lon);
             if let Some(provider) = trip.weather.provider_mut() {
                 provider.request(&weather_key, lat, lon);
+            }
+        }
+        // Each wind-rule bridge is read at its own station, so fetch those
+        // now too, well before the truck reaches the gate.
+        for leg_index in 0..trip.route.legs.len() {
+            if let Some((key, lat, lon)) = trip.crossing_station(leg_index) {
+                if let Some(provider) = trip.weather.provider_mut() {
+                    provider.request(&key, lat, lon);
+                }
             }
         }
         trip
@@ -672,8 +692,8 @@ impl Trip {
             return Some("curve assist shedding speed");
         }
         if self.armed_exit_decompression() {
-            // And for a signalled exit (Shane, 2026-08-15).
-            return Some("signalled exit");
+            // And for a signaled exit (Shane, 2026-08-15).
+            return Some("signaled exit");
         }
         if self.scale_reminder_hold() && self.truck.speed_mph() > SCALE_BYPASS_MPH {
             // And from an open scale's last reminder to its gore: at full
@@ -916,5 +936,13 @@ mod tests {
         assert_eq!(cue_direction("Turn right onto Palm Street"), "right");
         assert_eq!(cue_direction("Continue onto Main Street"), "ahead");
         assert_eq!(cue_direction("Turn onto Elm"), "");
+        assert_eq!(cue_direction("Turn left onto Wright Street"), "left");
+        assert_eq!(cue_direction("Turn right onto Leftwich Road"), "right");
+        assert_eq!(
+            cue_direction("Continue onto North Brighton Boulevard"),
+            "ahead"
+        );
+        assert_eq!(cue_direction("Start on Wright Brothers Boulevard"), "ahead");
+        assert_eq!(cue_direction("Keep left onto Elm Street"), "left");
     }
 }

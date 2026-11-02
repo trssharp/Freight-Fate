@@ -26,7 +26,7 @@
 //! ```
 //!
 //! Deselected must not mean unrun. A bad container reaches a tester through
-//! a release build, so that is where the gate belongs: `tools/build_release.py`
+//! a release build, so that is where the gate belongs: `cargo tools build-release`
 //! already runs `ff-bake --check` on every build, and CI should run both of
 //! these with `--ignored` whenever the data tree, the loaders or the baker
 //! change. Nothing else stands between a bad bake and a player.
@@ -365,6 +365,11 @@ fn street_limits_buffs_and_the_radio_catalogs_match_in_full() {
         assert_eq!(got.get(id), Some(buff), "buff {id}");
     }
 
+    assert!(
+        !ff_core::models::carriers::carrier_catalog().is_empty(),
+        "carriers.json reads back from the container"
+    );
+
     let want = ff_core::radio::load_full_catalog(json_dir).expect("radio catalog");
     let got = ff_core::radio::default_radio_catalog();
     assert_eq!(got.len(), want.len(), "radio station count");
@@ -390,8 +395,10 @@ fn the_container_holds_every_section_and_nothing_stray() {
         "local_geometry",
         "text:border_yards.json",
         "text:buffs.json",
+        "text:carriers.json",
         "text:channel3000.json",
         "text:radio_catalog.json",
+        "text:radio_community.json",
         "text:radio_imported.json",
         "text:street_limits.json",
     ];

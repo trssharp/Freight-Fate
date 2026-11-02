@@ -180,73 +180,13 @@ fn test_ledger_write_failure_keeps_career_award_but_suppresses_public_event() {
 }
 
 #[test]
-fn test_arrival_uses_account_new_achievements_for_mastodon_reasons() {
-    // Separate outboxes prove the account ledger, rather than an outbox's
-    // event-id dedupe, controls which career achievements can be public.
+fn test_ledger_write_failure_still_announces_the_arrival_award() {
     let mut app = TestApp::new();
-    let first_mastodon = offline_journal(&app.data_dir.path().join("first-mastodon.json"));
-    app.ctx.services.mastodon = first_mastodon.clone();
-    app.ctx.profile = Some(Profile::named_in("First Mastodon Career", "Chicago"));
-    let first_path = app.ctx.profile.as_ref().expect("a career").path();
-    let first_job = an_unlocked_job(&app, 0);
-    let mut first_drive = a_finished_delivery(&mut app, first_job);
-
-    ArrivalState::new(&mut app.ctx, &mut first_drive);
-
-    let second_mastodon = offline_journal(&app.data_dir.path().join("second-mastodon.json"));
-    app.ctx.services.mastodon = second_mastodon.clone();
-    app.ctx.profile = Some(Profile::named_in("Second Mastodon Career", "Chicago"));
-    let second_path = app.ctx.profile.as_ref().expect("a career").path();
-    let second_job = an_unlocked_job(&app, 0);
-    let mut second_drive = a_finished_delivery(&mut app, second_job);
-
-    ArrivalState::new(&mut app.ctx, &mut second_drive);
-
-    let mut achievement_reasons = Vec::new();
-    for item in first_mastodon
-        .items()
-        .iter()
-        .chain(second_mastodon.items().iter())
-    {
-        for reason in item.payload["payload"]["reasons"]
-            .as_array()
-            .expect("Mastodon reasons")
-        {
-            if reason["type"] == "achievements" {
-                achievement_reasons.push(reason.clone());
-            }
-        }
-    }
-    let first_delivery_mentions = achievement_reasons
-        .iter()
-        .filter(|reason| {
-            reason["names"]
-                .as_array()
-                .is_some_and(|names| names.iter().any(|name| name == "Signed, Sealed, Hauled"))
-        })
-        .count();
-    assert_eq!(first_delivery_mentions, 1);
-    assert!(Profile::load(&first_path)
-        .unwrap()
-        .achievements
-        .iter()
-        .any(|id| id == "first_delivery"));
-    assert!(Profile::load(&second_path)
-        .unwrap()
-        .achievements
-        .iter()
-        .any(|id| id == "first_delivery"));
-}
-
-#[test]
-fn test_ledger_write_failure_keeps_arrival_award_out_of_mastodon() {
-    let mut app = TestApp::new();
-    app.ctx.services.mastodon = offline_journal(&app.data_dir.path().join("mastodon.json"));
     let blocked_data_dir = app.data_dir.path().join("blocked-data-dir");
     std::fs::write(&blocked_data_dir, b"a file, not a directory").unwrap();
     app.ctx.account_achievements =
         freight_fate::account_achievements::AccountAchievements::empty(&blocked_data_dir);
-    app.ctx.profile = Some(Profile::named_in("Mastodon Ledger Failure", "Chicago"));
+    app.ctx.profile = Some(Profile::named_in("Ledger Failure", "Chicago"));
     let job = an_unlocked_job(&app, 0);
     let mut driving = a_finished_delivery(&mut app, job);
 
@@ -261,7 +201,6 @@ fn test_ledger_write_failure_keeps_arrival_award_out_of_mastodon() {
         "{:?}",
         arrival.summary_parts
     );
-    assert!(app.ctx.services.mastodon.items().is_empty());
 }
 
 #[test]
@@ -885,12 +824,19 @@ fn test_main_menu_achievement_path_is_keyboard_accessible() {
     );
     key(&mut app, Key::Return);
 
-    // The career picker opens the category menu, not a flat badge list.
+    // The career picker opens the category menu, not a flat badge list,
+    // landing on the Sort row above the categories.
     assert!(is::<AchievementsState>(&app));
+    assert_eq!(
+        current_label::<AchievementsState>(&app),
+        "Sort: Earned first"
+    );
     assert!(
-        current_label::<AchievementsState>(&app).starts_with("Summary: 1 of"),
-        "{}",
-        current_label::<AchievementsState>(&app)
+        labels::<AchievementsState>(&app)
+            .iter()
+            .any(|row| row.starts_with("Summary: 1 of")),
+        "{:?}",
+        labels::<AchievementsState>(&app)
     );
 
     // first_delivery ("Signed, Sealed, Hauled") lives in "Out on the Road";
@@ -957,7 +903,8 @@ fn test_category_with_nothing_earned_still_reads_naturally() {
         app.main_lines()
     );
     let rows = labels::<AchievementCategoryState>(&app);
-    for row in &rows[..rows.len() - 1] {
+    // Every row between Sort and Back.
+    for row in &rows[1..rows.len() - 1] {
         assert!(
             row.starts_with("Locked: A Secret the Manifest Is Keeping"),
             "{rows:?}"

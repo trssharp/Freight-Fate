@@ -2,13 +2,33 @@
 
 use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 
-use crate::data::world_models::{CrossingLoad, Route, TunnelData};
+use crate::data::world_models::{CrossingLoad, Route, TunnelData, WindDecision};
 use crate::models::jobs::cargo_type;
 use crate::sim::hos::HosClock;
 use crate::sim::trip::{compute_leg_starts, Trip};
 use crate::sim::trip_models::{TripEventData, TripEventKind};
 use crate::sim::vehicle::KG_PER_LB;
 use crate::speech_text::SpokenMessage;
+
+/// Queueing for a bridge escort, in wind or for a load the bridge always
+/// escorts, in minutes. No authority publishes the wait, so this is the
+/// game's figure.
+pub const ESCORT_WAIT_MINUTES: f64 = 20.0;
+/// How often a truck waiting out a wind closure checks the wind again.
+pub const WIND_WAIT_STEP_MINUTES: f64 = 30.0;
+/// The longest a closure is waited out before dispatch looks for a detour.
+pub const MAX_WIND_WAIT_MINUTES: f64 = 4.0 * 60.0;
+
+/// What the wind at a crossing did with the truck.
+enum WindGate {
+    /// The wind lets the truck on with no wait.
+    Open,
+    /// The truck waited for a wind escort, which also covers any escort
+    /// the crossing gives this load in calm weather.
+    Escorted,
+    /// The truck did not cross: held at the approach (true) or rerouted.
+    Stopped(bool),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TunnelDirection {
@@ -207,6 +227,13 @@ pub fn log_wait_to_hos(clock: &mut HosClock, wait_minutes: i64, closed: bool) {
     }
 }
 
+/// A closed window at a crossing, already waited out on the trip clock.
+struct HoursWait {
+    minutes: i64,
+    text: String,
+    until: NaiveDateTime,
+}
+
 impl Trip {
     /// The time zone of the city a leg starts from: the wall clock its
     /// crossings keep. Eastern, the reference clock, when the city is unknown.
@@ -234,6 +261,9 @@ impl Trip {
         let tank = cargo_type(key).is_some_and(|cargo| cargo.tank);
         CrossingLoad::plain(length_ft, self.truck.rig_width_ft, self.truck.rig_height_ft)
             .with_cargo(key, tank, cargo_lb)
+            .with_hazard_class(self.truck.hazard_class)
+            .with_trailer(self.truck.trailer_attached)
+            .with_gross((self.truck.gross_mass_kg() / KG_PER_LB).round().max(0.0) as u32)
     }
 
     /// Swap in a road that shares everything behind the truck and differs
@@ -259,6 +289,266 @@ impl Trip {
         self.chain_law_areas = self.place_chain_law_areas();
         self.posts = self.place_enforcement_posts();
         self.curves = self.place_curves();
+    }
+
+    /// Where live weather reads a wind-rule crossing on this leg: the leg's
+    /// toll point named for the crossing, as (station key, lat, lon). None
+    /// when the leg names no such point; the truck's own station is used.
+    pub fn crossing_station(&self, leg_index: usize) -> Option<(String, f64, f64)> {
+        let leg = self.route.legs.get(leg_index)?;
+        let crossing = leg.crossings.iter().find(|c| c.wind.is_some())?;
+        let toll = leg
+            .toll_events()
+            .iter()
+            .find(|t| t.name.starts_with(&crossing.name))?;
+        let forward = self.route.cities.get(leg_index)? == &leg.a;
+        let offset = if forward {
+            toll.at_mi
+        } else {
+            leg.miles - toll.at_mi
+        };
+        let start = *self.leg_starts.get(leg_index)?;
+        let (lat, lon) = self.latlon_at(Some(start + offset.clamp(0.0, leg.miles)));
+        Some((format!("crossing:{}", crossing.name), lat, lon))
+    }
+
+    /// The wind call at a crossing on this leg, if it has one, judged at
+    /// the sky's current sustained wind: (refused, spoken rule).
+    fn wind_call(&mut self, leg_index: usize, load: &CrossingLoad) -> Option<(bool, String)> {
+        let station = self.crossing_station(leg_index);
+        let wind_mph = self.weather.wind_mph_near(
+            station
+                .as_ref()
+                .map(|(key, lat, lon)| (key.as_str(), *lat, *lon)),
+        );
+        self.route
+            .legs
+            .get(leg_index)?
+            .crossings
+            .iter()
+            .find_map(|c| match c.wind.as_ref()?.decide(load, wind_mph) {
+                WindDecision::Cross => None,
+                WindDecision::Escort(text) => Some((false, text.to_string())),
+                WindDecision::Refused(text) => Some((true, text.to_string())),
+            })
+    }
+
+    /// A crossing that escorts this load in any weather is a short wait on
+    /// duty, unless a wind escort already took the truck across
+    /// (`wind_escorted`). A closed window waited out just before (`before`)
+    /// shares one spoken line with the escort, so the driver hears both waits
+    /// and when the truck may go.
+    fn process_escort(
+        &mut self,
+        leg_index: usize,
+        load: &CrossingLoad,
+        before: Option<HoursWait>,
+        wind_escorted: bool,
+    ) {
+        let escort = if wind_escorted {
+            None
+        } else {
+            self.route.legs.get(leg_index).and_then(|leg| {
+                leg.crossings
+                    .iter()
+                    .filter_map(|c| c.escort.as_ref())
+                    .find(|escort| escort.applies(load))
+                    .map(|escort| escort.text.clone())
+            })
+        };
+        let escorted = escort.is_some();
+        let (minutes, spoken) = match (before, escort) {
+            (None, None) => return,
+            (Some(hours), None) => (
+                hours.minutes as f64,
+                format!(
+                    "{} You wait {} on duty, until {}.",
+                    hours.text,
+                    wait_text(hours.minutes),
+                    clock_text(hours.until)
+                ),
+            ),
+            (None, Some(text)) => (
+                ESCORT_WAIT_MINUTES,
+                format!(
+                    "{text} You wait {} on duty.",
+                    wait_text(ESCORT_WAIT_MINUTES as i64)
+                ),
+            ),
+            (Some(hours), Some(text)) => {
+                let go = hours.until + Duration::minutes(ESCORT_WAIT_MINUTES as i64);
+                (
+                    hours.minutes as f64 + ESCORT_WAIT_MINUTES,
+                    format!(
+                        "{} {text} You wait on duty until {}, then {} for the escort, and may cross at {}.",
+                        hours.text,
+                        clock_text(hours.until),
+                        wait_text(ESCORT_WAIT_MINUTES as i64),
+                        clock_text(go)
+                    ),
+                )
+            }
+        };
+        if escorted {
+            self.game_minutes += ESCORT_WAIT_MINUTES;
+            self.weather.update(ESCORT_WAIT_MINUTES);
+        }
+        self.log_wind_wait(minutes, spoken);
+    }
+
+    /// A crossing closed to this load's class at this hour on its own wall
+    /// clock, such as the Golden Gate Bridge for explosives at weekday rush
+    /// hours, is waited out on duty at the approach until the window ends.
+    /// The clock moves here; the wait is spoken with any escort that follows.
+    fn process_hazmat_hours(&mut self, leg_index: usize, load: &CrossingLoad) -> Option<HoursWait> {
+        let zone = self.leg_start_zone(leg_index);
+        let at = career_datetime(self.career_hours, self.start_hour, self.game_minutes, zone);
+        let weekend = self.career_weekend(career_local_hours(
+            self.career_hours,
+            self.start_hour,
+            self.game_minutes,
+            zone,
+        ));
+        let (minutes, text) = self.route.legs.get(leg_index).and_then(|leg| {
+            leg.crossings.iter().find_map(|c| {
+                let hours = c.hazmat_hours.as_ref()?;
+                Some((
+                    hours.wait_minutes(load, at.time(), weekend)?,
+                    hours.text.clone(),
+                ))
+            })
+        })?;
+        self.game_minutes += minutes as f64;
+        self.weather.update(minutes as f64);
+        Some(HoursWait {
+            minutes,
+            text,
+            until: at + Duration::minutes(minutes),
+        })
+    }
+
+    /// Saturday or Sunday on the calendar the game speaks: the real one when
+    /// the career follows the real date, the career's own otherwise.
+    fn career_weekend(&self, local_hours: f64) -> bool {
+        if self.live_calendar && self.career_hours.is_some() {
+            matches!(
+                crate::sim::season::real_weekday_name(local_hours, None),
+                "Saturday" | "Sunday"
+            )
+        } else {
+            crate::sim::season::is_weekend(local_hours)
+        }
+    }
+
+    /// Wind at a crossing: an escort is a short wait on duty; a closure is
+    /// waited out on duty, then driven around when a legal road exists, and
+    /// otherwise held at the approach until the wind drops.
+    fn process_wind_gate(&mut self, leg_index: usize, load: &CrossingLoad) -> WindGate {
+        let (refused, text) = match self.wind_call(leg_index, load) {
+            Some(call) => call,
+            None => {
+                if self.wind_held_gates.remove(&leg_index) {
+                    self.emit(
+                        TripEventKind::GpsCue,
+                        SpokenMessage::new("The wind has dropped. You may cross.".to_string()),
+                        TripEventData {
+                            context: Some("crossing_wind_dropped".to_string()),
+                            ..Default::default()
+                        },
+                    );
+                }
+                return WindGate::Open;
+            }
+        };
+        if self.wind_held_gates.contains(&leg_index) {
+            return WindGate::Stopped(true);
+        }
+        if !refused {
+            self.game_minutes += ESCORT_WAIT_MINUTES;
+            self.weather.update(ESCORT_WAIT_MINUTES);
+            self.log_wind_wait(
+                ESCORT_WAIT_MINUTES,
+                format!(
+                    "{text} You wait {} on duty.",
+                    wait_text(ESCORT_WAIT_MINUTES as i64)
+                ),
+            );
+            return WindGate::Escorted;
+        }
+        let mut waited = 0.0;
+        while waited < MAX_WIND_WAIT_MINUTES {
+            self.game_minutes += WIND_WAIT_STEP_MINUTES;
+            self.weather.update(WIND_WAIT_STEP_MINUTES);
+            waited += WIND_WAIT_STEP_MINUTES;
+            if self
+                .wind_call(leg_index, load)
+                .is_none_or(|(refused, _)| !refused)
+            {
+                break;
+            }
+        }
+        self.log_wind_wait(
+            waited,
+            format!(
+                "{text} You wait {} on duty for the wind to drop.",
+                wait_text(waited.round() as i64)
+            ),
+        );
+        match self.wind_call(leg_index, load) {
+            Some((true, _)) => {}
+            Some((false, _)) => return self.process_wind_gate(leg_index, load),
+            None => return WindGate::Open,
+        }
+        let ahead = leg_index;
+        let Some(avoid) = self.route.legs.get(leg_index).map(|leg| leg.id) else {
+            return WindGate::Open;
+        };
+        let city = self.route.cities.get(ahead).cloned().unwrap_or_default();
+        if let Some(route) = self.world.detour_ahead(&self.route, ahead, load, avoid) {
+            self.reroute_ahead(route);
+            self.processed_tunnel_gates.retain(|i| *i < leg_index);
+            self.refused_tunnel_gates.retain(|i| *i < leg_index);
+            let spoken = format!(
+                "The wind is still too strong. Dispatch reroutes you from {}.",
+                self.world.spoken_city(&city, None)
+            );
+            self.emit(
+                TripEventKind::GpsCue,
+                SpokenMessage::new(spoken),
+                TripEventData {
+                    context: Some("crossing_reroute".to_string()),
+                    ..Default::default()
+                },
+            );
+            return WindGate::Stopped(false);
+        }
+        self.wind_held_gates.insert(leg_index);
+        self.emit(
+            TripEventKind::GpsCue,
+            SpokenMessage::new(
+                "There is no other road. You hold here until the wind drops.".to_string(),
+            ),
+            TripEventData {
+                context: Some("crossing_wind_hold".to_string()),
+                ..Default::default()
+            },
+        );
+        WindGate::Stopped(true)
+    }
+
+    fn log_wind_wait(&mut self, minutes: f64, spoken: String) {
+        if minutes <= 0.0 {
+            return;
+        }
+        self.emit(
+            TripEventKind::GpsCue,
+            SpokenMessage::new(spoken),
+            TripEventData {
+                amount: Some(minutes),
+                context: Some("tunnel_wait".to_string()),
+                ..Default::default()
+            },
+        );
     }
 
     /// Judge a leg's crossings and tunnel gate at the city where the leg
@@ -309,9 +599,8 @@ impl Trip {
                     let reason = leg
                         .crossings
                         .iter()
-                        .find_map(|c| c.refusal(&load))
-                        .unwrap_or_default()
-                        .to_string();
+                        .find_map(|c| c.refusal_spoken(&load))
+                        .unwrap_or_default();
                     self.emit(
                         TripEventKind::GpsCue,
                         SpokenMessage::new(reason),
@@ -324,6 +613,16 @@ impl Trip {
                 }
             }
         }
+        let wind_escorted = match self.process_wind_gate(leg_index, &load) {
+            WindGate::Stopped(held) => return held,
+            WindGate::Escorted => true,
+            WindGate::Open => false,
+        };
+        let hours = self.process_hazmat_hours(leg_index, &load);
+        self.process_escort(leg_index, &load, hours, wind_escorted);
+        let Some(leg) = self.route.legs.get(leg_index) else {
+            return false;
+        };
         let Some(data) = leg.corridor().tunnel.clone() else {
             self.processed_tunnel_gates.insert(leg_index);
             return false;

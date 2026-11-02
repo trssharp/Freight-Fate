@@ -27,6 +27,86 @@ fn with_provider(region: &str, seed: i64, provider: Box<dyn WeatherProvider>) ->
 // -- tests/test_weather_trip.py ---------------------------------------------
 
 #[test]
+fn simulated_high_wind_and_storm_gusts_vary_within_their_ranges() {
+    let mut highs = Vec::new();
+    let mut storms = Vec::new();
+    for seed in 0..60 {
+        let mut s = system("heartland", seed);
+        s.forced = Some(WeatherKind::Wind);
+        s.current = WeatherKind::Wind;
+        highs.push(s.wind_mph());
+        s.forced = Some(WeatherKind::Thunderstorm);
+        s.current = WeatherKind::Thunderstorm;
+        storms.push(s.wind_mph());
+    }
+    let spread = |v: &[f64]| {
+        let lo = v.iter().cloned().fold(f64::MAX, f64::min);
+        let hi = v.iter().cloned().fold(f64::MIN, f64::max);
+        (lo, hi)
+    };
+    let (lo, hi) = spread(&highs);
+    assert!(lo >= HIGH_WIND_MPH.0 && hi <= HIGH_WIND_MPH.1, "{lo}..{hi}");
+    assert!(hi - lo > 20.0, "high winds vary: {lo}..{hi}");
+    let (lo, hi) = spread(&storms);
+    assert!(
+        lo >= STORM_GUST_MPH.0 && hi <= STORM_GUST_MPH.1,
+        "{lo}..{hi}"
+    );
+    assert!(hi - lo > 10.0, "storm gusts vary: {lo}..{hi}");
+    let mut again = system("heartland", 7);
+    again.current = WeatherKind::Wind;
+    let mut other = system("heartland", 7);
+    other.current = WeatherKind::Wind;
+    assert_eq!(again.wind_mph(), other.wind_mph(), "seeded peaks repeat");
+}
+
+#[test]
+fn a_simulated_blow_eases_off_over_a_few_hours() {
+    let mut s = system("heartland", 1);
+    s.forced = Some(WeatherKind::Wind);
+    s.current = WeatherKind::Wind;
+    s.blow = Some(WindBlow {
+        kind: WeatherKind::Wind,
+        peak_mph: 55.0,
+        minutes: 0.0,
+    });
+    let mut last = s.wind_mph();
+    assert_eq!(last, 55.0);
+    let mut under_cbbt_level = None;
+    for step in 1..=10 {
+        s.update(30.0);
+        let now = s.wind_mph();
+        assert!(now <= last, "the wind only eases: {last} then {now}");
+        if now < 40.0 && under_cbbt_level.is_none() {
+            under_cbbt_level = Some(step * 30);
+        }
+        last = now;
+    }
+    assert!(
+        under_cbbt_level.is_some_and(|m| m <= 120),
+        "{under_cbbt_level:?}"
+    );
+    assert_eq!(last, HIGH_WIND_MPH.0, "it eases to the least high wind");
+    s.forced = Some(WeatherKind::Clear);
+    s.update(1.0);
+    assert_eq!(s.wind_mph(), BLOW_CALM_MPH, "a spent blow is calm");
+}
+
+#[test]
+fn a_new_blow_starts_when_the_sky_turns_windy() {
+    let mut s = system("heartland", 3);
+    s.forced = Some(WeatherKind::Clear);
+    s.update(1.0);
+    s.blow = None;
+    s.forced = Some(WeatherKind::Thunderstorm);
+    s.update(10.0);
+    let blow = s.blow.expect("a storm blows");
+    assert_eq!(blow.kind, WeatherKind::Thunderstorm);
+    assert_eq!(blow.minutes, 0.0);
+    assert!((STORM_GUST_MPH.0..=STORM_GUST_MPH.1).contains(&blow.peak_mph));
+}
+
+#[test]
 fn test_all_conditions_have_effects() {
     for kind in WeatherKind::ALL {
         assert!(EFFECTS.iter().any(|(k, _)| *k == kind));
@@ -273,6 +353,12 @@ impl WeatherProvider for LocationProvider {
     fn unavailable(&mut self, _city: &str) -> bool {
         false
     }
+
+    // A mild station reading, so the real-calendar season model (read off
+    // the wall clock) never turns this rain to ice on a cold night.
+    fn get_temperature(&mut self, _city: &str) -> Option<f64> {
+        Some(15.0)
+    }
 }
 
 #[test]
@@ -404,10 +490,7 @@ fn test_live_report_lines_read_the_station_back() {
     // 18 C -> 64.4 F -> "64".
     assert_eq!(ws.source_conditions(true), "rain, 64 degrees");
     assert_eq!(ws.source_conditions(false), "rain, 18 degrees Celsius");
-    assert_eq!(
-        ws.report_lead(true),
-        "Live weather: rain, 64 degrees. The observation is 12 minutes old"
-    );
+    assert_eq!(ws.report_lead(true), "Live weather: rain, 64 degrees");
     assert_eq!(ws.observation_age_value(), "12 minutes old");
     assert_eq!(ws.event_source_label(), "Live weather");
     assert_eq!(ws.conditions_label(), "Live conditions");
@@ -451,7 +534,7 @@ fn test_observation_age_text_rounds_down_to_whole_minutes() {
     );
     assert_eq!(
         ws.last_known_notice(),
-        "The observation is 1 minute old. Live weather is updating for your current location"
+        "Live weather is updating for your current location"
     );
     // No city tracked: nothing to age.
     let mut ws = with_provider(
@@ -463,7 +546,7 @@ fn test_observation_age_text_rounds_down_to_whole_minutes() {
         }),
     );
     assert_eq!(ws.observation_age_text(), None);
-    assert_eq!(ws.last_known_notice(), "Observation age is unavailable");
+    assert_eq!(ws.last_known_notice(), "");
     assert_eq!(
         ws.live_observation_notice(),
         "Observation age is unavailable"
@@ -776,11 +859,14 @@ fn test_live_change_omits_modeled_temperature_and_does_not_hide_later_stale_stat
 
     let shared = Arc::new(Mutex::new(Shared::default()));
     let route = first_route("chicago_il_us", "indianapolis_in_us");
-    let weather = with_provider(
+    let mut weather = with_provider(
         "great_lakes",
         1,
         Box::new(MovingProvider(Arc::clone(&shared))),
     );
+    // The career clock, not the wall clock, sets the season here, so a cold
+    // real night cannot turn this heavy rain to snow.
+    weather.live_weather_controls_calendar = false;
     let mut trip = trip_on(route, weather, seeded(2));
 
     trip.position_mi = 0.0;
@@ -813,7 +899,7 @@ fn test_live_change_omits_modeled_temperature_and_does_not_hide_later_stale_stat
     let delayed = kind_messages(&trip.update(0.0), TripEventKind::WeatherChange);
     assert_eq!(delayed.len(), 1, "{delayed:?}");
     assert!(
-        delayed[0].starts_with("The observation is 12 minutes old"),
+        delayed[0].starts_with("The latest live weather check failed"),
         "{}",
         delayed[0]
     );
@@ -822,7 +908,7 @@ fn test_live_change_omits_modeled_temperature_and_does_not_hide_later_stale_stat
 }
 
 #[test]
-fn test_freshly_fetched_old_observation_change_stays_live_and_announces_age() {
+fn test_freshly_fetched_old_observation_change_stays_live_and_leaves_the_age_unsaid() {
     use crate::sim::trip_models::TripEventKind;
 
     struct OldObservationProvider;
@@ -833,6 +919,11 @@ fn test_freshly_fetched_old_observation_change_stays_live_and_announces_age() {
         }
         fn observation_age_s(&mut self, _: &str) -> Option<f64> {
             Some(12.0 * 60.0)
+        }
+        // A mild station reading, so the real-calendar season model (read
+        // off the wall clock) never turns this rain to ice on a cold night.
+        fn get_temperature(&mut self, _: &str) -> Option<f64> {
+            Some(15.0)
         }
     }
 
@@ -847,7 +938,7 @@ fn test_freshly_fetched_old_observation_change_stays_live_and_announces_age() {
         "{}",
         changes[0]
     );
-    assert!(changes[0].contains("The observation is 12 minutes old"));
+    assert!(!changes[0].contains("minutes old"));
     assert!(!changes[0].to_lowercase().contains("updat"));
 }
 
@@ -1099,17 +1190,13 @@ fn brake_until_speed(
     inspections
 }
 
-/// The lane-closure sentence the construction warning carries, if any.
+/// The merge clause the construction warning carries, if any.
 fn closure_part(zone: &crate::sim::trip_models::Zone) -> String {
     match zone.closed_lane {
-        None => "All lanes open through the work. ".to_string(),
+        None => String::new(),
         Some(lane) => {
-            let (shut, keep) = if lane == 0 {
-                ("right", "left")
-            } else {
-                ("left", "right")
-            };
-            format!("The {shut} lane is closed, merge {keep} before the work zone. ")
+            let keep = if lane == 0 { "left" } else { "right" };
+            format!(" Merge {keep}.")
         }
     }
 }
@@ -1186,6 +1273,15 @@ fn real_time_empty_bubble_arrival_reaches_the_player_traffic_status() {
 
     let status = trip.npc_traffic_status();
     assert!(!status.contains("no close traffic"), "{status}");
+    // A slow lead is called once it is within earshot, so close on it.
+    if let Some(arrival) = trip
+        .traffic_manager
+        .vehicles
+        .iter()
+        .find(|vehicle| vehicle.key.starts_with("real-time:"))
+    {
+        trip.position_mi = arrival.position_mi - 0.3;
+    }
     trip.check_npc_traffic_cues();
     assert!(
         trip.events
@@ -1233,7 +1329,7 @@ fn test_speed_limit_varies_by_corridor_and_drops_in_cities() {
 
     let mut trip = make_trip(2, 1.0); // Chicago -> Indianapolis, an Interstate corridor
                                       // Near the origin city the limit drops to the urban value.
-    let (near_city, reason) = trip.speed_limit_at(1.0);
+    let (near_city, reason) = trip.speed_limit_at(2.0);
     assert!(reason.is_none());
     assert_eq!(near_city, URBAN_LIMIT_MPH);
     // Out on the open road it is the faster corridor limit.
@@ -2020,7 +2116,7 @@ fn test_construction_zone_warns_before_entry() {
     assert_eq!(
         warnings,
         vec![format!(
-            "In {}, construction ahead. {}Speed limit {:.0} from one mile out, then {:.0} through the work zone.",
+            "Construction, {}.{} Limit {:.0}, then {:.0}.",
             trip.ahead_text(lookahead),
             closure_part(&zone),
             CONSTRUCTION_TAPER_LIMIT_MPH,
@@ -2080,11 +2176,11 @@ fn test_construction_warning_lead_allows_normal_braking() {
 
     let events = trip.update(0.0);
     // NOT "Brake now!" -- that is the emergency hazard opening, and this
-    // warning fires miles out. It leads with the distance like every other
-    // zone warning (Shane, 2026-08-24).
+    // warning fires miles out. It names the work and its distance first
+    // (Shane, 2026-08-24).
     let first = &gps_messages(&events)[0];
     assert!(!first.starts_with("Brake now"));
-    assert!(first.starts_with("In "));
+    assert!(first.starts_with("Construction, "), "{first}");
 
     let inspections = brake_until_speed(&mut trip, zone.limit_mph, false, 20.0);
     assert!(trip.position_mi < zone.start_mi);
@@ -2136,12 +2232,12 @@ fn test_construction_zone_speeding_fine_waits_for_grace_distance() {
     // construction warning itself is what this test pins down.
     let construction_cues: Vec<String> = gps_messages(&advance)
         .into_iter()
-        .filter(|m| m.contains("construction ahead"))
+        .filter(|m| m.starts_with("Construction,"))
         .collect();
     assert_eq!(
         construction_cues,
         vec![format!(
-            "In 2 miles, construction ahead. {}Speed limit {:.0} from one mile out, then {:.0} through the work zone.",
+            "Construction, 2 miles.{} Limit {:.0}, then {:.0}.",
             closure_part(&zone),
             CONSTRUCTION_TAPER_LIMIT_MPH,
             zone.limit_mph
@@ -2420,11 +2516,11 @@ fn test_merge_traffic_pressures_drop_the_speed_advisory() {
 
     assert_eq!(
         route_merge_msg.normal,
-        format!("Merging traffic in {distance}. Keep right.")
+        format!("Merging traffic, {distance}. Keep right.")
     );
     assert_eq!(
         construction_merge_msg.normal,
-        format!("Traffic squeezing at the construction taper in {distance}. Merge left early.")
+        format!("Taper squeezing, {distance}. Merge left.")
     );
     assert!(!route_merge_msg.normal.contains("35"));
     assert!(!construction_merge_msg.normal.contains("35"));
@@ -2470,8 +2566,8 @@ fn test_traffic_pressure_gps_cue_deduplicates() {
     };
     let cues: Vec<_> = first.iter().filter(|e| is_ours(e)).collect();
     assert_eq!(cues.len(), 1);
-    assert!(cues[0].text().contains("Exit traffic building"));
-    assert!(cues[0].text().contains("Hold the right lane"));
+    assert!(cues[0].text().contains("Exit traffic,"));
+    assert!(cues[0].text().contains("Hold right"));
     assert!(!second.iter().any(is_ours));
 }
 
@@ -3026,26 +3122,26 @@ fn test_toll_cues_and_charges_deduplicate() {
     use crate::sim::trip_models::TripEventKind;
 
     let mut trip = make_trip_on("New York", "Philadelphia", seeded(2));
-    trip.position_mi = 6.1;
+    trip.position_mi = 73.6;
     assert!(gps_events(&trip.update(0.0)).is_empty());
 
-    trip.position_mi = 7.2;
+    trip.position_mi = 74.7;
     let advance = trip.update(0.0);
     let repeat = trip.update(0.0);
     assert_eq!(
         gps_messages(&advance),
-        vec!["ticket system toll point ahead, New Jersey Turnpike ticket entry. Estimated toll 18 dollars, billed to carrier settlement."]
+        vec!["E-ZPass toll point ahead, New Jersey Turnpike settlement. Toll 63 dollars."]
     );
     assert!(gps_events(&repeat).is_empty());
 
-    trip.position_mi = 9.0;
+    trip.position_mi = 76.5;
     let charged = trip.update(0.0);
     let charged_again = trip.update(0.0);
     assert_eq!(
         kind_messages(&charged, TripEventKind::TollCharged),
-        vec!["ticket system toll at New Jersey Turnpike ticket entry, estimated 18 dollars, billed to carrier settlement."]
+        vec!["E-ZPass toll at New Jersey Turnpike settlement, 63 dollars, billed to carrier settlement."]
     );
-    assert_eq!(trip.toll_expense(), 18.0);
+    assert_eq!(trip.toll_expense(), 62.51);
     assert!(kind_messages(&charged_again, TripEventKind::TollCharged).is_empty());
 }
 
@@ -3068,13 +3164,15 @@ fn test_zero_amount_toll_entry_marker_does_not_record_expense() {
     trip.position_mi = 16.1;
     assert_eq!(
         gps_messages(&trip.update(0.0)),
-        vec!["ticket system toll point ahead, Pennsylvania Turnpike eastern ticket entry. Entry recorded for carrier settlement."]
+        vec!["ticket system toll point ahead, Pennsylvania Turnpike eastern ticket entry."]
     );
     trip.position_mi = 18.0;
     let entry = trip.update(0.0);
-    assert_eq!(
-        gps_messages(&entry),
-        vec!["ticket system entry recorded at Pennsylvania Turnpike eastern ticket entry. Toll billed at carrier settlement."]
+    // Nothing is charged at a ticket entry, and the cue ahead named it.
+    assert!(
+        gps_messages(&entry).is_empty(),
+        "{:?}",
+        gps_messages(&entry)
     );
     assert_eq!(trip.toll_expense(), 0.0);
     assert!(kind_messages(&entry, TripEventKind::TollCharged).is_empty());
@@ -3143,7 +3241,7 @@ fn test_city_events_do_not_repeat_mapped_state_crossings() {
     let events = trip.update(0.0);
     assert_eq!(
         kind_messages(&events, TripEventKind::CityReached),
-        vec!["Passing Cleveland, Ohio. Continuing on I-76 toward Pittsburgh."]
+        vec!["Passing Cleveland, Ohio."]
     );
     let state_events = kind_messages(&events, TripEventKind::StateCrossing);
     assert!(
@@ -3172,7 +3270,7 @@ fn test_city_events_keep_crossing_fallback_without_mapped_state_line() {
     let events = trip.update(0.0);
     assert_eq!(
         kind_messages(&events, TripEventKind::CityReached),
-        vec!["Crossing into Ohio. Passing Cleveland, Ohio. Continuing on I-76 toward Pittsburgh."]
+        vec!["Crossing into Ohio. Passing Cleveland, Ohio."]
     );
 }
 
@@ -3186,7 +3284,7 @@ fn test_city_events_include_state_without_repeating_crossing() {
     let events = trip.update(0.0);
     assert_eq!(
         kind_messages(&events, TripEventKind::CityReached),
-        vec!["Passing Buffalo, New York. Continuing on I-90 toward Cleveland."]
+        vec!["Passing Buffalo, New York."]
     );
 }
 

@@ -306,6 +306,518 @@ fn bay_bridge_turns_bulk_fuel_south_and_bridge_tolls_are_read() {
     );
 }
 
+fn wind_trip(from: &str, to: &str, cargo_kg: f64) -> Trip {
+    let world = world();
+    let leg = world
+        .legs
+        .iter()
+        .find(|leg| leg.a == from && leg.b == to)
+        .expect("wind leg")
+        .as_ref()
+        .clone();
+    assert!(leg.crossings.iter().any(|c| c.wind.is_some()));
+    let route = Route::from_legs(vec![from.into(), to.into()], vec![leg]);
+    let mut truck = TruckState::default();
+    truck.start_engine();
+    truck.trailer_attached = true;
+    truck.cargo_key = "general".into();
+    truck.cargo_kg = cargo_kg;
+    truck.velocity_mps = 10.0;
+    Trip::new(
+        route,
+        truck,
+        default_weather(),
+        TripOptions {
+            world: Some(world),
+            ..TripOptions::seeded(93)
+        },
+    )
+}
+
+#[derive(Clone)]
+struct StationWind(std::rc::Rc<std::cell::Cell<f64>>);
+
+impl ff_core::sim::weather::WeatherProvider for StationWind {
+    fn request(&mut self, _city: &str, _lat: f64, _lon: f64) {}
+    fn get(&mut self, _city: &str) -> Option<WeatherKind> {
+        Some(WeatherKind::Wind)
+    }
+    fn get_wind_kmh(&mut self, _city: &str) -> Option<f64> {
+        Some(self.0.get())
+    }
+}
+
+fn blow(peak_mph: f64) -> Option<ff_core::sim::weather::WindBlow> {
+    Some(ff_core::sim::weather::WindBlow {
+        kind: WeatherKind::Wind,
+        peak_mph,
+        minutes: 0.0,
+    })
+}
+
+/// Live wind of `bridge` km/h at a crossing's own station and `around` km/h
+/// everywhere else; records where each station was asked for.
+#[derive(Clone)]
+struct BridgeStation {
+    bridge: f64,
+    around: f64,
+    asked: std::rc::Rc<std::cell::RefCell<Vec<(String, f64, f64)>>>,
+}
+
+impl ff_core::sim::weather::WeatherProvider for BridgeStation {
+    fn request(&mut self, city: &str, lat: f64, lon: f64) {
+        self.asked.borrow_mut().push((city.to_string(), lat, lon));
+    }
+    fn get(&mut self, _city: &str) -> Option<WeatherKind> {
+        Some(WeatherKind::Wind)
+    }
+    fn get_wind_kmh(&mut self, city: &str) -> Option<f64> {
+        Some(if city.starts_with("crossing:") {
+            self.bridge
+        } else {
+            self.around
+        })
+    }
+}
+
+#[test]
+fn mackinac_high_wind_is_an_escort_wait_on_duty() {
+    let mut trip = wind_trip("sault_ste_marie_mi_us", "traverse_city_mi_us", 13_600.0);
+    trip.weather.forced = Some(WeatherKind::Wind);
+    trip.weather.current = WeatherKind::Wind;
+    trip.weather.blow = blow(45.0);
+    let start_minutes = trip.game_minutes;
+    let events = trip.update(1.0);
+    let wait = events
+        .iter()
+        .find(|e| e.data.context.as_deref() == Some("tunnel_wait"))
+        .expect("escort wait");
+    assert_eq!(wait.data.amount, Some(20.0));
+    assert!(
+        trip.game_minutes - start_minutes >= 20.0,
+        "the escort wait moves the trip clock"
+    );
+    assert!(wait.text().contains("wait for an escort"));
+    assert!(wait.text().contains("20 minutes on duty"));
+    for _ in 0..30 {
+        trip.update(1.0);
+    }
+    assert!(trip.position_mi > 0.0);
+}
+
+#[test]
+fn class_rules_pass_allowed_classes_and_route_banned_ones_around() {
+    use ff_core::data::world_models::HazardClass;
+    let world = world();
+    let packaged = |class| {
+        CrossingLoad::standard_rig(true)
+            .with_cargo("hazardous", false, 30_000)
+            .with_hazard_class(Some(class))
+    };
+    let open = world
+        .supported_route("norfolk_va_us", "richmond_va_us", None)
+        .unwrap()
+        .expect("open road");
+    let refused = |load: &CrossingLoad| {
+        open.legs
+            .iter()
+            .flat_map(|leg| leg.crossings.iter())
+            .find_map(|c| c.refusal_spoken(load))
+    };
+    assert!(open.legs.iter().any(|leg| leg
+        .crossings
+        .iter()
+        .any(|c| c.name == "Hampton Roads Bridge-Tunnel")));
+    assert_eq!(refused(&packaged(HazardClass::NonflammableGas)), None);
+    assert_eq!(
+        refused(&packaged(HazardClass::FlammableLiquid)),
+        None,
+        "non-bulk paint"
+    );
+    let gas = refused(&packaged(HazardClass::PoisonGas)).expect("poison gas refused");
+    assert!(gas.starts_with("This load is poison gas. "), "{gas}");
+    let legal = world
+        .legal_route(
+            "norfolk_va_us",
+            "richmond_va_us",
+            &packaged(HazardClass::PoisonGas),
+        )
+        .unwrap()
+        .expect("poison gas reaches Richmond another way");
+    assert!(legal.legs.iter().all(|leg| leg
+        .crossings
+        .iter()
+        .all(|c| c.refusal(&packaged(HazardClass::PoisonGas)).is_none())));
+    let cbbt = world
+        .legs
+        .iter()
+        .flat_map(|leg| leg.crossings.iter())
+        .find(|c| c.name == "Chesapeake Bay Bridge-Tunnel")
+        .expect("CBBT");
+    assert_eq!(
+        cbbt.refusal_spoken(&packaged(HazardClass::FlammableLiquid))
+            .as_deref(),
+        Some(
+            "This load is flammable liquid. A placarded truckload of it is over the \
+             Chesapeake Bay Bridge-Tunnel's quantity limits."
+        ),
+        "quantity-limited classes are refused as over the limits, not as banned"
+    );
+    let banned = cbbt
+        .refusal_spoken(&packaged(HazardClass::DangerousWhenWet))
+        .expect("4.3 is banned outright");
+    assert!(
+        banned.starts_with("This load is dangerous when wet. Explosives, poison gas"),
+        "{banned}"
+    );
+    for class in [
+        HazardClass::Explosive14,
+        HazardClass::Explosive15,
+        HazardClass::Explosive16,
+        HazardClass::NonflammableGas,
+    ] {
+        assert!(cbbt.refusal(&packaged(class)).is_none(), "{class:?}");
+    }
+    // The Golden Gate never refuses outright: explosives wait for the hour.
+    let blast = packaged(HazardClass::Explosive11);
+    let gg = world
+        .supported_route("san_francisco_ca_us", "santa_rosa_ca_us", None)
+        .unwrap()
+        .expect("open road");
+    assert!(gg.legs.iter().any(|leg| leg
+        .crossings
+        .iter()
+        .any(|c| c.name == "Golden Gate Bridge" && c.refusal(&blast).is_none())));
+}
+
+fn golden_gate_trip(
+    class: Option<ff_core::data::world_models::HazardClass>,
+    career_hours: Option<f64>,
+    start_hour: f64,
+) -> Trip {
+    let world = world();
+    let leg = world
+        .legs
+        .iter()
+        .find(|leg| leg.a == "san_francisco_ca_us" && leg.b == "santa_rosa_ca_us")
+        .expect("Golden Gate leg")
+        .as_ref()
+        .clone();
+    let route = Route::from_legs(
+        vec!["san_francisco_ca_us".into(), "santa_rosa_ca_us".into()],
+        vec![leg],
+    );
+    let mut truck = TruckState::default();
+    truck.start_engine();
+    truck.trailer_attached = true;
+    truck.cargo_key = "hazardous".into();
+    truck.cargo_kg = 9_000.0;
+    truck.placarded_hazmat = true;
+    truck.hazard_class = class;
+    truck.velocity_mps = 10.0;
+    Trip::new(
+        route,
+        truck,
+        default_weather(),
+        TripOptions {
+            world: Some(world),
+            start_hour,
+            career_hours,
+            ..TripOptions::seeded(93)
+        },
+    )
+}
+
+#[test]
+fn golden_gate_holds_explosives_through_weekday_rush_hour_then_escorts_them() {
+    use ff_core::data::world_models::HazardClass;
+    let waits = |class, days: Option<f64>, hour| {
+        let mut trip = golden_gate_trip(class, days, hour);
+        let start = trip.game_minutes;
+        let waits = trip
+            .update(1.0)
+            .into_iter()
+            .filter(|e| e.data.context.as_deref() == Some("tunnel_wait"))
+            .map(|e| (e.data.amount, e.text().to_string()))
+            .collect::<Vec<_>>();
+        (waits, trip.game_minutes - start)
+    };
+    // The career calendar starts on a Wednesday, so five days on is Monday
+    // and four is Sunday. The trip clock is Eastern; San Francisco is three
+    // hours behind it, so Eastern 10 AM is 7 AM at the bridge.
+    let monday = Some(24.0 * 5.0);
+    let sunday = Some(24.0 * 4.0);
+    let (rush, minutes) = waits(Some(HazardClass::Explosive11), monday, 10.0);
+    assert_eq!(
+        rush.len(),
+        1,
+        "one line for the ban and the escort: {rush:?}"
+    );
+    assert_eq!(rush[0].0, Some(170.0));
+    assert!(rush[0].1.contains("weekday rush hours"));
+    assert!(rush[0].1.contains("inspection and a bridge escort"));
+    assert!(
+        rush[0].1.contains(
+            "You wait on duty until 9:30 AM, then 20 minutes for the escort, and may cross at 9:50 AM."
+        ),
+        "{}",
+        rush[0].1
+    );
+    assert!(
+        minutes >= 170.0,
+        "both waits move the trip clock: {minutes}"
+    );
+    let (before_dawn, minutes) = waits(Some(HazardClass::Explosive11), monday, 7.0);
+    assert_eq!(before_dawn.len(), 1, "4 AM at the bridge is before the ban");
+    assert_eq!(before_dawn[0].0, Some(20.0));
+    assert!(minutes >= 20.0, "the escort moves the trip clock");
+    let (midday, _) = waits(Some(HazardClass::Explosive13), monday, 15.0);
+    assert_eq!(midday.len(), 1, "escort only");
+    assert_eq!(midday[0].0, Some(20.0));
+    let (fireworks, minutes) = waits(Some(HazardClass::Explosive14), monday, 10.0);
+    assert!(
+        fireworks.is_empty(),
+        "1.4 is not an explosive under Vehicle Code 31600(c): {fireworks:?}"
+    );
+    assert!(minutes < 20.0, "fireworks are not held: {minutes}");
+    let (weekend, _) = waits(Some(HazardClass::Explosive11), sunday, 10.0);
+    assert_eq!(weekend.len(), 1, "no rush-hour ban at the weekend");
+    assert_eq!(weekend[0].0, Some(20.0));
+    assert!(waits(Some(HazardClass::FlammableLiquid), monday, 10.0)
+        .0
+        .is_empty());
+}
+
+#[test]
+fn mackinac_escorts_placarded_and_heavy_loads_once_in_any_weather() {
+    let waits = |key: &str, cargo_kg: f64, sky: WeatherKind| {
+        let mut trip = wind_trip("sault_ste_marie_mi_us", "traverse_city_mi_us", cargo_kg);
+        trip.truck.cargo_key = key.into();
+        if key == "hazardous" {
+            trip.truck.hazard_class =
+                Some(ff_core::data::world_models::HazardClass::FlammableLiquid);
+        }
+        trip.weather.forced = Some(sky);
+        trip.weather.current = sky;
+        if sky == WeatherKind::Wind {
+            trip.weather.blow = blow(45.0);
+        }
+        trip.update(1.0)
+            .into_iter()
+            .filter(|e| e.data.context.as_deref() == Some("tunnel_wait"))
+            .map(|e| (e.data.amount, e.text().to_string()))
+            .collect::<Vec<_>>()
+    };
+    let placarded = waits("hazardous", 9_000.0, WeatherKind::Clear);
+    assert_eq!(placarded.len(), 1);
+    assert_eq!(placarded[0].0, Some(20.0));
+    assert!(placarded[0].1.contains("escorts placarded and heavy loads"));
+    assert!(placarded[0].1.contains("20 minutes on duty"));
+    let mut clocked = wind_trip("sault_ste_marie_mi_us", "traverse_city_mi_us", 9_000.0);
+    clocked.truck.cargo_key = "hazardous".into();
+    clocked.truck.hazard_class = Some(ff_core::data::world_models::HazardClass::FlammableLiquid);
+    clocked.weather.forced = Some(WeatherKind::Clear);
+    clocked.weather.current = WeatherKind::Clear;
+    let start_minutes = clocked.game_minutes;
+    clocked.update(1.0);
+    assert!(
+        clocked.game_minutes - start_minutes >= 20.0,
+        "the escort wait moves the trip clock"
+    );
+    assert!(waits("general", 13_600.0, WeatherKind::Clear).is_empty());
+    assert_eq!(
+        waits("general", 25_000.0, WeatherKind::Clear).len(),
+        1,
+        "over 40 tons gross"
+    );
+    let windy = waits("hazardous", 9_000.0, WeatherKind::Wind);
+    assert_eq!(windy.len(), 1, "one escort covers wind and placards");
+    assert!(windy[0].1.contains("wait for an escort"));
+}
+
+#[test]
+fn a_simulated_high_wind_eases_so_an_empty_trailer_crosses_the_cbbt_within_the_cap() {
+    let mut trip = wind_trip("norfolk_va_us", "cape_charles_va_us", 0.0);
+    trip.weather.forced = Some(WeatherKind::Wind);
+    trip.weather.current = WeatherKind::Wind;
+    trip.weather.blow = blow(55.0);
+    let start_minutes = trip.game_minutes;
+    let events = trip.update(1.0);
+    let wait = events
+        .iter()
+        .find(|e| e.data.context.as_deref() == Some("tunnel_wait"))
+        .expect("wind wait");
+    let waited = wait.data.amount.expect("minutes");
+    assert!(
+        (30.0..240.0).contains(&waited),
+        "eased inside the cap: {waited}"
+    );
+    assert!(
+        wait.text().contains("for the wind to drop"),
+        "{}",
+        wait.text()
+    );
+    assert!(trip.game_minutes - start_minutes >= waited);
+    assert!(events
+        .iter()
+        .all(|e| e.data.context.as_deref() != Some("crossing_wind_hold")));
+    assert!(trip.wind_held_gates.is_empty());
+    // Whatever the peak, a simulated high wind never outlasts the cap.
+    for _ in 0..12 {
+        let mut trip = wind_trip("norfolk_va_us", "cape_charles_va_us", 0.0);
+        trip.weather.forced = Some(WeatherKind::Wind);
+        trip.weather.current = WeatherKind::Wind;
+        trip.update(1.0);
+        assert!(trip.wind_held_gates.is_empty(), "{:?}", trip.weather.blow);
+    }
+}
+
+#[test]
+fn an_empty_trailer_waits_out_cbbt_wind_on_duty_then_holds() {
+    let mut trip = wind_trip("norfolk_va_us", "cape_charles_va_us", 0.0);
+    let station = std::rc::Rc::new(std::cell::Cell::new(72.5));
+    trip.weather.provider = Some(Box::new(StationWind(station)));
+    trip.weather.city = Some("norfolk_va_us".into());
+    let start_minutes = trip.game_minutes;
+    let events = trip.update(1.0);
+    let wait = events
+        .iter()
+        .find(|e| e.data.context.as_deref() == Some("tunnel_wait"))
+        .expect("wind wait");
+    assert_eq!(wait.data.amount, Some(240.0));
+    assert!(wait.text().contains("Chesapeake Bay Bridge-Tunnel"));
+    assert!(wait.text().contains("4 hours on duty"));
+    assert!(trip.game_minutes - start_minutes >= 240.0);
+    // The way around the bay is far beyond the alternate-route allowance.
+    assert!(events
+        .iter()
+        .any(|e| e.text().contains("You hold here until the wind drops")));
+    assert!(events
+        .iter()
+        .all(|e| e.data.context.as_deref() != Some("crossing_reroute")));
+    let loaded = wind_trip("norfolk_va_us", "cape_charles_va_us", 9_000.0);
+    let mut loaded = loaded;
+    loaded.weather.forced = Some(WeatherKind::Wind);
+    loaded.weather.current = WeatherKind::Wind;
+    loaded.weather.blow = blow(45.0);
+    let events = loaded.update(1.0);
+    assert!(events
+        .iter()
+        .all(|e| e.data.context.as_deref() != Some("tunnel_wait")));
+    for _ in 0..30 {
+        loaded.update(1.0);
+    }
+    assert!(loaded.position_mi > 0.0, "a loaded rig crosses at 45 mph");
+}
+
+#[test]
+fn mackinac_closed_to_trucks_holds_until_the_wind_drops() {
+    let mut trip = wind_trip("sault_ste_marie_mi_us", "traverse_city_mi_us", 13_600.0);
+    let station = std::rc::Rc::new(std::cell::Cell::new(100.0));
+    trip.weather.provider = Some(Box::new(StationWind(station.clone())));
+    trip.weather.city = Some("sault_ste_marie_mi_us".into());
+    let events = trip.update(1.0);
+    assert!(events
+        .iter()
+        .any(|e| e.text().contains("closed to trucks in high winds")));
+    assert!(events
+        .iter()
+        .any(|e| e.text().contains("You hold here until the wind drops")));
+    assert!(!trip.wind_held_gates.is_empty());
+    for _ in 0..10 {
+        let quiet = trip.update(1.0);
+        assert!(quiet
+            .iter()
+            .all(|e| e.data.context.as_deref() != Some("tunnel_wait")));
+    }
+    assert!(trip.position_mi < 0.1, "held at the approach");
+    station.set(20.0);
+    let events = trip.update(1.0);
+    assert!(events
+        .iter()
+        .any(|e| e.text().contains("The wind has dropped")));
+    trip.truck.velocity_mps = 10.0;
+    for _ in 0..30 {
+        trip.update(1.0);
+    }
+    assert!(trip.position_mi > 0.0);
+}
+
+/// Escort-level wind on the first reading, calm after it.
+struct DroppingWind(std::rc::Rc<std::cell::Cell<u32>>);
+
+impl ff_core::sim::weather::WeatherProvider for DroppingWind {
+    fn request(&mut self, _city: &str, _lat: f64, _lon: f64) {}
+    fn get(&mut self, _city: &str) -> Option<WeatherKind> {
+        Some(WeatherKind::Wind)
+    }
+    fn get_wind_kmh(&mut self, _city: &str) -> Option<f64> {
+        let reads = self.0.get();
+        self.0.set(reads + 1);
+        Some(if reads == 0 { 64.0 } else { 0.0 })
+    }
+}
+
+#[test]
+fn a_placarded_load_is_escorted_once_when_the_wind_drops_during_the_escort() {
+    let mut trip = wind_trip("sault_ste_marie_mi_us", "traverse_city_mi_us", 9_000.0);
+    trip.truck.cargo_key = "hazardous".into();
+    trip.truck.hazard_class = Some(ff_core::data::world_models::HazardClass::FlammableLiquid);
+    let reads = std::rc::Rc::new(std::cell::Cell::new(0));
+    trip.weather.provider = Some(Box::new(DroppingWind(reads.clone())));
+    trip.weather.city = Some("sault_ste_marie_mi_us".into());
+    let start_minutes = trip.game_minutes;
+    let waits = trip
+        .update(1.0)
+        .into_iter()
+        .filter(|e| e.data.context.as_deref() == Some("tunnel_wait"))
+        .map(|e| (e.data.amount, e.text().to_string()))
+        .collect::<Vec<_>>();
+    assert!(reads.get() >= 1, "the wind was read at the bridge");
+    assert_eq!(waits.len(), 1, "one escort: {waits:?}");
+    assert_eq!(waits[0].0, Some(20.0));
+    assert!(waits[0].1.contains("wait for an escort"), "{}", waits[0].1);
+    let minutes = trip.game_minutes - start_minutes;
+    assert!(
+        (20.0..40.0).contains(&minutes),
+        "escorted once on the clock: {minutes}"
+    );
+}
+
+#[test]
+fn live_wind_is_read_at_the_station_nearest_the_bridge() {
+    let asked = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let station = |bridge: f64, around: f64| BridgeStation {
+        bridge,
+        around,
+        asked: asked.clone(),
+    };
+    let mut trip = wind_trip("sault_ste_marie_mi_us", "traverse_city_mi_us", 13_600.0);
+    trip.weather.provider = Some(Box::new(station(100.0, 10.0)));
+    trip.weather.city = Some("sault_ste_marie_mi_us".into());
+    let (key, lat, _) = trip.crossing_station(0).expect("the bridge has a station");
+    assert_eq!(key, "crossing:Mackinac Bridge");
+    // St. Ignace, at the north end of the bridge, not Sault Ste. Marie.
+    assert!((45.7..46.0).contains(&lat), "{lat}");
+    let events = trip.update(1.0);
+    assert!(events
+        .iter()
+        .any(|e| e.text().contains("closed to trucks in high winds")));
+    assert!(asked.borrow().iter().any(|(k, _, _)| *k == key));
+
+    let mut calm = wind_trip("sault_ste_marie_mi_us", "traverse_city_mi_us", 13_600.0);
+    calm.weather.provider = Some(Box::new(station(10.0, 100.0)));
+    calm.weather.city = Some("sault_ste_marie_mi_us".into());
+    let events = calm.update(1.0);
+    assert!(
+        events
+            .iter()
+            .all(|e| e.data.context.as_deref() != Some("tunnel_wait")),
+        "a calm bridge is open whatever the wind where the truck starts"
+    );
+    assert!(calm.wind_held_gates.is_empty());
+}
+
 #[test]
 fn a_refused_truck_is_rerouted_at_the_crossing_not_held() {
     let world = world();
@@ -327,6 +839,7 @@ fn a_refused_truck_is_rerouted_at_the_crossing_not_held() {
     let mut truck = TruckState::default();
     truck.start_engine();
     truck.cargo_key = "hazardous".into();
+    truck.hazard_class = Some(ff_core::data::world_models::HazardClass::FlammableLiquid);
     truck.cargo_kg = 13_600.0;
     truck.placarded_hazmat = true;
     truck.velocity_mps = 10.0;
@@ -754,37 +1267,30 @@ fn test_gps_traffic_cue_deduplicates() {
 fn test_toll_cues_and_charges_deduplicate() {
     let mut trip = make_trip(world(), "New York", "Philadelphia", 2);
 
-    // No advance state-crossing chatter -- the line itself will speak when
-    // the truck reaches it.
-    trip.position_mi = 6.1;
-    let crossing = trip.update(0.0);
-    assert!(gps_events(&crossing).is_empty());
+    // The Turnpike settles where the truck leaves it, at interchange 6.
+    trip.position_mi = 73.6;
+    let quiet = trip.update(0.0);
+    assert!(gps_events(&quiet).is_empty());
 
-    trip.position_mi = 7.2;
+    trip.position_mi = 74.7;
     let advance = trip.update(0.0);
     let repeat = trip.update(0.0);
 
     assert_eq!(
         gps_messages(&advance),
-        vec![
-            "ticket system toll point ahead, New Jersey Turnpike ticket entry. \
-             Estimated toll 18 dollars, billed to carrier settlement."
-        ]
+        vec!["E-ZPass toll point ahead, New Jersey Turnpike settlement. Toll 63 dollars."]
     );
     assert!(gps_events(&repeat).is_empty());
 
-    trip.position_mi = 9.0;
+    trip.position_mi = 76.5;
     let charged = trip.update(0.0);
     let charged_again = trip.update(0.0);
 
     assert_eq!(
         messages_of(&charged, TripEventKind::TollCharged),
-        vec![
-            "ticket system toll at New Jersey Turnpike ticket entry, \
-             estimated 18 dollars, billed to carrier settlement."
-        ]
+        vec!["E-ZPass toll at New Jersey Turnpike settlement, 63 dollars, billed to carrier settlement."]
     );
-    assert_eq!(trip.toll_expense(), 18.0);
+    assert_eq!(trip.toll_expense(), 62.51);
     assert!(messages_of(&charged_again, TripEventKind::TollCharged).is_empty());
 }
 
@@ -807,20 +1313,16 @@ fn test_zero_amount_toll_entry_marker_does_not_record_expense() {
     let advance = trip.update(0.0);
     assert_eq!(
         gps_messages(&advance),
-        vec![
-            "ticket system toll point ahead, Pennsylvania Turnpike eastern ticket entry. \
-             Entry recorded for carrier settlement."
-        ]
+        vec!["ticket system toll point ahead, Pennsylvania Turnpike eastern ticket entry."]
     );
 
     trip.position_mi = 18.0;
     let entry = trip.update(0.0);
-    assert_eq!(
-        gps_messages(&entry),
-        vec![
-            "ticket system entry recorded at Pennsylvania Turnpike eastern ticket entry. \
-             Toll billed at carrier settlement."
-        ]
+    // Nothing is charged at a ticket entry, and the cue ahead named it.
+    assert!(
+        gps_messages(&entry).is_empty(),
+        "{:?}",
+        gps_messages(&entry)
     );
     assert_eq!(trip.toll_expense(), 0.0);
     assert!(messages_of(&entry, TripEventKind::TollCharged).is_empty());
@@ -907,7 +1409,7 @@ fn test_city_events_announce_a_state_line_the_map_does_not_carry() {
 
     assert_eq!(
         messages_of(&events, TripEventKind::CityReached),
-        vec!["Crossing into Ohio. Passing Cleveland, Ohio. Continuing on I-76 toward Pittsburgh."]
+        vec!["Crossing into Ohio. Passing Cleveland, Ohio."]
     );
 }
 
@@ -924,7 +1426,7 @@ fn test_city_events_include_state_without_repeating_crossing() {
 
     assert_eq!(
         messages_of(&events, TripEventKind::CityReached),
-        vec!["Passing Buffalo, New York. Continuing on I-90 toward Cleveland."]
+        vec!["Passing Buffalo, New York."]
     );
 }
 
@@ -1196,6 +1698,125 @@ fn test_the_status_browse_says_how_much_to_the_next_level() {}
 fn test_abandoning_a_bobtail_costs_nothing() {}
 
 #[test]
+fn published_tolls_carry_plate_rates_and_one_way_collection() {
+    let world = world();
+    let tolls = |a: &str, b: &str| {
+        world
+            .legs
+            .iter()
+            .find(|leg| leg.a == a && leg.b == b)
+            .expect("leg")
+            .toll_events()
+            .to_vec()
+    };
+    let bay = |a: &str, b: &str| {
+        tolls(a, b)
+            .into_iter()
+            .find(|toll| toll.name == "Chesapeake Bay Bridge toll")
+            .expect("Bay Bridge toll")
+    };
+    let east = bay("baltimore_md_us", "dover_de_us");
+    assert_eq!(
+        (east.amount, east.plate_amount(), east.estimated),
+        (24.0, 36.0, false)
+    );
+    assert!(east.applies_to_direction(true) && !east.applies_to_direction(false));
+    let west = bay("salisbury_md_us", "baltimore_md_us");
+    assert!(!west.applies_to_direction(true) && west.applies_to_direction(false));
+    let gateway = tolls("pittsburgh_pa_us", "cleveland_oh_us")
+        .into_iter()
+        .find(|toll| toll.name.contains("Gateway"))
+        .expect("Gateway toll");
+    assert!(
+        !gateway.applies_to_direction(true),
+        "no toll westbound into Ohio"
+    );
+    let thruway = tolls("springfield_ma_us", "albany_ny_us");
+    assert_eq!(
+        thruway.len(),
+        2,
+        "Mass Pike and Berkshire Connector both charge"
+    );
+    assert!(thruway
+        .iter()
+        .all(|toll| !toll.estimated && toll.plate_amount() >= toll.amount));
+    let carquinez = tolls("sacramento_ca_us", "san_francisco_ca_us")
+        .into_iter()
+        .find(|toll| toll.name == "Carquinez Bridge toll")
+        .expect("Carquinez toll");
+    assert!(
+        !carquinez.applies_to_direction(true) && carquinez.applies_to_direction(false),
+        "collected eastbound only"
+    );
+    let named = |a: &str, b: &str, name: &str| {
+        tolls(a, b)
+            .into_iter()
+            .filter(|toll| toll.name == name)
+            .collect::<Vec<_>>()
+    };
+    for (from, forward) in [
+        ("newark_nj_us", true),
+        ("allentown_pa_us", true),
+        ("philadelphia_pa_us", false),
+    ] {
+        let (a, b) = if forward {
+            (from, "new_york_ny_us")
+        } else {
+            ("new_york_ny_us", from)
+        };
+        let gwb = named(a, b, "George Washington Bridge toll");
+        assert_eq!(gwb.len(), 1, "{from} to New York pays the GWB");
+        let gwb = &gwb[0];
+        assert_eq!((gwb.amount, gwb.plate_amount()), (113.35, 128.35));
+        assert!(
+            gwb.applies_to_direction(forward) && !gwb.applies_to_direction(!forward),
+            "{from}: collected into New York only"
+        );
+    }
+    for from in ["los_angeles_ca_us", "sacramento_ca_us", "stockton_ca_us"] {
+        let bay = named(
+            from,
+            "san_francisco_ca_us",
+            "San Francisco-Oakland Bay Bridge toll",
+        );
+        assert_eq!(bay.len(), 1, "{from} to San Francisco pays the Bay Bridge");
+        assert!(
+            bay[0].applies_to_direction(true) && !bay[0].applies_to_direction(false),
+            "{from}: collected westbound into San Francisco only"
+        );
+        assert_eq!(bay[0].amount, 30.5);
+    }
+    let golden = named(
+        "san_francisco_ca_us",
+        "santa_rosa_ca_us",
+        "Golden Gate Bridge toll",
+    );
+    assert_eq!(golden.len(), 1);
+    assert_eq!((golden[0].amount, golden[0].plate_amount()), (51.25, 52.5));
+    assert!(
+        !golden[0].applies_to_direction(true) && golden[0].applies_to_direction(false),
+        "collected southbound into San Francisco only"
+    );
+    let turnpike = named(
+        "new_york_ny_us",
+        "philadelphia_pa_us",
+        "New Jersey Turnpike settlement",
+    );
+    assert_eq!(turnpike.len(), 2, "one settlement each way");
+    for forward in [true, false] {
+        let due: Vec<_> = turnpike
+            .iter()
+            .filter(|toll| toll.applies_to_direction(forward))
+            .collect();
+        assert_eq!(due.len(), 1, "forward={forward}");
+        assert_eq!(
+            (due[0].amount, due[0].plate_amount(), due[0].estimated),
+            (62.51, 68.6, false)
+        );
+    }
+}
+
+#[test]
 fn a_saved_trip_resumes_on_the_detour_its_load_was_planned_on() {
     let world = world();
     let fuel = CrossingLoad::standard_rig(true).with_cargo("fuel_bulk", true, 40_000);
@@ -1241,4 +1862,48 @@ fn a_saved_trip_resumes_on_the_detour_its_load_was_planned_on() {
             "{from} to {to} plain freight stays on the main road"
         );
     }
+}
+
+#[test]
+fn test_a_zone_exit_rise_waits_for_the_limit_window() {
+    // A short slow zone ended right behind the arrival line, and two limit
+    // numbers in one breath outran the voice (player report, 2026-10-17).
+    // The exit's rise is held, then named once the window opens.
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let now = Rc::new(Cell::new(0.0));
+    let mut trip = make_trip(world(), "Chicago", "Indianapolis", 2);
+    let clock_now = Rc::clone(&now);
+    trip.event_breather
+        .set_clock(Box::new(move || clock_now.get()));
+    trip.position_mi = 30.0;
+    let corridor = trip.corridor_limit_at(31.0);
+    assert!(corridor > 25.0, "the test needs a rise out of the zone");
+    trip.zones = vec![Zone::new(29.9, 30.5, 25.0, "test")];
+    trip.announced_zone_warnings.clear();
+    trip.pending_zone_warning = None;
+    trip.announced_speed_limit = Some(corridor);
+    trip.check_zones();
+    assert!(trip.entered_zone.is_some());
+    trip.event_breather.spoke("limit");
+
+    trip.events.clear();
+    trip.position_mi = 31.0;
+    trip.check_zones();
+    trip.check_speed_limit();
+    assert!(
+        !trip.events.iter().any(|e| e.text().contains("Speed limit")),
+        "{:?}",
+        trip.events.iter().map(|e| e.text()).collect::<Vec<_>>()
+    );
+
+    now.set(60.0);
+    trip.check_speed_limit();
+    assert!(
+        trip.events
+            .iter()
+            .any(|e| e.text().starts_with("Speed limit raised to")),
+        "{:?}",
+        trip.events.iter().map(|e| e.text()).collect::<Vec<_>>()
+    );
 }
