@@ -606,6 +606,9 @@ impl App {
         // tests, the harness, the tools) stay English unless a language is
         // forced for the run, so a developer's own locale never changes a
         // transcript a test reads.
+        if shell.is_some() {
+            language::retire_old_translation_kit();
+        }
         if shell.is_some() || std::env::var_os(language::LANG_ENV).is_some() {
             ctx.apply_language();
         }
@@ -1153,6 +1156,7 @@ impl App {
             self.ctx.say_with(line, Say::queued());
         }
         self.ctx.audio.update(dt); // advance time-based audio fades
+        self.ctx.update_event_voice_report();
         self.ctx.update_speech_duck(); // restore the mix after speech
 
         // Which calendar the player hears, for every date the career speaks.

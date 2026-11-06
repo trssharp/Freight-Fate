@@ -386,7 +386,7 @@ impl DrivingState {
             // the pedals for a ramp that ends at the gate: it is still
             // driving the truck in (owner, 2026-10-25, Facility streets off).
             ctx.say_event_with(
-                "Route-transition assistance released.",
+                "Ramp assistance released.",
                 SayEvent::queued()
                     .priority(EventPriority::Important)
                     .category(SpeechCategory::Confirmation),
@@ -891,7 +891,7 @@ impl DrivingState {
             fine,
             true,
             false,
-            "Drove through the barrels in a work zone",
+            ff_core::models::enforcement::WORK_ZONE_BARRELS_REASON,
         );
         ctx.audio.play("ui/error");
         let tail = if ladder.is_empty() {

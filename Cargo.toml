@@ -68,14 +68,14 @@ sdl2 = "0.38"
 #   [patch."https://github.com/orinks-games/hearken"]
 #   hearken = { path = "../hearken/crates/hearken" }
 # to a cargo config (never commit it).
-hearken = { git = "https://github.com/orinks-games/hearken", rev = "8ebfb69e3690a89c5312f4050fdeb9868826d130", default-features = false, features = ["kira", "radio"] }
+hearken = { git = "https://github.com/orinks-games/hearken", rev = "8fe117bd3b6073e254aaaf1b847ef8f8195496ea", default-features = false, features = ["kira", "radio"] }
 # The engine's signed self-updater, on its own: Freight Fate keeps its own
 # update screens and release tooling, and uses the engine's checks,
 # downloads (only the files that changed, when it can) and swap. The game
 # uses its HTTPS client; ff-tools signs the manifests and writes the file
 # indexes with it.
-hearken-update = { git = "https://github.com/orinks-games/hearken", rev = "8ebfb69e3690a89c5312f4050fdeb9868826d130", default-features = false }
-hearken-seal = { git = "https://github.com/orinks-games/hearken", rev = "8ebfb69e3690a89c5312f4050fdeb9868826d130", default-features = false }
+hearken-update = { git = "https://github.com/orinks-games/hearken", rev = "8fe117bd3b6073e254aaaf1b847ef8f8195496ea", default-features = false }
+hearken-seal = { git = "https://github.com/orinks-games/hearken", rev = "8fe117bd3b6073e254aaaf1b847ef8f8195496ea", default-features = false }
 raw-window-handle = "0.6"
 # AppKit's typed `NSWindow`, for asking a Mac whether the game window is
 # covered. Already in the build through `webbrowser`; only the window class
@@ -94,12 +94,8 @@ zstd = "0.13"
 # Rust, so the window needs no SDL_ttf (and no FreeType) on any platform.
 ab_glyph = "0.2"
 
+# Every crate inherits these (`[lints] workspace = true`).
 [workspace.lints.rust]
-# `--cfg ci_quick` is what the per-push CI passes so the whole-map sweeps
-# (`#[cfg_attr(ci_quick, ignore = "sweep: ...")]`) are left to the nightly
-# snapshot build and to full local runs; see .github/workflows/rust.yml.
-# Declared here so `unexpected_cfgs` stays quiet under `-D warnings`.
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(ci_quick)"] }
 
 [profile.release]
 opt-level = 3
